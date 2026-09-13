@@ -59,7 +59,11 @@ class App(ctk.CTk):
         self.is_processing = False
         self.is_generating = False
         
-        self.nav_btns = {}
+        # Navigation state
+        self.menu_expanded = True
+        self.nav_parent_btn = None
+        self.nav_chevron = None
+        self.sub_nav_btns = {}
 
         self._setup_window()
         self._build_layout()
@@ -87,17 +91,37 @@ class App(ctk.CTk):
         sep = ctk.CTkFrame(self.sidebar, height=1, fg_color=ui.COLOR_SIDEBAR_SEP)
         sep.grid(row=1, column=0, sticky="ew", padx=20, pady=(0, 20))
 
-        # Nav items
-        nav_items = [
-            ("dashboard", "Dashboard", ui.ICON_HOME),
+        # ── Collapsible Transform Navigation Group ──────────────
+        self.nav_parent_frame, self.nav_parent_btn, self.nav_chevron = ui.create_collapsible_nav_item(
+            self.sidebar,
+            text="Transform",
+            icon=ui.ICON_HOME,
+            on_select=lambda: self._on_transform_parent_clicked(),
+            on_toggle=lambda: self.toggle_transform_menu(),
+            row=2,
+        )
+
+        # Sub-menu container for child modules
+        self.sub_menu_frame = ctk.CTkFrame(self.sidebar, fg_color="transparent")
+        self.sub_menu_frame.grid(row=3, column=0, sticky="ew")
+        self.sub_menu_frame.grid_columnconfigure(0, weight=1)
+
+        # Sub-items: KRA Management, Absent Management, Attendance Summary
+        sub_items = [
             ("transform", "KRA Management", ui.ICON_KRA),
             ("absent", "Absent Management", ui.ICON_ABSENT),
             ("att_summary", "Attendance Summary", ui.ICON_ATTENDANCE),
         ]
-        
-        for i, (name, text, icon) in enumerate(nav_items, start=2):
-            btn = ui.create_nav_button(self.sidebar, text, icon, lambda n=name: self.select_frame_by_name(n), i)
-            self.nav_btns[name] = btn
+
+        for idx, (name, text, icon) in enumerate(sub_items):
+            btn = ui.create_sub_nav_button(
+                self.sub_menu_frame,
+                text=text,
+                icon=icon,
+                command=lambda n=name: self.select_frame_by_name(n),
+                row=idx,
+            )
+            self.sub_nav_btns[name] = btn
 
         # Main Content
         self.main_content = ctk.CTkFrame(self, fg_color="transparent", corner_radius=0)
@@ -113,10 +137,40 @@ class App(ctk.CTk):
         self._build_absent_frame()
         self._build_att_summary_frame()
 
+    def _on_transform_parent_clicked(self):
+        """When the Transform header is clicked, ensure menu is open and show overview."""
+        if not self.menu_expanded:
+            self.toggle_transform_menu(force_state=True)
+        self.select_frame_by_name("dashboard")
+
+    def toggle_transform_menu(self, force_state=None):
+        """Toggle the collapsible sub-menu between expanded and collapsed states."""
+        if force_state is not None:
+            self.menu_expanded = force_state
+        else:
+            self.menu_expanded = not self.menu_expanded
+
+        if self.menu_expanded:
+            self.sub_menu_frame.grid(row=3, column=0, sticky="ew")
+            self.nav_chevron.configure(text="▾")
+        else:
+            self.sub_menu_frame.grid_remove()
+            self.nav_chevron.configure(text="▸")
+
     def select_frame_by_name(self, name: str):
-        # Update Nav buttons
-        for n, btn in self.nav_btns.items():
-            ui.set_nav_active(btn, n == name or (name == "generate" and n == "transform"))
+        is_parent_active = (name == "dashboard")
+
+        # Auto-expand menu if navigating to a child module
+        if not is_parent_active and not self.menu_expanded:
+            self.toggle_transform_menu(force_state=True)
+
+        # Update Parent button highlight
+        ui.set_nav_active(self.nav_parent_btn, is_parent_active)
+
+        # Update Sub-nav buttons highlight
+        for n, btn in self.sub_nav_btns.items():
+            is_active = (n == name) or (name == "generate" and n == "transform")
+            ui.set_sub_nav_active(btn, is_active)
 
         # Hide all frames
         for f in self.frames.values():
@@ -127,14 +181,14 @@ class App(ctk.CTk):
             self.frames[name].grid(row=0, column=0, sticky="nsew")
 
     # ---------------------------------------------------------
-    # Dashboard
+    # Transform Hub / Overview
     # ---------------------------------------------------------
     def _build_dashboard_frame(self):
         f = ctk.CTkFrame(self.main_content, fg_color="transparent")
         self.frames["dashboard"] = f
         f.grid_columnconfigure((0, 1), weight=1)
 
-        ui.create_page_header(f, "Overview Dashboard", "Quick access to all HR and Finance modules.").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 30))
+        ui.create_page_header(f, "Transform", "Quick access to all data transformation and processing modules.").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 30))
 
         ui.create_dashboard_card(f, ui.ICON_KRA, "KRA Management", "Transform KRA Excel sheets and generate final KEKA upload files.", "Active", lambda: self.select_frame_by_name("transform"), 1, 0)
         ui.create_dashboard_card(f, ui.ICON_ABSENT, "Absent Management", "Process employee data to generate Absent Intimation Reports.", "Active", lambda: self.select_frame_by_name("absent"), 1, 1)

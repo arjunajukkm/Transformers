@@ -262,6 +262,70 @@ def set_nav_active(btn, is_active: bool):
         )
 
 
+def create_collapsible_nav_item(parent, text: str, icon: str, on_select, on_toggle, row: int):
+    """
+    Creates a top-level nav item with an integrated expand/collapse chevron button.
+    Returns: (frame, main_button, chevron_button)
+    """
+    frame = ctk.CTkFrame(parent, fg_color="transparent", corner_radius=8)
+    frame.grid(row=row, column=0, sticky="ew", padx=14, pady=2)
+    frame.grid_columnconfigure(0, weight=1)
+
+    btn = ctk.CTkButton(
+        frame, text=f"  {icon}   {text}", height=42, corner_radius=8,
+        anchor="w", fg_color="transparent",
+        hover_color=COLOR_NAV_HOVER,
+        text_color=COLOR_TEXT_SEC,
+        font=ctk.CTkFont(family=FONT_FAMILY, size=14),
+        command=on_select,
+    )
+    btn.grid(row=0, column=0, sticky="ew")
+
+    chevron = ctk.CTkButton(
+        frame, text="▾", width=34, height=42, corner_radius=8,
+        fg_color="transparent", hover_color=COLOR_NAV_HOVER,
+        text_color=COLOR_TEXT_DIM,
+        font=ctk.CTkFont(family=FONT_FAMILY, size=13),
+        command=on_toggle,
+    )
+    chevron.grid(row=0, column=1, sticky="e", padx=(2, 0))
+
+    return frame, btn, chevron
+
+
+def create_sub_nav_button(parent, text: str, icon: str, command, row: int):
+    """
+    Creates an indented sub-navigation button for child items.
+    """
+    btn = ctk.CTkButton(
+        parent, text=f"   {icon}   {text}", height=36, corner_radius=6,
+        anchor="w", fg_color="transparent",
+        hover_color=COLOR_NAV_HOVER,
+        text_color=COLOR_TEXT_SEC,
+        font=ctk.CTkFont(family=FONT_FAMILY, size=13),
+        command=command,
+    )
+    btn.grid(row=row, column=0, sticky="ew", padx=(28, 10), pady=1)
+    return btn
+
+
+def set_sub_nav_active(btn, is_active: bool):
+    """Highlight or un-highlight a sub-nav button."""
+    if is_active:
+        btn.configure(
+            fg_color=COLOR_NAV_ACTIVE,
+            text_color=COLOR_TEXT,
+            font=ctk.CTkFont(family=FONT_FAMILY, size=13, weight="bold"),
+        )
+    else:
+        btn.configure(
+            fg_color="transparent",
+            text_color=COLOR_TEXT_SEC,
+            font=ctk.CTkFont(family=FONT_FAMILY, size=13),
+        )
+
+
+
 def create_step_card(parent, step_num: int, title: str, helper: str,
                      string_var, row: int, extra_buttons=None):
     """Compact step card to prevent scrolling."""
