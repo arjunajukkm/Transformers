@@ -1,24 +1,26 @@
 import threading
 import traceback
+import sys
+import os
+import ctypes
 from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox
 
-try:
-    import pandas as pd
-    import customtkinter as ctk
-    from openpyxl import load_workbook
-    from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
-except ImportError:
-    raise SystemExit("Missing dependency. Run: pip install customtkinter pandas openpyxl")
+import pandas as pd
+import customtkinter as ctk
+from openpyxl import load_workbook
+from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 
+
+
+import ui_components as ui
 
 ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
 
-APP_TITLE = "KRA Transformer Pro"
-WINDOW_SIZE = "1180x760"
-
+APP_TITLE = "Transformers"
+WINDOW_SIZE = "1280x800"
 
 class App(ctk.CTk):
     def __init__(self):
@@ -26,262 +28,411 @@ class App(ctk.CTk):
 
         self.title(APP_TITLE)
         self.geometry(WINDOW_SIZE)
-        self.minsize(980, 620)
+        self.minsize(1024, 700)
 
-        self.selected_input_file = ctk.StringVar(value="")
+        try:
+            myappid = 'moshpit.transformers.1.0'
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
+        except Exception:
+            pass
+
+        try:
+            if getattr(sys, 'frozen', False):
+                base_path = Path(sys._MEIPASS)
+            else:
+                base_path = Path(__file__).parent
+            icon_path = base_path / "icon.ico"
+            if icon_path.exists():
+                self.iconbitmap(str(icon_path))
+        except Exception as e:
+            pass
+
+        # StringVars for file paths
+        self.selected_input_file = ctk.StringVar()
+        self.selected_gen_input_file = ctk.StringVar()
+        self.absent_emp_file = ctk.StringVar()
+        self.absent_att_file = ctk.StringVar()
+        self.absent_wfh_file = ctk.StringVar()
+        self.att_summary_file = ctk.StringVar()
+        
+        # State flags
         self.is_processing = False
+        self.is_generating = False
+        
+        self.nav_btns = {}
 
         self._setup_window()
         self._build_layout()
-        self.select_frame_by_name("transform")
+        self.select_frame_by_name("dashboard")
 
     def _setup_window(self):
         self.grid_rowconfigure(0, weight=1)
         self.grid_columnconfigure(1, weight=1)
+        self.configure(fg_color=ui.COLOR_BG)
 
     def _build_layout(self):
-        self.sidebar_frame = ctk.CTkFrame(self, width=240, corner_radius=0)
-        self.sidebar_frame.grid(row=0, column=0, sticky="nsew")
-        self.sidebar_frame.grid_rowconfigure(5, weight=1)
+        # Sidebar
+        self.sidebar = ctk.CTkFrame(self, width=280, corner_radius=0, fg_color=ui.COLOR_SIDEBAR)
+        self.sidebar.grid(row=0, column=0, sticky="nsew")
+        self.sidebar.grid_rowconfigure(10, weight=1)
 
-        self.logo_label = ctk.CTkLabel(
-            self.sidebar_frame,
-            text="KRA Tools",
-            font=ctk.CTkFont(family="Segoe UI", size=24, weight="bold"),
+        # Logo
+        lbl_logo = ctk.CTkLabel(
+            self.sidebar, text="Transformers",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=26, weight="bold"),
+            text_color=ui.COLOR_ACCENT
         )
-        self.logo_label.grid(row=0, column=0, padx=24, pady=(28, 24))
+        lbl_logo.grid(row=0, column=0, padx=24, pady=(32, 32), sticky="w")
+        
+        sep = ctk.CTkFrame(self.sidebar, height=1, fg_color=ui.COLOR_SIDEBAR_SEP)
+        sep.grid(row=1, column=0, sticky="ew", padx=20, pady=(0, 20))
 
-        self.nav_transform = ctk.CTkButton(
-            self.sidebar_frame,
-            text="Transform KRA Files",
-            height=44,
-            corner_radius=10,
-            border_spacing=10,
-            anchor="w",
-            fg_color="transparent",
-            hover_color=("gray75", "gray25"),
-            text_color=("gray10", "gray90"),
-            font=ctk.CTkFont(size=14, weight="bold"),
-            command=lambda: self.select_frame_by_name("transform"),
-        )
-        self.nav_transform.grid(row=1, column=0, sticky="ew", padx=16, pady=(4, 8))
+        # Nav items
+        nav_items = [
+            ("dashboard", "Dashboard", ui.ICON_HOME),
+            ("transform", "KRA Management", ui.ICON_KRA),
+            ("absent", "Absent Management", ui.ICON_ABSENT),
+            ("att_summary", "Attendance Summary", ui.ICON_ATTENDANCE),
+        ]
+        
+        for i, (name, text, icon) in enumerate(nav_items, start=2):
+            btn = ui.create_nav_button(self.sidebar, text, icon, lambda n=name: self.select_frame_by_name(n), i)
+            self.nav_btns[name] = btn
 
-        self.nav_generate = ctk.CTkButton(
-            self.sidebar_frame,
-            text="Generate Upload Files",
-            height=44,
-            corner_radius=10,
-            border_spacing=10,
-            anchor="w",
-            fg_color="transparent",
-            hover_color=("gray75", "gray25"),
-            text_color=("gray10", "gray90"),
-            font=ctk.CTkFont(size=14, weight="bold"),
-            command=lambda: self.select_frame_by_name("generate"),
-        )
-        self.nav_generate.grid(row=2, column=0, sticky="ew", padx=16, pady=(0, 8))
-
-        self.appearance_mode_menu = ctk.CTkOptionMenu(
-            self.sidebar_frame,
-            values=["Dark", "Light", "System"],
-            command=self.change_appearance_mode_event,
-            height=38,
-        )
-        self.appearance_mode_menu.set("Dark")
-        self.appearance_mode_menu.grid(row=6, column=0, padx=20, pady=20, sticky="s")
-
+        # Main Content
         self.main_content = ctk.CTkFrame(self, fg_color="transparent", corner_radius=0)
-        self.main_content.grid(row=0, column=1, sticky="nsew", padx=24, pady=24)
+        self.main_content.grid(row=0, column=1, sticky="nsew", padx=40, pady=40)
         self.main_content.grid_rowconfigure(0, weight=1)
         self.main_content.grid_columnconfigure(0, weight=1)
 
+        # Build Frames
+        self.frames = {}
+        self._build_dashboard_frame()
         self._build_transform_frame()
         self._build_generate_frame()
-
-    def _build_transform_frame(self):
-        self.frame_transform = ctk.CTkFrame(self.main_content, fg_color="transparent", corner_radius=0)
-        self.frame_transform.grid_columnconfigure(0, weight=1)
-
-        self.transform_title = ctk.CTkLabel(
-            self.frame_transform,
-            text="Transform KRA Files",
-            font=ctk.CTkFont(size=30, weight="bold"),
-        )
-        self.transform_title.grid(row=0, column=0, sticky="w", pady=(0, 18))
-
-        self.transform_card = ctk.CTkFrame(self.frame_transform, corner_radius=18)
-        self.transform_card.grid(row=1, column=0, sticky="nsew")
-        self.transform_card.grid_columnconfigure(0, weight=1)
-
-        self.file_row = ctk.CTkFrame(self.transform_card, fg_color="transparent")
-        self.file_row.grid(row=0, column=0, sticky="ew", padx=28, pady=(28, 18))
-        self.file_row.grid_columnconfigure(0, weight=1)
-
-        self.file_entry = ctk.CTkEntry(
-            self.file_row,
-            textvariable=self.selected_input_file,
-            placeholder_text="Select Excel file",
-            height=48,
-            font=ctk.CTkFont(size=14),
-        )
-        self.file_entry.grid(row=0, column=0, sticky="ew", padx=(0, 12))
-
-        self.btn_browse = ctk.CTkButton(
-            self.file_row,
-            text="Upload",
-            width=130,
-            height=48,
-            corner_radius=12,
-            font=ctk.CTkFont(size=14, weight="bold"),
-            command=self.select_input_file,
-        )
-        self.btn_browse.grid(row=0, column=1)
-
-        self.progress = ctk.CTkProgressBar(
-            self.transform_card,
-            mode="indeterminate",
-            height=10,
-            corner_radius=999,
-        )
-        self.progress.grid(row=1, column=0, sticky="ew", padx=28, pady=(4, 16))
-        self.progress.grid_remove()
-
-        self.action_row = ctk.CTkFrame(self.transform_card, fg_color="transparent")
-        self.action_row.grid(row=2, column=0, sticky="w", padx=28, pady=(0, 18))
-
-        self.btn_transform = ctk.CTkButton(
-            self.action_row,
-            text="Transform",
-            width=140,
-            height=44,
-            corner_radius=12,
-            font=ctk.CTkFont(size=14, weight="bold"),
-            command=self.start_transform,
-        )
-        self.btn_transform.pack(side="left", padx=(0, 12))
-
-        self.btn_cancel = ctk.CTkButton(
-            self.action_row,
-            text="Cancel",
-            width=120,
-            height=44,
-            corner_radius=12,
-            fg_color="transparent",
-            border_width=1,
-            font=ctk.CTkFont(size=14, weight="bold"),
-            command=self.cancel_transform,
-        )
-        self.btn_cancel.pack(side="left")
-
-        self.status_frame = ctk.CTkFrame(self.transform_card, fg_color="transparent")
-        self.status_frame.grid(row=3, column=0, sticky="ew", padx=28, pady=(0, 26))
-        self.status_frame.grid_columnconfigure(1, weight=1)
-
-        self.status_dot = ctk.CTkLabel(
-            self.status_frame,
-            text="●",
-            text_color="#22c55e",
-            font=ctk.CTkFont(size=16, weight="bold"),
-        )
-        self.status_dot.grid(row=0, column=0, sticky="w", padx=(0, 8))
-
-        self.status_label = ctk.CTkLabel(
-            self.status_frame,
-            text="Ready",
-            text_color="gray70",
-            font=ctk.CTkFont(size=13),
-        )
-        self.status_label.grid(row=0, column=1, sticky="w")
-
-    def _build_generate_frame(self):
-        self.frame_generate = ctk.CTkFrame(self.main_content, fg_color="transparent", corner_radius=0)
-        self.frame_generate.grid_columnconfigure(0, weight=1)
-
-        self.generate_title = ctk.CTkLabel(
-            self.frame_generate,
-            text="Generate Upload Files",
-            font=ctk.CTkFont(size=30, weight="bold"),
-        )
-        self.generate_title.grid(row=0, column=0, sticky="w", pady=(0, 18))
-
-        self.generate_card = ctk.CTkFrame(self.frame_generate, corner_radius=18)
-        self.generate_card.grid(row=1, column=0, sticky="nsew")
-
-        self.generate_placeholder = ctk.CTkLabel(
-            self.generate_card,
-            text="Coming soon",
-            text_color="gray70",
-            font=ctk.CTkFont(size=15),
-        )
-        self.generate_placeholder.pack(anchor="w", padx=28, pady=28)
+        self._build_absent_frame()
+        self._build_att_summary_frame()
 
     def select_frame_by_name(self, name: str):
-        self.nav_transform.configure(
-            fg_color=("gray75", "gray25") if name == "transform" else "transparent"
-        )
-        self.nav_generate.configure(
-            fg_color=("gray75", "gray25") if name == "generate" else "transparent"
-        )
+        # Update Nav buttons
+        for n, btn in self.nav_btns.items():
+            ui.set_nav_active(btn, n == name or (name == "generate" and n == "transform"))
 
-        if name == "transform":
-            self.frame_generate.grid_forget()
-            self.frame_transform.grid(row=0, column=0, sticky="nsew")
-        else:
-            self.frame_transform.grid_forget()
-            self.frame_generate.grid(row=0, column=0, sticky="nsew")
+        # Hide all frames
+        for f in self.frames.values():
+            f.grid_forget()
 
-    def change_appearance_mode_event(self, new_mode: str):
-        ctk.set_appearance_mode(new_mode)
+        # Show selected
+        if name in self.frames:
+            self.frames[name].grid(row=0, column=0, sticky="nsew")
 
-    def set_status(self, text: str, color: str = "gray70"):
-        self.status_label.configure(text=text, text_color=color)
+    # ---------------------------------------------------------
+    # Dashboard
+    # ---------------------------------------------------------
+    def _build_dashboard_frame(self):
+        f = ctk.CTkFrame(self.main_content, fg_color="transparent")
+        self.frames["dashboard"] = f
+        f.grid_columnconfigure((0, 1), weight=1)
 
-        dot_color = "#22c55e"
-        if color == "#2563eb":
-            dot_color = "#2563eb"
-        elif color == "#ef4444":
-            dot_color = "#ef4444"
-        elif color == "#f59e0b":
-            dot_color = "#f59e0b"
+        ui.create_page_header(f, "Overview Dashboard", "Quick access to all HR and Finance modules.").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 30))
 
-        self.status_dot.configure(text_color=dot_color)
-        self.update_idletasks()
+        ui.create_dashboard_card(f, ui.ICON_KRA, "KRA Management", "Transform KRA Excel sheets and generate final KEKA upload files.", "Active", lambda: self.select_frame_by_name("transform"), 1, 0)
+        ui.create_dashboard_card(f, ui.ICON_ABSENT, "Absent Management", "Process employee data to generate Absent Intimation Reports.", "Active", lambda: self.select_frame_by_name("absent"), 1, 1)
+        ui.create_dashboard_card(f, ui.ICON_ATTENDANCE, "Attendance Summary", "Generate summarized attendance reports from raw portal data.", "Active", lambda: self.select_frame_by_name("att_summary"), 2, 0)
 
-    def select_input_file(self):
-        file_path = filedialog.askopenfilename(
-            title="Select Excel File",
-            filetypes=[("Excel files", "*.xlsx *.xls")],
-        )
-        if file_path:
-            self.selected_input_file.set(file_path)
-            self.set_status("File selected", "gray70")
+    # ---------------------------------------------------------
+    # KRA Management
+    # ---------------------------------------------------------
+    def _build_transform_frame(self):
+        f = ctk.CTkFrame(self.main_content, fg_color="transparent")
+        self.frames["transform"] = f
+        f.grid_columnconfigure(0, weight=1)
 
-    def cancel_transform(self):
-        if self.is_processing:
-            messagebox.showwarning("In Progress", "Please wait until the current transformation finishes.")
-            return
+        hdr = ui.create_page_header(f, "KRA Management", "Transform raw KRA files and generate system uploads.")
+        hdr.grid(row=0, column=0, sticky="ew", pady=(0, 20))
+        
+        # Actions wrapper
+        actions = ctk.CTkFrame(hdr, fg_color="transparent")
+        actions.grid(row=0, column=1, sticky="e")
+        ui.create_secondary_button(actions, "Go to Generation →", lambda: self.select_frame_by_name("generate"), 150).pack()
 
-        self.selected_input_file.set("")
-        self.set_status("Cancelled", "#f59e0b")
+        card = ui.create_card(f)
+        card.grid(row=1, column=0, sticky="nsew")
+
+        ctk.CTkLabel(card, text="1. Transform Raw File", font=ctk.CTkFont(family=ui.FONT_FAMILY, size=15, weight="bold"), text_color=ui.COLOR_TEXT).grid(row=0, column=0, sticky="w", padx=16, pady=(16, 4))
+        ctk.CTkLabel(card, text="Upload raw Excel sheet to structure KRA/KPI data.", font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12), text_color=ui.COLOR_TEXT_SEC).grid(row=1, column=0, sticky="w", padx=16, pady=(0, 12))
+
+        ui.create_upload_row(card, self.selected_input_file, "Select Raw KRA Excel...", "Browse", 2)
+
+        self.kra_prog = ctk.CTkProgressBar(card, mode="indeterminate", height=4, corner_radius=2, fg_color=ui.COLOR_INPUT_BG, progress_color=ui.COLOR_ACCENT)
+        self.kra_prog.grid(row=3, column=0, sticky="ew", padx=16, pady=(8, 0))
+        self.kra_prog.set(0)
+        self.kra_prog.grid_remove()
+
+        row4 = ctk.CTkFrame(card, fg_color="transparent")
+        row4.grid(row=4, column=0, sticky="ew", padx=16, pady=(12, 16))
+        
+        _, self.kra_dot, self.kra_lbl = ui.create_status_badge(row4, "Ready")
+        self.kra_lbl.master.pack(side="left")
+
+        self.btn_kra_tf = ui.create_primary_button(row4, "Transform File", self.start_transform)
+        self.btn_kra_tf.pack(side="right")
+
+    def _build_generate_frame(self):
+        f = ctk.CTkFrame(self.main_content, fg_color="transparent")
+        self.frames["generate"] = f
+        f.grid_columnconfigure(0, weight=1)
+
+        hdr = ui.create_page_header(f, "Generate Upload", "Create final KEKA upload file using employee mappings.")
+        hdr.grid(row=0, column=0, sticky="ew", pady=(0, 20))
+        
+        actions = ctk.CTkFrame(hdr, fg_color="transparent")
+        actions.grid(row=0, column=1, sticky="e")
+        ui.create_secondary_button(actions, "← Back to Transform", lambda: self.select_frame_by_name("transform"), 150).pack()
+
+        card = ui.create_card(f)
+        card.grid(row=1, column=0, sticky="nsew")
+
+        ctk.CTkLabel(card, text="Upload Transformed File", font=ctk.CTkFont(family=ui.FONT_FAMILY, size=15, weight="bold"), text_color=ui.COLOR_TEXT).grid(row=0, column=0, sticky="w", padx=16, pady=(16, 4))
+        ui.create_upload_row(card, self.selected_gen_input_file, "Select transformed Excel...", "Browse", 1)
+
+        ctk.CTkLabel(card, text="Employee Mapping Format:\nEMP ID, Name, Designation (Sheet Name)", font=ctk.CTkFont(family=ui.FONT_FAMILY, size=13, weight="bold"), text_color=ui.COLOR_TEXT, justify="left").grid(row=2, column=0, sticky="w", padx=16, pady=(12, 8))
+        self.gen_mapping_text = ctk.CTkTextbox(card, height=80, font=ctk.CTkFont(family="Consolas", size=12), fg_color=ui.COLOR_INPUT_BG, border_color=ui.COLOR_BORDER, border_width=1, text_color=ui.COLOR_TEXT)
+        self.gen_mapping_text.grid(row=3, column=0, sticky="ew", padx=16, pady=(0, 12))
+        self.gen_mapping_text.insert("0.0", 'EMP001, John Doe, Manager\nEMP002, Jane Smith, Manager')
+
+        self.gen_prog = ctk.CTkProgressBar(card, mode="indeterminate", height=4, corner_radius=2, fg_color=ui.COLOR_INPUT_BG, progress_color=ui.COLOR_ACCENT)
+        self.gen_prog.grid(row=4, column=0, sticky="ew", padx=16, pady=(4, 0))
+        self.gen_prog.set(0)
+        self.gen_prog.grid_remove()
+
+        row5 = ctk.CTkFrame(card, fg_color="transparent")
+        row5.grid(row=5, column=0, sticky="ew", padx=16, pady=(12, 16))
+        
+        _, self.gen_dot, self.gen_lbl = ui.create_status_badge(row5, "Ready")
+        self.gen_lbl.master.pack(side="left")
+
+        self.btn_gen = ui.create_primary_button(row5, "Generate File", self.start_generate)
+        self.btn_gen.pack(side="right")
+
+    # ---------------------------------------------------------
+    # Absent Management
+    # ---------------------------------------------------------
+    def _build_absent_frame(self):
+        f = ctk.CTkFrame(self.main_content, fg_color="transparent")
+        self.frames["absent"] = f
+        f.grid_columnconfigure(0, weight=1)
+
+        ui.create_page_header(f, "Absent Management", "Generate absent intimation reports by comparing master, attendance and OD/WFH data.").grid(row=0, column=0, sticky="ew", pady=(0, 20))
+
+        card = ui.create_card(f)
+        card.grid(row=1, column=0, sticky="nsew")
+        
+        ctk.CTkLabel(card, text="Source Files", font=ctk.CTkFont(family=ui.FONT_FAMILY, size=15, weight="bold"), text_color=ui.COLOR_TEXT).grid(row=0, column=0, sticky="w", padx=16, pady=(16, 12))
+
+        ui.create_upload_row(card, self.absent_emp_file, "1. Employee Master (Expected: Employee Master.xlsx)", "Browse", 1)
+        ui.create_upload_row(card, self.absent_att_file, "2. Attendance Report (Expected: Attendance Report.xlsx)", "Browse", 2)
+        ui.create_upload_row(card, self.absent_wfh_file, "3. OD/WFH Application Report (Expected: OD_WFH Application Report.xlsx)", "Browse", 3)
+
+        row4 = ctk.CTkFrame(card, fg_color="transparent")
+        row4.grid(row=4, column=0, sticky="ew", padx=16, pady=(12, 16))
+        
+        _, self.absent_dot, self.absent_lbl = ui.create_status_badge(row4, "Ready")
+        self.absent_lbl.master.pack(side="left")
+
+        self.btn_absent = ui.create_primary_button(row4, "Process Data", self.start_process_absent)
+        self.btn_absent.pack(side="right")
+
+    # ---------------------------------------------------------
+    # Attendance Summary
+    # ---------------------------------------------------------
+    def _build_att_summary_frame(self):
+        f = ctk.CTkFrame(self.main_content, fg_color="transparent")
+        self.frames["att_summary"] = f
+        f.grid_columnconfigure(0, weight=1)
+
+        ui.create_page_header(f, "Attendance Summary", "Generate employee-wise summary reports from raw attendance portal data.").grid(row=0, column=0, sticky="ew", pady=(0, 20))
+
+        card = ui.create_card(f)
+        card.grid(row=1, column=0, sticky="nsew")
+        
+        ctk.CTkLabel(card, text="Raw Data", font=ctk.CTkFont(family=ui.FONT_FAMILY, size=15, weight="bold"), text_color=ui.COLOR_TEXT).grid(row=0, column=0, sticky="w", padx=16, pady=(16, 12))
+
+        ui.create_upload_row(card, self.att_summary_file, "Select Attendance Raw File...", "Browse", 1)
+
+        row2 = ctk.CTkFrame(card, fg_color="transparent")
+        row2.grid(row=2, column=0, sticky="ew", padx=16, pady=(12, 16))
+        
+        _, self.att_dot, self.att_lbl = ui.create_status_badge(row2, "Ready")
+        self.att_lbl.master.pack(side="left")
+
+        self.btn_att = ui.create_primary_button(row2, "Summarize Data", self.start_process_att)
+        self.btn_att.pack(side="right")
+
+
+    # =========================================================
+    # Event Handlers (UI updates)
+    # =========================================================
 
     def start_transform(self):
-        if self.is_processing:
+        if not self.selected_input_file.get():
+            messagebox.showerror("Error", "Please select a file.")
             return
-
-        if not self.selected_input_file.get().strip():
-            messagebox.showerror("Missing File", "Please select an Excel file first.")
-            self.set_status("No file selected", "#ef4444")
-            return
-
         self.is_processing = True
-        self.btn_transform.configure(state="disabled")
-        self.btn_browse.configure(state="disabled")
-        self.progress.grid()
-        self.progress.start()
-        self.set_status("Transforming...", "#2563eb")
+        self.btn_kra_tf.configure(state="disabled")
+        self.kra_prog.grid()
+        self.kra_prog.start()
+        ui.update_status(self.kra_dot, self.kra_lbl, "Transforming...", "processing")
+        threading.Thread(target=self._run_transform_job, daemon=True).start()
 
-        thread = threading.Thread(target=self._run_transform_job, daemon=True)
-        thread.start()
+    def cancel_transform(self): pass # Unused currently, logic can be complex
+
+    def _transform_success(self, out_path, cnt):
+        self.is_processing = False
+        self.btn_kra_tf.configure(state="normal")
+        self.kra_prog.stop()
+        self.kra_prog.grid_remove()
+        ui.update_status(self.kra_dot, self.kra_lbl, f"Success • {cnt} sheets", "success")
+        messagebox.showinfo("Done", f"File transformed successfully.\n\nSaved to:\n{out_path}")
+
+    def _transform_error(self, err):
+        self.is_processing = False
+        self.btn_kra_tf.configure(state="normal")
+        self.kra_prog.stop()
+        self.kra_prog.grid_remove()
+        ui.update_status(self.kra_dot, self.kra_lbl, "Failed", "error")
+        messagebox.showerror("Error", err)
+
+    def start_generate(self):
+        if not self.selected_gen_input_file.get():
+            messagebox.showerror("Error", "Please select a file.")
+            return
+        self.is_generating = True
+        self.btn_gen.configure(state="disabled")
+        self.gen_prog.grid()
+        self.gen_prog.start()
+        ui.update_status(self.gen_dot, self.gen_lbl, "Generating...", "processing")
+        threading.Thread(target=self._run_generate_job, daemon=True).start()
+
+    def cancel_generate(self): pass
+
+    def _reset_gen_ui_state(self):
+        self.is_generating = False
+
+        self.btn_gen.configure(state="normal")
+        self.gen_prog.stop()
+        self.gen_prog.grid_remove()
+
+    def _generate_success(self, out_path):
+        self._reset_gen_ui_state()
+        ui.update_status(self.gen_dot, self.gen_lbl, "Success", "success")
+        messagebox.showinfo("Done", f"Generated successfully:\n{out_path}")
+
+    def _generate_error(self, err):
+        self._reset_gen_ui_state()
+        ui.update_status(self.gen_dot, self.gen_lbl, "Failed", "error")
+        messagebox.showerror("Error", err)
+
+    def start_process_absent(self):
+        if not (self.absent_emp_file.get() and self.absent_att_file.get() and self.absent_wfh_file.get()):
+            messagebox.showerror("Error", "Please select all 3 files.")
+            return
+        self.btn_absent.configure(state="disabled")
+        ui.update_status(self.absent_dot, self.absent_lbl, "Processing...", "processing")
+        threading.Thread(target=self._run_absent_job, daemon=True).start()
+
+    def _absent_success(self, path):
+        self.btn_absent.configure(state="normal")
+        ui.update_status(self.absent_dot, self.absent_lbl, "Success", "success")
+        messagebox.showinfo("Done", f"Saved to:\n{path}")
+
+    def _absent_error(self, err):
+        self.btn_absent.configure(state="normal")
+        ui.update_status(self.absent_dot, self.absent_lbl, "Failed", "error")
+        messagebox.showerror("Error", err)
+
+    def start_process_att(self):
+        if not self.att_summary_file.get():
+            messagebox.showerror("Error", "Select file first.")
+            return
+        self.btn_att.configure(state="disabled")
+        ui.update_status(self.att_dot, self.att_lbl, "Processing...", "processing")
+        threading.Thread(target=self._run_att_job, daemon=True).start()
+
+    def _att_success(self, path):
+        self.btn_att.configure(state="normal")
+        ui.update_status(self.att_dot, self.att_lbl, "Success", "success")
+        messagebox.showinfo("Done", f"Saved to:\n{path}")
+
+    def _att_error(self, err):
+        self.btn_att.configure(state="normal")
+        ui.update_status(self.att_dot, self.att_lbl, "Failed", "error")
+        messagebox.showerror("Error", err)
+
+    def _run_absent_job(self):
+        try:
+            import absent_management
+            out_path = filedialog.asksaveasfilename(defaultextension=".xlsx", filetypes=[("Excel", "*.xlsx")], initialfile="Absent_Report.xlsx")
+            if not out_path:
+                self.after(0, lambda: self._absent_error("No output path selected"))
+                return
+            absent_management.process_absent_management(self.absent_emp_file.get(), self.absent_att_file.get(), self.absent_wfh_file.get(), out_path)
+            self.after(0, lambda: self._absent_success(out_path))
+        except Exception as e:
+            self.after(0, lambda: self._absent_error(str(e)))
+
+    def _run_att_job(self):
+        try:
+            import attendance_summary
+            out_path = filedialog.asksaveasfilename(defaultextension=".xlsx", filetypes=[("Excel", "*.xlsx")], initialfile="Attendance_Summary.xlsx")
+            if not out_path:
+                self.after(0, lambda: self._att_error("No output path selected"))
+                return
+            attendance_summary.process_attendance_summary(self.att_summary_file.get(), out_path)
+            self.after(0, lambda: self._att_success(out_path))
+        except Exception as e:
+            self.after(0, lambda: self._att_error(str(e)))
+
+    def _run_generate_job(self):
+        try:
+            from generate_upload import generate_upload_file
+            
+            input_path = Path(self.selected_gen_input_file.get())
+            
+            downloads = Path.home() / "Downloads"
+            downloads.mkdir(parents=True, exist_ok=True)
+            output_path = downloads / input_path.name
+
+            mapping_text = self.gen_mapping_text.get("0.0", "end").strip()
+            if not mapping_text:
+                raise ValueError("Employee mapping cannot be empty.")
+            
+            employees = {}
+            
+            for line in mapping_text.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                parts = line.split(",")
+                if len(parts) == 3:
+                    emp_id = parts[0].strip()
+                    emp_name = parts[1].strip()
+                    sheet_name = parts[2].strip()
+                    
+                    if sheet_name not in employees:
+                        employees[sheet_name] = []
+                    employees[sheet_name].append((emp_id, emp_name))
+                else:
+                    raise ValueError(f"Invalid format: '{line}'. Expected 'EMP ID, Name, Designation'.")
+
+            generate_upload_file(str(input_path), str(output_path), employees)
+
+            self.after(0, lambda: self._generate_success(output_path))
+
+        except Exception as exc:
+            import traceback
+            error_text = f"{exc}\n\n{traceback.format_exc()}"
+            self.after(0, lambda: self._generate_error(error_text))
 
     def _run_transform_job(self):
         try:
@@ -294,7 +445,7 @@ class App(ctk.CTk):
                 for sheet_name in excel_file.sheet_names:
                     df = pd.read_excel(excel_file, sheet_name=sheet_name, header=None)
 
-                    transformed_df = self.transform_kra_dataframe(df)
+                    transformed_df = App.transform_kra_dataframe(df)
                     if transformed_df is not None and not transformed_df.empty:
                         transformed_sheets[sheet_name] = transformed_df
 
@@ -302,9 +453,9 @@ class App(ctk.CTk):
                 raise ValueError("No valid non-empty sheets found to transform.")
 
             with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
-                for sheet_name, transformed_df in transformed_sheets.items():
+                for sheet_name, t_df in transformed_sheets.items():
                     safe_name = str(sheet_name)[:31] if sheet_name else "Sheet1"
-                    export_df = transformed_df[["KRA", "KPI", "Weightage", "KPI %", "KRA %"]]
+                    export_df = t_df[["KRA", "KPI", "Weightage", "KPI %", "KRA %"]]
                     export_df.to_excel(writer, sheet_name=safe_name, index=False)
 
             self.apply_excel_formatting(output_path)
@@ -317,28 +468,7 @@ class App(ctk.CTk):
     def _build_output_path(self, input_path: Path) -> Path:
         downloads = Path.home() / "Downloads"
         downloads.mkdir(parents=True, exist_ok=True)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        return downloads / f"{input_path.stem}_Transformed_{timestamp}.xlsx"
-
-    def _transform_success(self, output_path: Path, sheet_count: int):
-        self._reset_ui_state()
-        self.set_status(f"Success • {sheet_count} sheet(s) transformed", "#22c55e")
-        messagebox.showinfo(
-            "Done",
-            f"File transformed successfully.\n\nSaved to:\n{output_path}"
-        )
-
-    def _transform_error(self, error_text: str):
-        self._reset_ui_state()
-        self.set_status("Transformation failed", "#ef4444")
-        messagebox.showerror("Error", error_text)
-
-    def _reset_ui_state(self):
-        self.is_processing = False
-        self.progress.stop()
-        self.progress.grid_remove()
-        self.btn_transform.configure(state="normal")
-        self.btn_browse.configure(state="normal")
+        return downloads / input_path.name
 
     @staticmethod
     def is_effectively_empty(df: pd.DataFrame) -> bool:
@@ -596,7 +726,7 @@ class App(ctk.CTk):
         wb = load_workbook(output_path)
 
         header_fill = PatternFill(fill_type="solid", start_color="1F4E79", end_color="1F4E79")
-        header_font = Font(name="Arial", size=10, bold=True, color="FFFFFF")
+        header_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
         header_alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
         white_fill = PatternFill(fill_type="solid", start_color="FFFFFF", end_color="FFFFFF")
@@ -605,9 +735,11 @@ class App(ctk.CTk):
 
         left_alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
         center_alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        
+        row_font = Font(name="Calibri", size=10)
 
         thin_side = Side(style="thin", color="BFBFBF")
-        thin_border = Border(left=thin_side, right=thin_side, top=thin_side, bottom=thin_side)
+        thin_border = Border() # No border as requested
 
         for ws in wb.worksheets:
             headers = ["KRA", "KPI", "Weightage", "KPI %", "KRA %"]
@@ -650,6 +782,7 @@ class App(ctk.CTk):
                     cell = ws.cell(row=row_num, column=col_num)
                     cell.fill = row_fill
                     cell.border = thin_border
+                    cell.font = row_font
 
                     if col_num in [1, 2]:
                         cell.alignment = left_alignment
