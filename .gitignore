@@ -20,3 +20,9 @@ Thumbs.db
 
 # Local Data / Employee Datasets (Data Privacy)
 local_data/
+
+# Frontend / Node
+node_modules/
+**/node_modules/
+workforce_app/frontend/dist/
+workforce_app/frontend/.vite/
