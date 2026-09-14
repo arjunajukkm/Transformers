@@ -8,6 +8,14 @@ for employee attendance, leave, and WFH records.
 
 from workforce_intelligence.ingestion import load_workforce_data
 from workforce_intelligence.quality import DataQualityReport, QualityFinding
+from workforce_intelligence.metrics import (
+    build_employee_day_facts,
+    calculate_compliance_breakdown,
+    calculate_core_metrics,
+)
+from workforce_intelligence.policy import evaluate_policy
+from workforce_intelligence.policy_config import PolicyConfig
+from workforce_intelligence.requests import LeaveRequest, build_leave_requests
 from workforce_intelligence.schema import (
     CANONICAL_COLUMNS,
     CORE_COLUMNS,
@@ -24,6 +32,13 @@ from workforce_intelligence.validation import (
 
 __all__ = [
     "load_workforce_data",
+    "evaluate_policy",
+    "build_leave_requests",
+    "build_employee_day_facts",
+    "calculate_core_metrics",
+    "calculate_compliance_breakdown",
+    "PolicyConfig",
+    "LeaveRequest",
     "DataQualityReport",
     "QualityFinding",
     "CANONICAL_COLUMNS",
