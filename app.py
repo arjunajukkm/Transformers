@@ -54,15 +54,21 @@ class App(ctk.CTk):
         self.absent_att_file = ctk.StringVar()
         self.absent_wfh_file = ctk.StringVar()
         self.att_summary_file = ctk.StringVar()
+        self.analyse_upload_file = ctk.StringVar()
         
         # State flags
         self.is_processing = False
         self.is_generating = False
+        self.is_analysing = False
         
         # Navigation state
+        self.transform_menu_expanded = True
+        self.analyse_menu_expanded = True
         self.menu_expanded = True
         self.nav_parent_btn = None
         self.nav_chevron = None
+        self.analyse_parent_btn = None
+        self.analyse_chevron = None
         self.sub_nav_btns = {}
 
         self._setup_window()
@@ -107,15 +113,46 @@ class App(ctk.CTk):
         self.sub_menu_frame.grid_columnconfigure(0, weight=1)
 
         # Sub-items: KRA Management, Absent Management, Attendance Summary
-        sub_items = [
+        transform_sub_items = [
             ("transform", "KRA Management", ui.ICON_KRA),
             ("absent", "Absent Management", ui.ICON_ABSENT),
             ("att_summary", "Attendance Summary", ui.ICON_ATTENDANCE),
         ]
 
-        for idx, (name, text, icon) in enumerate(sub_items):
+        for idx, (name, text, icon) in enumerate(transform_sub_items):
             btn = ui.create_sub_nav_button(
                 self.sub_menu_frame,
+                text=text,
+                icon=icon,
+                command=lambda n=name: self.select_frame_by_name(n),
+                row=idx,
+            )
+            self.sub_nav_btns[name] = btn
+
+        # ── Collapsible Analyse Navigation Group ──────────────
+        self.analyse_parent_frame, self.analyse_parent_btn, self.analyse_chevron = ui.create_collapsible_nav_item(
+            self.sidebar,
+            text="Analyse",
+            icon=ui.ICON_ANALYSE,
+            on_select=lambda: self._on_analyse_parent_clicked(),
+            on_toggle=lambda: self.toggle_analyse_menu(),
+            row=4,
+        )
+
+        # Sub-menu container for Analyse child modules
+        self.analyse_sub_menu_frame = ctk.CTkFrame(self.sidebar, fg_color="transparent")
+        self.analyse_sub_menu_frame.grid(row=5, column=0, sticky="ew")
+        self.analyse_sub_menu_frame.grid_columnconfigure(0, weight=1)
+
+        # Sub-items: Dashboard, Upload
+        analyse_sub_items = [
+            ("analyse_dashboard", "Dashboard", ui.ICON_DASHBOARD),
+            ("analyse_upload", "Upload", ui.ICON_UPLOAD),
+        ]
+
+        for idx, (name, text, icon) in enumerate(analyse_sub_items):
+            btn = ui.create_sub_nav_button(
+                self.analyse_sub_menu_frame,
                 text=text,
                 icon=icon,
                 command=lambda n=name: self.select_frame_by_name(n),
@@ -136,36 +173,66 @@ class App(ctk.CTk):
         self._build_generate_frame()
         self._build_absent_frame()
         self._build_att_summary_frame()
+        self._build_analyse_dashboard_frame()
+        self._build_analyse_upload_frame()
 
     def _on_transform_parent_clicked(self):
         """When the Transform header is clicked, ensure menu is open and show overview."""
-        if not self.menu_expanded:
+        if not self.transform_menu_expanded:
             self.toggle_transform_menu(force_state=True)
         self.select_frame_by_name("dashboard")
 
     def toggle_transform_menu(self, force_state=None):
-        """Toggle the collapsible sub-menu between expanded and collapsed states."""
+        """Toggle the collapsible Transform sub-menu between expanded and collapsed states."""
         if force_state is not None:
-            self.menu_expanded = force_state
+            self.transform_menu_expanded = force_state
         else:
-            self.menu_expanded = not self.menu_expanded
+            self.transform_menu_expanded = not self.transform_menu_expanded
+        self.menu_expanded = self.transform_menu_expanded
 
-        if self.menu_expanded:
+        if self.transform_menu_expanded:
             self.sub_menu_frame.grid(row=3, column=0, sticky="ew")
             self.nav_chevron.configure(text="▾")
         else:
             self.sub_menu_frame.grid_remove()
             self.nav_chevron.configure(text="▸")
 
+    def _on_analyse_parent_clicked(self):
+        """When the Analyse header is clicked, ensure menu is open and show Analyse Dashboard."""
+        if not self.analyse_menu_expanded:
+            self.toggle_analyse_menu(force_state=True)
+        self.select_frame_by_name("analyse_dashboard")
+
+    def toggle_analyse_menu(self, force_state=None):
+        """Toggle the collapsible Analyse sub-menu between expanded and collapsed states."""
+        if force_state is not None:
+            self.analyse_menu_expanded = force_state
+        else:
+            self.analyse_menu_expanded = not self.analyse_menu_expanded
+
+        if self.analyse_menu_expanded:
+            self.analyse_sub_menu_frame.grid(row=5, column=0, sticky="ew")
+            self.analyse_chevron.configure(text="▾")
+        else:
+            self.analyse_sub_menu_frame.grid_remove()
+            self.analyse_chevron.configure(text="▸")
+
     def select_frame_by_name(self, name: str):
-        is_parent_active = (name == "dashboard")
+        is_transform_parent = (name == "dashboard")
+        is_analyse_parent = False
+
+        transform_children = ("dashboard", "transform", "generate", "absent", "att_summary")
+        analyse_children = ("analyse_dashboard", "analyse_upload")
 
         # Auto-expand menu if navigating to a child module
-        if not is_parent_active and not self.menu_expanded:
+        if name in transform_children and not self.transform_menu_expanded:
             self.toggle_transform_menu(force_state=True)
+        elif name in analyse_children and not self.analyse_menu_expanded:
+            self.toggle_analyse_menu(force_state=True)
 
         # Update Parent button highlight
-        ui.set_nav_active(self.nav_parent_btn, is_parent_active)
+        ui.set_nav_active(self.nav_parent_btn, is_transform_parent)
+        ui.set_nav_active(self.analyse_parent_btn, is_analyse_parent)
 
         # Update Sub-nav buttons highlight
         for n, btn in self.sub_nav_btns.items():
@@ -323,10 +390,191 @@ class App(ctk.CTk):
         self.btn_att = ui.create_primary_button(row2, "Summarize Data", self.start_process_att)
         self.btn_att.pack(side="right")
 
+    # ---------------------------------------------------------
+    # Analyse Dashboard
+    # ---------------------------------------------------------
+    def _build_analyse_dashboard_frame(self):
+        f = ctk.CTkFrame(self.main_content, fg_color="transparent")
+        self.frames["analyse_dashboard"] = f
+        f.grid_columnconfigure((0, 1), weight=1)
+
+        hdr = ui.create_page_header(f, "Analyse", "Quick access to analytics and dataset processing modules.")
+        hdr.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 30))
+
+        ui.create_dashboard_card(
+            f, ui.ICON_UPLOAD, "Upload Dataset for Analysis",
+            "Upload raw spreadsheets or logs to calculate distributions, null values, and summary metrics.",
+            "Active", lambda: self.select_frame_by_name("analyse_upload"), 1, 0
+        )
+
+    # ---------------------------------------------------------
+    # Analyse Upload
+    # ---------------------------------------------------------
+    def _build_analyse_upload_frame(self):
+        f = ctk.CTkFrame(self.main_content, fg_color="transparent")
+        self.frames["analyse_upload"] = f
+        f.grid_columnconfigure(0, weight=1)
+        f.grid_rowconfigure(2, weight=1)
+
+        hdr = ui.create_page_header(f, "Analyse Upload", "Upload Excel or CSV files to generate instant statistical reports and summaries.")
+        hdr.grid(row=0, column=0, sticky="ew", pady=(0, 14))
+
+        actions = ctk.CTkFrame(hdr, fg_color="transparent")
+        actions.grid(row=0, column=1, sticky="e")
+        ui.create_secondary_button(actions, "← Back to Dashboard", lambda: self.select_frame_by_name("analyse_dashboard"), 160).pack()
+
+        # Upload Card
+        card = ui.create_card(f)
+        card.grid(row=1, column=0, sticky="nsew", pady=(0, 12))
+
+        ctk.CTkLabel(
+            card, text="1. Select Dataset for Analysis",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=15, weight="bold"),
+            text_color=ui.COLOR_TEXT
+        ).grid(row=0, column=0, sticky="w", padx=16, pady=(12, 2))
+
+        ctk.CTkLabel(
+            card, text="Supported formats: Excel (.xlsx, .xls) and CSV (.csv).",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12),
+            text_color=ui.COLOR_TEXT_SEC
+        ).grid(row=1, column=0, sticky="w", padx=16, pady=(0, 8))
+
+        ui.create_upload_row(card, self.analyse_upload_file, "Select file to analyse...", "Browse", 2)
+
+        self.analyse_prog = ctk.CTkProgressBar(
+            card, mode="indeterminate", height=4, corner_radius=2,
+            fg_color=ui.COLOR_INPUT_BG, progress_color=ui.COLOR_ACCENT
+        )
+        self.analyse_prog.grid(row=3, column=0, sticky="ew", padx=16, pady=(4, 0))
+        self.analyse_prog.set(0)
+        self.analyse_prog.grid_remove()
+
+        row4 = ctk.CTkFrame(card, fg_color="transparent")
+        row4.grid(row=4, column=0, sticky="ew", padx=16, pady=(8, 12))
+
+        _, self.analyse_dot, self.analyse_lbl = ui.create_status_badge(row4, "Ready")
+        self.analyse_lbl.master.pack(side="left")
+
+        self.btn_analyse = ui.create_primary_button(row4, "Run Analysis", self.start_analyse)
+        self.btn_analyse.pack(side="right")
+
+        # Results Card
+        res_card = ui.create_card(f)
+        res_card.grid(row=2, column=0, sticky="nsew")
+        res_card.grid_columnconfigure(0, weight=1)
+        res_card.grid_rowconfigure(1, weight=1)
+
+        ctk.CTkLabel(
+            res_card, text="Analysis Report & Preview",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=15, weight="bold"),
+            text_color=ui.COLOR_TEXT
+        ).grid(row=0, column=0, sticky="w", padx=16, pady=(12, 6))
+
+        self.analyse_result_text = ctk.CTkTextbox(
+            res_card, height=140, font=ctk.CTkFont(family="Consolas", size=12),
+            fg_color=ui.COLOR_INPUT_BG, border_color=ui.COLOR_BORDER,
+            border_width=1, text_color=ui.COLOR_TEXT, corner_radius=6
+        )
+        self.analyse_result_text.grid(row=1, column=0, sticky="nsew", padx=16, pady=(0, 12))
+        self.analyse_result_text.insert("0.0", "Select a file and click 'Run Analysis' to view dataset summary, column statistics, and row metrics.")
+        self.analyse_result_text.configure(state="disabled")
+
 
     # =========================================================
     # Event Handlers (UI updates)
     # =========================================================
+
+    def start_analyse(self):
+        file_path = self.analyse_upload_file.get().strip()
+        if not file_path:
+            messagebox.showerror("Error", "Please select a file to analyse.")
+            return
+        if not os.path.exists(file_path):
+            messagebox.showerror("Error", f"File not found:\n{file_path}")
+            return
+
+        self.is_analysing = True
+        self.btn_analyse.configure(state="disabled")
+        self.analyse_prog.grid()
+        self.analyse_prog.start()
+        ui.update_status(self.analyse_dot, self.analyse_lbl, "Analysing dataset...", "processing")
+
+        threading.Thread(target=self._run_analyse_job, args=(file_path,), daemon=True).start()
+
+    def _run_analyse_job(self, file_path):
+        try:
+            p = Path(file_path)
+            ext = p.suffix.lower()
+            file_size_kb = p.stat().st_size / 1024
+
+            lines = []
+            lines.append("=" * 64)
+            lines.append(" DATASET ANALYSIS REPORT")
+            lines.append("=" * 64)
+            lines.append(f"File:      {p.name}")
+            lines.append(f"Path:      {file_path}")
+            lines.append(f"Size:      {file_size_kb:.1f} KB")
+            lines.append(f"Analyzed:  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            lines.append("-" * 64)
+
+            if ext == ".csv":
+                df = pd.read_csv(file_path)
+                lines.append("Format:    CSV (Single Table)")
+                lines.append(f"Total Rows:    {len(df):,}")
+                lines.append(f"Total Columns: {len(df.columns):,}")
+                lines.append(f"Columns:       {', '.join(df.columns.astype(str))}")
+                lines.append("")
+                lines.append("Column Details:")
+                for col in df.columns:
+                    non_null = df[col].count()
+                    null_cnt = df[col].isna().sum()
+                    dtype = df[col].dtype
+                    lines.append(f"  • {col}: {dtype} | {non_null:,} non-null, {null_cnt:,} nulls")
+            else:
+                with pd.ExcelFile(file_path) as xl:
+                    lines.append("Format:    Excel Workbook")
+                    lines.append(f"Sheets ({len(xl.sheet_names)}): {', '.join(xl.sheet_names)}")
+                    lines.append("")
+                    for sheet in xl.sheet_names:
+                        df = xl.parse(sheet)
+                        lines.append(f"--- Sheet: '{sheet}' ---")
+                        lines.append(f"  Rows:    {len(df):,}")
+                        lines.append(f"  Columns: {len(df.columns):,}")
+                        cols_preview = ', '.join(df.columns.astype(str)[:10])
+                        if len(df.columns) > 10:
+                            cols_preview += "..."
+                        lines.append(f"  Columns: {cols_preview}")
+                        null_sum = df.isna().sum().sum()
+                        lines.append(f"  Total Missing Cells: {null_sum:,}")
+                        lines.append("")
+
+            lines.append("=" * 64)
+            lines.append("Status: Analysis complete.")
+            report = "\n".join(lines)
+            self.after(0, lambda: self._analyse_success(report))
+        except Exception as e:
+            self.after(0, lambda: self._analyse_error(str(e)))
+
+    def _analyse_success(self, report):
+        self.is_analysing = False
+        self.btn_analyse.configure(state="normal")
+        self.analyse_prog.stop()
+        self.analyse_prog.grid_remove()
+        ui.update_status(self.analyse_dot, self.analyse_lbl, "Analysis Complete", "success")
+
+        self.analyse_result_text.configure(state="normal")
+        self.analyse_result_text.delete("0.0", "end")
+        self.analyse_result_text.insert("0.0", report)
+        self.analyse_result_text.configure(state="disabled")
+
+    def _analyse_error(self, err):
+        self.is_analysing = False
+        self.btn_analyse.configure(state="normal")
+        self.analyse_prog.stop()
+        self.analyse_prog.grid_remove()
+        ui.update_status(self.analyse_dot, self.analyse_lbl, "Analysis Failed", "error")
+        messagebox.showerror("Analysis Error", f"Failed to analyze file:\n{err}")
+
 
     def start_transform(self):
         if not self.selected_input_file.get():

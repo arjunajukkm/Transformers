@@ -43,6 +43,8 @@ ICON_HOME       = "⬢"
 ICON_KRA        = "◈"
 ICON_ABSENT     = "◉"
 ICON_ATTENDANCE = "◧"
+ICON_ANALYSE    = "⬡"
+ICON_DASHBOARD  = "⊞"
 ICON_SETTINGS   = "⚙"
 ICON_UPLOAD     = "⬆"
 ICON_CHECK      = "✓"
@@ -405,7 +407,10 @@ def create_step_card(parent, step_num: int, title: str, helper: str,
 def _browse_file(string_var):
     """Open a file dialog and set the StringVar."""
     path = filedialog.askopenfilename(
-        filetypes=[("Excel files", "*.xlsx *.xls")]
+        filetypes=[("Supported files (*.xlsx, *.xls, *.csv)", "*.xlsx *.xls *.csv"),
+                   ("Excel files", "*.xlsx *.xls"),
+                   ("CSV files", "*.csv"),
+                   ("All files", "*.*")]
     )
     if path:
         string_var.set(path)
