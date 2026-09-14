@@ -78,8 +78,10 @@ DQ_FLAGS: List[str] = [
     "dq_invalid_date",
     "dq_unknown_attendance",
     "dq_exact_duplicate",
+    "dq_cross_file_exact_duplicate",
     "dq_multiple_records_same_date",
     "dq_daily_quantity_exceeds_one",
+    "dq_analytical_daily_quantity_exceeds_one",
     "dq_missing_quantity",
 ]
 
@@ -88,8 +90,15 @@ DQ_FLAGS: List[str] = [
 DERIVED_COLUMNS: List[str] = [
     "record_id",
     "source_row_number",
+    "source_file_name",
+    "source_file_index",
     "attendance_category",
+    "period_month",
+    "include_in_analysis",
+    "analysis_exclusion_reason",
     "daily_total_quantity",
+    "raw_daily_total_quantity",
+    "analytical_daily_total_quantity",
     "in_time_minutes",
     "out_time_minutes",
     "total_hours_minutes",

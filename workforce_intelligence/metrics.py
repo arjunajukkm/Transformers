@@ -61,10 +61,14 @@ def build_employee_day_facts(df: pd.DataFrame) -> pd.DataFrame:
 
     records = []
     for (emp, dt), group in work_df.groupby(["Employee Number", "Date"], sort=False):
-        first_row = group.iloc[0]
+        # Determine analytically included rows for this employee-day
+        group_included = group[group["include_in_analysis"] == True] if "include_in_analysis" in group.columns else group
+        eval_group = group_included if not group_included.empty else group
 
-        cats = set(group["_cat"])
-        status_vals = set(group["Status"].dropna().astype(str).str.upper()) if "Status" in group.columns else set()
+        first_row = eval_group.iloc[0]
+
+        cats = set(eval_group["_cat"])
+        status_vals = set(eval_group["Status"].dropna().astype(str).str.upper()) if "Status" in eval_group.columns else set()
 
         has_pres = "Present" in cats or "P" in status_vals or "WOW" in status_vals or "WOH" in status_vals
         has_lv = "Leave" in cats or any(s in ("CL", "SL", "PL", "EL", "ML", "CLSL", "L") for s in status_vals)
@@ -95,30 +99,40 @@ def build_employee_day_facts(df: pd.DataFrame) -> pd.DataFrame:
         is_eligible = bool(active_events)
 
         # Quantity and DQ flags
-        quantities = group["Quantity"].dropna() if "Quantity" in group.columns else pd.Series([], dtype=float)
-        qty_sum = round(float(quantities.sum()), 4) if not quantities.empty else None
+        raw_quantities = group["Quantity"].dropna() if "Quantity" in group.columns else pd.Series([], dtype=float)
+        raw_qty_sum = round(float(raw_quantities.sum()), 4) if not raw_quantities.empty else None
 
-        has_qty_exceed = bool(
-            (group["dq_daily_quantity_exceeds_one"].any() if "dq_daily_quantity_exceeds_one" in group.columns else False)
-            or (qty_sum is not None and qty_sum > 1.000001)
+        analytical_quantities = eval_group["Quantity"].dropna() if "Quantity" in eval_group.columns else pd.Series([], dtype=float)
+        analytical_qty_sum = round(float(analytical_quantities.sum()), 4) if not analytical_quantities.empty else None
+
+        has_analytical_qty_exceed = bool(
+            (eval_group["dq_analytical_daily_quantity_exceeds_one"].any() if "dq_analytical_daily_quantity_exceeds_one" in eval_group.columns else False)
+            or (analytical_qty_sum is not None and analytical_qty_sum > 1.000001)
         )
+        has_raw_qty_exceed = bool(
+            (group["dq_daily_quantity_exceeds_one"].any() if "dq_daily_quantity_exceeds_one" in group.columns else False)
+            or (raw_qty_sum is not None and raw_qty_sum > 1.000001)
+        )
+
         has_missing_emp = bool(group["dq_missing_employee"].any() if "dq_missing_employee" in group.columns else False)
         has_missing_date = bool(group["dq_missing_date"].any() if "dq_missing_date" in group.columns else False)
         has_invalid_date = bool(group["dq_invalid_date"].any() if "dq_invalid_date" in group.columns else False)
 
         has_warning = bool(
             (group["dq_exact_duplicate"].any() if "dq_exact_duplicate" in group.columns else False)
+            or (group["dq_cross_file_exact_duplicate"].any() if "dq_cross_file_exact_duplicate" in group.columns else False)
             or (group["dq_missing_quantity"].any() if "dq_missing_quantity" in group.columns else False)
             or (group["dq_unknown_attendance"].any() if "dq_unknown_attendance" in group.columns else False)
+            or (has_raw_qty_exceed and not has_analytical_qty_exceed)
         )
 
         # Determine employee-day data quality status & evaluability
-        is_critical = has_qty_exceed or has_missing_emp or has_missing_date or has_invalid_date
+        is_critical = has_analytical_qty_exceed or has_missing_emp or has_missing_date or has_invalid_date
         if is_critical:
             quality_status = "CRITICAL"
             is_evaluable = False
             exclusion_reasons = []
-            if has_qty_exceed:
+            if has_analytical_qty_exceed:
                 exclusion_reasons.append("DAILY_QUANTITY_EXCEEDS_ONE")
             if has_missing_emp:
                 exclusion_reasons.append("MISSING_EMPLOYEE")
@@ -145,8 +159,11 @@ def build_employee_day_facts(df: pd.DataFrame) -> pd.DataFrame:
             "Location": first_row.get("Location"),
             "Reporting Manager": first_row.get("Reporting Manager"),
             "Date": dt,
-            "record_count": len(group),
-            "daily_total_quantity": qty_sum,
+            "record_count": len(eval_group),
+            "raw_record_count": len(group),
+            "daily_total_quantity": analytical_qty_sum,
+            "raw_daily_total_quantity": raw_qty_sum,
+            "analytical_daily_total_quantity": analytical_qty_sum,
             "has_present": has_pres,
             "has_leave": has_lv,
             "has_wfh": has_wfh,
@@ -158,7 +175,8 @@ def build_employee_day_facts(df: pd.DataFrame) -> pd.DataFrame:
             "is_attendance_exception": is_exception,
             "attendance_exception_types": exception_type_str,
             "is_eligible_attendance_day": is_eligible,
-            "dq_daily_quantity_exceeds_one": has_qty_exceed,
+            "dq_daily_quantity_exceeds_one": has_raw_qty_exceed,
+            "dq_analytical_daily_quantity_exceeds_one": has_analytical_qty_exceed,
             "employee_day_quality_status": quality_status,
             "is_metric_evaluable": is_evaluable,
             "metric_exclusion_reason": exclusion_reason_str,
@@ -201,6 +219,13 @@ def calculate_core_metrics(
     """
     if employee_day_facts is None:
         employee_day_facts = build_employee_day_facts(evaluated_df)
+
+    # Filter evaluated_df to included rows for row-level metrics
+    df_eval_included = (
+        evaluated_df[evaluated_df["include_in_analysis"] == True].copy()
+        if "include_in_analysis" in evaluated_df.columns
+        else evaluated_df.copy()
+    )
 
     # Reconstructed leave requests DataFrame
     req_df = pd.DataFrame(evaluated_requests) if evaluated_requests else pd.DataFrame()
@@ -248,8 +273,8 @@ def calculate_core_metrics(
         pre_leave_dq = int((pre_reqs["compliance_status"] == "DATA_QUALITY_UNCERTAIN").sum())
         pre_leave_num = int((pre_reqs["benchmark_compliant"] == True).sum())
 
-    # 3. WFH Application Compliance (evaluated at row/event level)
-    wfh_rows = evaluated_df[evaluated_df["policy_event_type"] == "WFH"].copy()
+    # 3. WFH Application Compliance (evaluated at row/event level on included rows)
+    wfh_rows = df_eval_included[df_eval_included["policy_event_type"] == "WFH"].copy()
 
     # Post-policy WFH
     post_wfh = wfh_rows[wfh_rows["policy_period"] == "POST_POLICY"]
@@ -281,8 +306,8 @@ def calculate_core_metrics(
     ) if not employee_day_facts.empty else pd.Series(dtype=bool)
     raw_exception_days = int(raw_exception_mask.sum()) if not employee_day_facts.empty else 0
 
-    # 5. Approval Cycle Diagnostics
-    df_eval = evaluated_df.copy()
+    # 5. Approval Cycle Diagnostics (on included rows)
+    df_eval = df_eval_included.copy()
     df_eval["approval_state"] = df_eval["Approval Status"].apply(normalize_approval_state) if "Approval Status" in df_eval.columns else "UNKNOWN"
 
     # Reference date for pending age

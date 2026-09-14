@@ -30,6 +30,8 @@ export interface SourceFileInfo {
   file_name: string;
   file_index: number;
   rows_ingested: number;
+  duplicate_rows_detected?: number;
+  rows_included_in_analysis?: number;
   unique_employees: number;
   date_from: string | null;
   date_to: string | null;
@@ -42,6 +44,7 @@ export interface QualitySummary {
   full_completeness: number;
   exact_duplicate_rows: number;
   cross_file_exact_duplicate_rows?: number;
+  duplicate_rows_excluded_from_analysis?: number;
   critical_findings: number;
   warning_findings: number;
   info_findings: number;

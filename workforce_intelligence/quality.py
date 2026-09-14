@@ -42,6 +42,7 @@ class DataQualityReport:
     # Duplication & same-day distribution
     exact_duplicate_rows: int = 0
     cross_file_exact_duplicate_rows: int = 0
+    duplicate_rows_excluded_from_analysis: int = 0
     employee_date_multiple_record_groups: int = 0
     daily_quantity_exceeds_one_groups: int = 0
     daily_quantity_exceeds_one_rows: int = 0
@@ -126,9 +127,19 @@ def compute_quality_report(
     missing_mgr = int(df["Reporting Manager"].isna().sum()) if "Reporting Manager" in df.columns else total_rows
     missing_qty = int(df["Quantity"].isna().sum()) if "Quantity" in df.columns else total_rows
 
-    # 4. Exact duplicate rows
-    exact_duplicate_rows = int(df["dq_exact_duplicate"].sum()) if "dq_exact_duplicate" in df.columns else 0
-    cross_file_exact_duplicate_rows = int(df["dq_cross_file_exact_duplicate"].sum()) if "dq_cross_file_exact_duplicate" in df.columns else 0
+    # 4. Exact duplicate rows & cross-file duplicates
+    if "analysis_exclusion_reason" in df.columns:
+        exact_duplicate_rows = int((df["analysis_exclusion_reason"] == "EXACT_DUPLICATE").sum())
+        cross_file_exact_duplicate_rows = int((df["analysis_exclusion_reason"] == "CROSS_FILE_EXACT_DUPLICATE").sum())
+    else:
+        exact_duplicate_rows = int(df["dq_exact_duplicate"].sum()) if "dq_exact_duplicate" in df.columns else 0
+        cross_file_exact_duplicate_rows = int(df["dq_cross_file_exact_duplicate"].sum()) if "dq_cross_file_exact_duplicate" in df.columns else 0
+
+    duplicate_rows_excluded_from_analysis = (
+        int((~df["include_in_analysis"]).sum())
+        if "include_in_analysis" in df.columns
+        else (exact_duplicate_rows + cross_file_exact_duplicate_rows)
+    )
 
     # 5. Multiple records on same (Employee Number, Date)
     employee_date_multiple_record_groups = 0
@@ -138,18 +149,23 @@ def compute_quality_report(
         employee_date_multiple_record_groups = int((group_sizes > 1).sum())
 
     # 6. Daily quantity exceeds 1.000001
-    daily_quantity_exceeds_one_rows = int(df["dq_daily_quantity_exceeds_one"].sum()) if "dq_daily_quantity_exceeds_one" in df.columns else 0
+    # Check analytical daily total quantity so duplicates don't trigger false critical findings
+    analytical_qty_col = "analytical_daily_total_quantity" if "analytical_daily_total_quantity" in df.columns else "daily_total_quantity"
+    daily_quantity_exceeds_one_rows = (
+        int(df["dq_analytical_daily_quantity_exceeds_one"].sum())
+        if "dq_analytical_daily_quantity_exceeds_one" in df.columns
+        else (int(df["dq_daily_quantity_exceeds_one"].sum()) if "dq_daily_quantity_exceeds_one" in df.columns else 0)
+    )
     daily_quantity_exceeds_one_groups = 0
-    if valid_emp_date.any() and "daily_total_quantity" in df.columns:
-        # distinct groups with quantity > 1.000001
-        exceed_mask = df["daily_total_quantity"].apply(lambda q: bool(q is not None and pd.notna(q) and float(q) > 1.000001))
+    if valid_emp_date.any() and analytical_qty_col in df.columns:
+        exceed_mask = df[analytical_qty_col].apply(lambda q: bool(q is not None and pd.notna(q) and float(q) > 1.000001))
         if exceed_mask.any():
             daily_quantity_exceeds_one_groups = int(df[exceed_mask].groupby(["Employee Number", "Date"]).ngroups)
 
-    # Max daily quantity
+    # Max daily quantity based on analytical quantity
     max_daily_qty: Optional[float] = None
-    if "daily_total_quantity" in df.columns:
-        valid_daily_qty = df["daily_total_quantity"].dropna()
+    if analytical_qty_col in df.columns:
+        valid_daily_qty = df[analytical_qty_col].dropna()
         if not valid_daily_qty.empty:
             max_daily_qty = round(float(valid_daily_qty.max()), 4)
 
@@ -215,14 +231,14 @@ def compute_quality_report(
             severity="WARNING",
             code="EXACT_DUPLICATE",
             count=exact_duplicate_rows,
-            message=f"{exact_duplicate_rows} exact duplicate row(s) detected in source dataset.",
+            message=f"{exact_duplicate_rows} exact duplicate row(s) detected in source dataset. Duplicate source records were preserved for audit but secondary copies were excluded from analytical metrics.",
         ))
     if cross_file_exact_duplicate_rows > 0:
         findings.append(QualityFinding(
             severity="WARNING",
             code="CROSS_FILE_EXACT_DUPLICATE",
             count=cross_file_exact_duplicate_rows,
-            message=f"{cross_file_exact_duplicate_rows} exact duplicate row(s) detected across uploaded source files.",
+            message=f"{cross_file_exact_duplicate_rows} exact duplicate row(s) detected across uploaded source files. Duplicate source records were preserved for audit but secondary copies were excluded from analytical metrics.",
         ))
     if missing_qty > 0:
         findings.append(QualityFinding(
@@ -282,6 +298,7 @@ def compute_quality_report(
         full_data_completeness_percentage=full_completeness,
         exact_duplicate_rows=exact_duplicate_rows,
         cross_file_exact_duplicate_rows=cross_file_exact_duplicate_rows,
+        duplicate_rows_excluded_from_analysis=duplicate_rows_excluded_from_analysis,
         employee_date_multiple_record_groups=employee_date_multiple_record_groups,
         daily_quantity_exceeds_one_groups=daily_quantity_exceeds_one_groups,
         daily_quantity_exceeds_one_rows=daily_quantity_exceeds_one_rows,

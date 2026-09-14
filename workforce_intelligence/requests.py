@@ -81,12 +81,16 @@ def build_leave_requests(
     if len(df) == 0:
         return [], df
 
-    # Identify leave rows
+    # Identify leave rows that are included in analysis
     is_leave = pd.Series(False, index=df.index)
     if "attendance_category" in df.columns:
         is_leave = is_leave | (df["attendance_category"] == "Leave")
     if "Attendance Type" in df.columns:
         is_leave = is_leave | df["Attendance Type"].astype(str).str.lower().str.contains("leave", na=False)
+
+    # Exclude rows where include_in_analysis == False
+    if "include_in_analysis" in df.columns:
+        is_leave = is_leave & (df["include_in_analysis"] == True)
 
     leave_indices = df[is_leave].index
     if len(leave_indices) == 0:
@@ -227,7 +231,9 @@ def build_leave_requests(
 
         # Data quality checks
         has_dq_issue = False
-        if "dq_daily_quantity_exceeds_one" in group.columns:
+        if "dq_analytical_daily_quantity_exceeds_one" in group.columns:
+            has_dq_issue = bool(group["dq_analytical_daily_quantity_exceeds_one"].any())
+        elif "dq_daily_quantity_exceeds_one" in group.columns:
             has_dq_issue = bool(group["dq_daily_quantity_exceeds_one"].any())
 
         req = LeaveRequest(

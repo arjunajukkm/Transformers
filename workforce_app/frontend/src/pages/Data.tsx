@@ -92,16 +92,21 @@ export const Data: React.FC<DataProps> = ({
       {/* When data is loaded */}
       {!isLoading && isLoaded && data.dataset && data.quality && (
         <div className="space-y-6 min-w-0">
-          {/* Cross-file duplicate warning banner if detected */}
-          {Boolean(data.quality.cross_file_exact_duplicate_rows && data.quality.cross_file_exact_duplicate_rows > 0) && (
+          {/* Duplicate source records warning banner if detected */}
+          {Boolean(
+            (data.quality.cross_file_exact_duplicate_rows && data.quality.cross_file_exact_duplicate_rows > 0) ||
+            (data.quality.exact_duplicate_rows && data.quality.exact_duplicate_rows > 0)
+          ) && (
             <div className="p-4 rounded-xl bg-amber-50 border border-amber-200 flex items-start gap-3 text-amber-900">
               <AlertTriangle className="w-5 h-5 text-brand-warning shrink-0 mt-0.5" />
               <div className="text-xs">
                 <div className="font-bold text-amber-900 mb-0.5">
-                  Cross-File Exact Duplicate Rows Detected ({data.quality.cross_file_exact_duplicate_rows})
+                  Duplicate Source Records Preserved & Governed ({data.quality.duplicate_rows_excluded_from_analysis || (data.quality.exact_duplicate_rows + (data.quality.cross_file_exact_duplicate_rows || 0))} excluded from analytics)
                 </div>
                 <p className="text-amber-800 leading-relaxed">
-                  Identical source records were detected across separate monthly files. Per governance policy, all source records are preserved non-destructively for complete auditability.
+                  Duplicate source records were preserved for audit but secondary copies were excluded from analytical metrics.
+                  {data.quality.exact_duplicate_rows > 0 && ` ${data.quality.exact_duplicate_rows} same-file duplicate row(s) detected.`}
+                  {Boolean(data.quality.cross_file_exact_duplicate_rows && data.quality.cross_file_exact_duplicate_rows > 0) && ` ${data.quality.cross_file_exact_duplicate_rows} cross-file duplicate row(s) detected across overlapping exports.`}
                 </p>
               </div>
             </div>
@@ -194,6 +199,8 @@ export const Data: React.FC<DataProps> = ({
                     <tr className="border-b border-app-border text-[11px] uppercase tracking-wider text-text-muted font-semibold bg-app-bg/50">
                       <th className="py-2.5 px-3">File Name</th>
                       <th className="py-2.5 px-3">Rows Ingested</th>
+                      <th className="py-2.5 px-3">Duplicates</th>
+                      <th className="py-2.5 px-3">Included in Analysis</th>
                       <th className="py-2.5 px-3">Unique Employees</th>
                       <th className="py-2.5 px-3">Date From</th>
                       <th className="py-2.5 px-3">Date To</th>
@@ -209,6 +216,18 @@ export const Data: React.FC<DataProps> = ({
                           <span className="truncate">{file.file_name}</span>
                         </td>
                         <td className="py-2.5 px-3 font-mono">{file.rows_ingested}</td>
+                        <td className="py-2.5 px-3 font-mono">
+                          {file.duplicate_rows_detected !== undefined && file.duplicate_rows_detected > 0 ? (
+                            <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-amber-50 text-brand-warning border border-amber-200 font-semibold text-[11px]">
+                              {file.duplicate_rows_detected}
+                            </span>
+                          ) : (
+                            <span className="text-text-muted">0</span>
+                          )}
+                        </td>
+                        <td className="py-2.5 px-3 font-mono text-brand-positive font-semibold">
+                          {file.rows_included_in_analysis !== undefined ? file.rows_included_in_analysis : file.rows_ingested}
+                        </td>
                         <td className="py-2.5 px-3 font-mono">{file.unique_employees}</td>
                         <td className="py-2.5 px-3 text-text-secondary">
                           {file.date_from || '—'}

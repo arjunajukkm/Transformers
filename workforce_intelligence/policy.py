@@ -222,7 +222,7 @@ def evaluate_policy(
             allowed_post = config.wfh_max_post_days
 
             # Check critical data quality issue on row
-            has_dq_issue = bool(row.get("dq_daily_quantity_exceeds_one", False))
+            has_dq_issue = bool(row.get("dq_analytical_daily_quantity_exceeds_one", row.get("dq_daily_quantity_exceeds_one", False)))
             if has_dq_issue:
                 rule_codes.append(rule_code)
                 rule_descs.append(rule_desc)

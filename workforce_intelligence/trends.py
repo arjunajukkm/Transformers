@@ -55,7 +55,7 @@ TREND_METRICS: Dict[str, TrendMetricDefinition] = {
         category="Compliance",
         format="percentage",
         direction="higher_is_better",
-        description="Monthly compliance rate for Privilege Leave applications requiring >= 2 days advance notice.",
+        description="Privilege Leave application timing based on leave duration: up to 3 units requires 2 days advance notice; over 3 to 7 units requires 15 days; over 7 units requires 30 days.",
     ),
     "non_pl_application_compliance": TrendMetricDefinition(
         id="non_pl_application_compliance",
@@ -63,7 +63,7 @@ TREND_METRICS: Dict[str, TrendMetricDefinition] = {
         category="Compliance",
         format="percentage",
         direction="higher_is_better",
-        description="Monthly compliance rate for Non-PL leave applications requiring submission <= 3 days from start.",
+        description="Non-PL leave must be applied no later than 3 calendar days after the availed date.",
     ),
     "wfh_application_compliance": TrendMetricDefinition(
         id="wfh_application_compliance",
@@ -71,7 +71,7 @@ TREND_METRICS: Dict[str, TrendMetricDefinition] = {
         category="Compliance",
         format="percentage",
         direction="higher_is_better",
-        description="Monthly compliance rate for Work From Home applications requiring same-day or advance notice.",
+        description="WFH must be applied no later than 3 calendar days after the availed date.",
     ),
 
     # 2. Attendance
@@ -906,15 +906,21 @@ def calculate_time_series_trends(
     if metric_def.category == "Attendance" and employee_day_facts is None:
         employee_day_facts = build_employee_day_facts(evaluated_df)
 
+    df_eval_included = (
+        evaluated_df[evaluated_df["include_in_analysis"] == True].copy()
+        if "include_in_analysis" in evaluated_df.columns
+        else evaluated_df.copy()
+    )
+
     # 1. Monthly Aggregations
     if metric_def.category == "Compliance":
-        raw_points = calculate_monthly_compliance(evaluated_df, evaluated_requests, metric_id)
+        raw_points = calculate_monthly_compliance(df_eval_included, evaluated_requests, metric_id)
     elif metric_def.category == "Attendance":
         raw_points = calculate_monthly_attendance(employee_day_facts, metric_id)
     elif metric_def.category == "Approval":
-        raw_points = calculate_monthly_approvals(evaluated_df, metric_id, analysis_as_of_date)
+        raw_points = calculate_monthly_approvals(df_eval_included, metric_id, analysis_as_of_date)
     elif metric_def.category == "Working Time":
-        raw_points = calculate_monthly_working_time(evaluated_df, metric_id)
+        raw_points = calculate_monthly_working_time(df_eval_included, metric_id)
     else:
         raw_points = []
 

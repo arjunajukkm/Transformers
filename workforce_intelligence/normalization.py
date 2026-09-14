@@ -492,5 +492,11 @@ def normalize_workforce_dataframe(
     else:
         df["daily_total_quantity"] = df["Quantity"] if "Quantity" in df.columns else None
 
+    # 12. Initialize duplicate governance and dual quantity fields
+    df["include_in_analysis"] = True
+    df["analysis_exclusion_reason"] = "NONE"
+    df["raw_daily_total_quantity"] = df["daily_total_quantity"]
+    df["analytical_daily_total_quantity"] = df["daily_total_quantity"]
+
     return df, meta
 

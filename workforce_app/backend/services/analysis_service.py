@@ -226,6 +226,7 @@ class AnalysisSession:
             "full_completeness": qr.full_data_completeness_percentage,
             "exact_duplicate_rows": qr.exact_duplicate_rows,
             "cross_file_exact_duplicate_rows": qr.cross_file_exact_duplicate_rows,
+            "duplicate_rows_excluded_from_analysis": qr.duplicate_rows_excluded_from_analysis,
             "critical_findings": crit_count,
             "warning_findings": warn_count,
             "info_findings": info_count,

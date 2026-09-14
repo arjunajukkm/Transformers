@@ -247,6 +247,21 @@ def test_actual_sample_file_api_smoke_test():
     assert att["attendance_exception_days"] == 2
     assert att["rate"] == 28.57
 
+    # Section 21 real September regressions
+    leave_comp = data["metrics"]["pre_policy_leave_benchmark"]
+    assert leave_comp["denominator"] == 1
+    assert leave_comp["numerator"] == 1
+    assert leave_comp["rate"] == 100.0
+
+    wfh_comp = data["metrics"]["pre_policy_wfh_benchmark"]
+    assert wfh_comp["denominator"] == 1
+    assert wfh_comp["numerator"] == 1
+    assert wfh_comp["rate"] == 100.0
+
+    app = data["metrics"]["approval_turnaround"]
+    assert app["median_approval_turnaround_days"] == 11.0
+
+
 
 # 11. GET /api/workforce/trends/metrics returns grouped catalogue
 def test_get_trend_metrics_catalogue():
@@ -416,4 +431,63 @@ def test_trends_filter_recalculation():
     assert len(data_sales["time_series"]) == 2
     assert data_sales["time_series"][0]["rate"] == 100.0
     assert data_sales["time_series"][1]["rate"] == 0.0
+
+
+# 18. Multi-file duplicate governance via API: metrics not doubled
+def test_multi_file_duplicate_governance_via_api():
+    """
+    Upload two files with overlapping records.
+    Verify:
+    - Source row count includes both
+    - Duplicate warning returned
+    - Duplicate exclusion count returned
+    - Overview metric not doubled
+    - Trend metric not doubled
+    """
+    # File 1: Sep 1, Sep 2
+    df1 = pd.DataFrame([
+        {"Employee Number": "EMP01", "Employee Name": "Alice", "Date": "2026-09-01", "Status": "P", "Attendance Type": "Present", "Quantity": 1.0},
+        {"Employee Number": "EMP01", "Employee Name": "Alice", "Date": "2026-09-02", "Status": "P", "Attendance Type": "Present", "Quantity": 1.0},
+    ])
+    # File 2: Sep 2 (exact duplicate), Sep 3
+    df2 = pd.DataFrame([
+        {"Employee Number": "EMP01", "Employee Name": "Alice", "Date": "2026-09-02", "Status": "P", "Attendance Type": "Present", "Quantity": 1.0},
+        {"Employee Number": "EMP01", "Employee Name": "Alice", "Date": "2026-09-03", "Status": "P", "Attendance Type": "Present", "Quantity": 1.0},
+    ])
+
+    b1 = df1.to_csv(index=False).encode("utf-8")
+    b2 = df2.to_csv(index=False).encode("utf-8")
+
+    res = client.post(
+        "/api/workforce/upload",
+        files=[
+            ("files", ("Sep_Part1.csv", io.BytesIO(b1), "text/csv")),
+            ("files", ("Sep_Part2.csv", io.BytesIO(b2), "text/csv")),
+        ],
+    )
+    assert res.status_code == 200
+    data = res.json()
+
+    # 1. Source row count includes both
+    assert data["dataset"]["rows"] == 4
+
+    # 2. Duplicate warning and exclusion count returned
+    assert data["quality"]["cross_file_exact_duplicate_rows"] == 1
+    assert data["quality"]["duplicate_rows_excluded_from_analysis"] == 1
+    codes = [f["code"] for f in data["quality"]["findings"]]
+    assert "CROSS_FILE_EXACT_DUPLICATE" in codes
+
+    # 3. Overview metric not doubled (3 evaluable employee-days, not 4)
+    summary_res = client.get("/api/workforce/summary")
+    assert summary_res.status_code == 200
+    summary_data = summary_res.json()
+    assert summary_data["metrics"]["attendance_exception_rate"]["evaluable_employee_days"] == 3
+
+    # 4. Trend metric not doubled (3 evaluable in Sep 2026 point, not 4)
+    trend_res = client.get("/api/workforce/trends?metric=attendance_exception_rate")
+    assert trend_res.status_code == 200
+    trend_data = trend_res.json()
+    assert len(trend_data["time_series"]) == 1
+    assert trend_data["time_series"][0]["evaluable"] == 3
+
 

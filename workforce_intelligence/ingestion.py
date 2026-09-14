@@ -78,6 +78,8 @@ def _load_single_file(
         "file_name": source_file_name,
         "file_index": file_index if file_index is not None else 1,
         "rows_ingested": len(flagged_df),
+        "duplicate_rows_detected": int((~flagged_df["include_in_analysis"]).sum()) if "include_in_analysis" in flagged_df.columns else 0,
+        "rows_included_in_analysis": int(flagged_df["include_in_analysis"].sum()) if "include_in_analysis" in flagged_df.columns else len(flagged_df),
         "unique_employees": single_report.unique_employees,
         "date_from": single_report.date_min,
         "date_to": single_report.date_max,
@@ -107,7 +109,7 @@ def load_workforce_data(
         Tuple of:
             - cleaned_df: Fully normalized pandas DataFrame with derived analytical
               fields, immutable record_id, source_file_name, source_file_index,
-              and non-destructive data quality flags.
+              include_in_analysis governance flag, and non-destructive data quality flags.
             - quality_report: Comprehensive DataQualityReport with source_files summary,
               cross-file duplicate statistics, and structured findings.
 
@@ -153,15 +155,19 @@ def load_workforce_data(
 
     combined_df = pd.concat(dfs, ignore_index=True)
 
-    # Cross-file exact duplicate detection
-    eval_cols = [c for c in CANONICAL_COLUMNS if c in combined_df.columns]
-    if eval_cols and "source_file_index" in combined_df.columns:
-        # Group by canonical source columns to find matches across files
-        grouped_min = combined_df.groupby(eval_cols, dropna=False)["source_file_index"].transform("min")
-        is_cross_dup = combined_df["source_file_index"] > grouped_min
-        combined_df["dq_cross_file_exact_duplicate"] = is_cross_dup.astype(bool)
-    else:
-        combined_df["dq_cross_file_exact_duplicate"] = False
+    # Apply deterministic cross-file duplicate governance and dual quantities
+    from workforce_intelligence.validation import apply_duplicate_governance
+    combined_df = apply_duplicate_governance(combined_df)
+
+    # Update source_summaries to reflect cross-file duplicate findings
+    for s_entry in source_summaries:
+        f_idx = s_entry["file_index"]
+        f_mask = combined_df["source_file_index"] == f_idx
+        f_rows = combined_df[f_mask]
+        dup_count = int((~f_rows["include_in_analysis"]).sum())
+        inc_count = int(f_rows["include_in_analysis"].sum())
+        s_entry["duplicate_rows_detected"] = dup_count
+        s_entry["rows_included_in_analysis"] = inc_count
 
     # Compute overall quality report
     unique_missing_optional = sorted(list(set(all_missing_optional)))
