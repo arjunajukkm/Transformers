@@ -1,5 +1,5 @@
 import React from 'react';
-import { Upload, Calendar, Clock } from 'lucide-react';
+import { Upload, Calendar } from 'lucide-react';
 import { DatasetInfo } from '../../types/workforce';
 
 interface PageHeaderProps {
@@ -15,79 +15,40 @@ export const PageHeader: React.FC<PageHeaderProps> = ({
   title = 'Workforce Process Health',
   subtitle,
 }) => {
-  const isPrePolicy = dataset?.policy_period === 'PRE_POLICY';
-
-  // Format date range
-  const dateRangeDisplay = dataset?.date_min && dataset?.date_max
-    ? `${dataset.date_min} — ${dataset.date_max}`
-    : 'No active date range';
-
-  const defaultSubtitle = isPrePolicy
-    ? 'Pre-policy baseline'
-    : 'Policy monitoring';
+  // Use display_period if provided by backend, or fallback to date_min - date_max
+  const periodDisplay =
+    subtitle ||
+    dataset?.display_period ||
+    (dataset?.date_min && dataset?.date_max ? `${dataset.date_min} — ${dataset.date_max}` : undefined);
 
   return (
-    <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-6 mb-6 border-b border-app-border">
-      <div>
-        <div className="flex items-center gap-2 mb-1">
-          <span className="text-xs font-semibold uppercase tracking-wider text-brand-blue">
-            Workforce Intelligence
-          </span>
-          {dataset && (
-            <>
-              <span className="text-text-muted">·</span>
-              <span className="text-xs text-text-secondary font-medium">
-                {subtitle || defaultSubtitle}
-              </span>
-            </>
-          )}
+    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-5 mb-6 border-b border-app-border min-w-0">
+      <div className="min-w-0">
+        <div className="text-[11px] font-semibold uppercase tracking-wider text-brand-blue mb-1">
+          Workforce Intelligence
         </div>
 
-        <div className="flex items-center gap-3 flex-wrap">
-          <h1 className="text-2xl font-bold text-text-primary tracking-tight">
+        <div className="flex items-baseline gap-3 flex-wrap min-w-0">
+          <h1 className="text-2xl lg:text-3xl font-bold text-text-primary tracking-tight truncate">
             {title}
           </h1>
 
-          {dataset && (
-            <span
-              className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold tracking-wide uppercase ${
-                isPrePolicy
-                  ? 'bg-blue-50 text-brand-blue border border-blue-200'
-                  : 'bg-emerald-50 text-brand-positive border border-emerald-200'
-              }`}
-            >
-              <span
-                className={`w-1.5 h-1.5 rounded-full ${
-                  isPrePolicy ? 'bg-brand-blue' : 'bg-brand-positive'
-                }`}
-              />
-              {isPrePolicy ? 'Pre-Policy Baseline' : 'Policy Monitoring'}
-            </span>
+          {periodDisplay && (
+            <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-md bg-white border border-app-border text-xs font-semibold text-text-primary shadow-subtle">
+              <Calendar className="w-3.5 h-3.5 text-brand-blue" />
+              <span>{periodDisplay}</span>
+            </div>
           )}
         </div>
-
-        {dataset && (
-          <div className="flex items-center gap-3 text-xs text-text-secondary mt-1.5">
-            <span className="inline-flex items-center gap-1">
-              <Calendar className="w-3.5 h-3.5 text-text-muted" />
-              {dateRangeDisplay}
-            </span>
-            <span className="text-text-muted">·</span>
-            <span className="inline-flex items-center gap-1">
-              <Clock className="w-3.5 h-3.5 text-text-muted" />
-              Effective date: {dataset.policy_effective_date}
-            </span>
-          </div>
-        )}
       </div>
 
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-3 shrink-0">
         <button
           onClick={onUploadClick}
-          className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-brand-blue hover:bg-blue-700 text-white text-sm font-semibold transition-all duration-150 shadow-sm hover:shadow active:scale-[0.99]"
+          className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-brand-blue hover:bg-blue-700 text-white text-xs font-semibold transition-all duration-150 shadow-sm hover:shadow active:scale-[0.99]"
         >
-          <Upload className="w-4 h-4" />
-          Upload Data
+          <Upload className="w-3.5 h-3.5" />
+          <span>Upload Data</span>
         </button>
       </div>
     </div>

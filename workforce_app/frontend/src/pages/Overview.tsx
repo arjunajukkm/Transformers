@@ -38,7 +38,7 @@ export const Overview: React.FC<OverviewProps> = ({
   const { dataset, metrics, quality, trends, observations, filters, active_filters } = data;
 
   return (
-    <div className="max-w-7xl mx-auto">
+    <div className="max-w-7xl mx-auto min-w-0 w-full">
       {/* Top Header */}
       <PageHeader
         dataset={dataset}
@@ -77,7 +77,7 @@ export const Overview: React.FC<OverviewProps> = ({
       />
 
       {/* Two-Column Grid: Observations & Data Quality Summary */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 min-w-0">
         <ObservationsList observations={observations || []} />
         <DataQualityCard quality={quality} onViewDetails={onNavigateToData} />
       </div>

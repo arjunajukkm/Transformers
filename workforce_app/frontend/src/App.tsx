@@ -129,15 +129,15 @@ export const App: React.FC = () => {
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-app-bg text-text-primary">
-      {/* Fixed Left Sidebar */}
+      {/* Collapsible Left Sidebar */}
       <Sidebar
         activeTab={activeTab}
         onTabChange={setActiveTab}
         datasetLoaded={Boolean(data?.loaded)}
       />
 
-      {/* Main Analytical Content Workspace */}
-      <main className="flex-1 overflow-y-auto px-7 py-8 md:px-10 md:py-9">
+      {/* Main Analytical Content Workspace with overflow protection */}
+      <main className="flex-1 min-w-0 overflow-y-auto overflow-x-hidden px-5 py-6 sm:px-7 sm:py-8 lg:px-9 lg:py-8 transition-all duration-200">
         {renderContent()}
       </main>
     </div>

@@ -59,26 +59,29 @@ export const MetricStrip: React.FC<MetricStripProps> = ({ metrics, quality, data
   ];
 
   return (
-    <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3 mb-6">
+    <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-5 gap-3 mb-6 min-w-0">
       {items.map((it, idx) => {
         const Icon = it.icon;
         return (
           <div
             key={idx}
-            className="bg-white border border-app-border rounded-xl px-4 py-3 shadow-subtle flex items-center gap-3.5"
+            className="bg-white border border-app-border rounded-xl px-3.5 py-3 shadow-subtle flex items-center gap-3 min-w-0 overflow-hidden"
           >
-            <div className="w-9 h-9 rounded-lg bg-app-bg border border-app-border/80 flex items-center justify-center text-text-secondary shrink-0">
+            <div className="w-8 h-8 rounded-lg bg-app-bg border border-app-border/80 flex items-center justify-center text-text-secondary shrink-0">
               <Icon className="w-4 h-4 text-text-muted" />
             </div>
-            <div className="min-w-0">
-              <div className="text-[11px] font-semibold uppercase tracking-wider text-text-muted truncate">
+            <div className="min-w-0 flex-1 overflow-hidden">
+              <div
+                className="text-[11px] font-semibold uppercase tracking-wider text-text-muted truncate"
+                title={it.label}
+              >
                 {it.label}
               </div>
-              <div className="flex items-baseline gap-1.5">
-                <span className="text-lg font-bold text-text-primary tracking-tight">
+              <div className="flex items-baseline gap-1.5 min-w-0">
+                <span className="text-lg font-bold text-text-primary tracking-tight truncate">
                   {it.value}
                 </span>
-                <span className="text-[11px] text-text-secondary truncate">
+                <span className="text-[11px] text-text-secondary truncate" title={it.sub}>
                   {it.sub}
                 </span>
               </div>

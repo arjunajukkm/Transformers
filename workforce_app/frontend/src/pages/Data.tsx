@@ -31,21 +31,21 @@ export const Data: React.FC<DataProps> = ({
     switch (severity) {
       case 'CRITICAL':
         return (
-          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-bold bg-rose-50 text-brand-critical border border-rose-200">
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-bold bg-rose-50 text-brand-critical border border-rose-200 shrink-0">
             <AlertOctagon className="w-3.5 h-3.5" />
             CRITICAL
           </span>
         );
       case 'WARNING':
         return (
-          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-bold bg-amber-50 text-brand-warning border border-amber-200">
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-bold bg-amber-50 text-brand-warning border border-amber-200 shrink-0">
             <AlertTriangle className="w-3.5 h-3.5" />
             WARNING
           </span>
         );
       default:
         return (
-          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-bold bg-blue-50 text-brand-blue border border-blue-200">
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-bold bg-blue-50 text-brand-blue border border-blue-200 shrink-0">
             <Info className="w-3.5 h-3.5" />
             INFO
           </span>
@@ -54,20 +54,18 @@ export const Data: React.FC<DataProps> = ({
   };
 
   return (
-    <div className="max-w-7xl mx-auto">
+    <div className="max-w-7xl mx-auto min-w-0">
       {/* Page Heading */}
-      <div className="pb-6 mb-6 border-b border-app-border flex items-center justify-between">
-        <div>
-          <div className="text-xs font-semibold uppercase tracking-wider text-brand-blue mb-1">
-            Data Foundation & Ingestion
-          </div>
-          <h1 className="text-2xl font-bold text-text-primary tracking-tight">
-            Data Quality & Ingestion
-          </h1>
-          <p className="text-xs text-text-secondary mt-1">
-            Source-data validation, canonical mapping, and quality assurance findings.
-          </p>
+      <div className="pb-5 mb-6 border-b border-app-border min-w-0">
+        <div className="text-[11px] font-semibold uppercase tracking-wider text-brand-blue mb-1">
+          Data Foundation & Ingestion
         </div>
+        <h1 className="text-2xl lg:text-3xl font-bold text-text-primary tracking-tight truncate">
+          Data Quality & Ingestion
+        </h1>
+        <p className="text-xs text-text-secondary mt-1 truncate">
+          Source-data validation, canonical mapping, and quality assurance findings.
+        </p>
       </div>
 
       {isLoading && (
@@ -90,63 +88,67 @@ export const Data: React.FC<DataProps> = ({
 
       {/* When data is loaded: Dataset Summary + Quality Findings + Re-upload bar */}
       {!isLoading && isLoaded && data.dataset && data.quality && (
-        <div className="space-y-6">
+        <div className="space-y-6 min-w-0">
           {/* Dataset Summary Cards */}
-          <div>
-            <h2 className="text-sm font-bold uppercase tracking-wider text-text-secondary mb-3">
+          <div className="min-w-0">
+            <h2 className="text-xs font-bold uppercase tracking-wider text-text-secondary mb-3">
               Dataset Summary
             </h2>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              <div className="bg-white border border-app-border rounded-xl p-4 shadow-subtle">
-                <div className="flex items-center gap-2 text-text-muted mb-2 text-xs font-semibold uppercase">
-                  <Database className="w-3.5 h-3.5" />
-                  <span>Ingested Rows</span>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3.5 min-w-0">
+              <div className="bg-white border border-app-border rounded-xl p-4 shadow-subtle min-w-0 overflow-hidden">
+                <div className="flex items-center gap-2 text-text-muted mb-2 text-xs font-semibold uppercase truncate">
+                  <Database className="w-3.5 h-3.5 shrink-0" />
+                  <span className="truncate">Ingested Rows</span>
                 </div>
-                <div className="text-2xl font-bold text-text-primary">
+                <div className="text-2xl font-bold text-text-primary truncate">
                   {data.dataset.rows}
                 </div>
-                <div className="text-[11px] text-text-secondary mt-0.5">
+                <div className="text-[11px] text-text-secondary mt-0.5 truncate">
                   source rows validated
                 </div>
               </div>
 
-              <div className="bg-white border border-app-border rounded-xl p-4 shadow-subtle">
-                <div className="flex items-center gap-2 text-text-muted mb-2 text-xs font-semibold uppercase">
-                  <Users className="w-3.5 h-3.5" />
-                  <span>Unique Employees</span>
+              <div className="bg-white border border-app-border rounded-xl p-4 shadow-subtle min-w-0 overflow-hidden">
+                <div className="flex items-center gap-2 text-text-muted mb-2 text-xs font-semibold uppercase truncate">
+                  <Users className="w-3.5 h-3.5 shrink-0" />
+                  <span className="truncate">Unique Employees</span>
                 </div>
-                <div className="text-2xl font-bold text-text-primary">
+                <div className="text-2xl font-bold text-text-primary truncate">
                   {data.dataset.unique_employees}
                 </div>
-                <div className="text-[11px] text-text-secondary mt-0.5">
+                <div className="text-[11px] text-text-secondary mt-0.5 truncate">
                   active headcount
                 </div>
               </div>
 
-              <div className="bg-white border border-app-border rounded-xl p-4 shadow-subtle">
-                <div className="flex items-center gap-2 text-text-muted mb-2 text-xs font-semibold uppercase">
-                  <Calendar className="w-3.5 h-3.5" />
-                  <span>Date Range</span>
+              <div className="bg-white border border-app-border rounded-xl p-4 shadow-subtle min-w-0 overflow-hidden">
+                <div className="flex items-center gap-2 text-text-muted mb-2 text-xs font-semibold uppercase truncate">
+                  <Calendar className="w-3.5 h-3.5 shrink-0" />
+                  <span className="truncate">Period</span>
                 </div>
-                <div className="text-base font-bold text-text-primary truncate">
-                  {data.dataset.date_min && data.dataset.date_max
-                    ? `${data.dataset.date_min} → ${data.dataset.date_max}`
-                    : 'N/A'}
+                <div
+                  className="text-base font-bold text-text-primary truncate"
+                  title={data.dataset.display_period || `${data.dataset.date_min} → ${data.dataset.date_max}`}
+                >
+                  {data.dataset.display_period ||
+                    (data.dataset.date_min && data.dataset.date_max
+                      ? `${data.dataset.date_min} → ${data.dataset.date_max}`
+                      : 'N/A')}
                 </div>
-                <div className="text-[11px] text-text-secondary mt-0.5">
-                  {data.dataset.policy_period === 'PRE_POLICY' ? 'Pre-policy period' : 'Policy monitoring'}
+                <div className="text-[11px] text-text-secondary mt-0.5 truncate">
+                  validated date range
                 </div>
               </div>
 
-              <div className="bg-white border border-app-border rounded-xl p-4 shadow-subtle">
-                <div className="flex items-center gap-2 text-text-muted mb-2 text-xs font-semibold uppercase">
-                  <CheckCircle2 className="w-3.5 h-3.5 text-brand-positive" />
-                  <span>Core Completeness</span>
+              <div className="bg-white border border-app-border rounded-xl p-4 shadow-subtle min-w-0 overflow-hidden">
+                <div className="flex items-center gap-2 text-text-muted mb-2 text-xs font-semibold uppercase truncate">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-brand-positive shrink-0" />
+                  <span className="truncate">Core Completeness</span>
                 </div>
-                <div className="text-2xl font-bold text-text-primary">
+                <div className="text-2xl font-bold text-text-primary truncate">
                   {data.quality.core_completeness.toFixed(1)}%
                 </div>
-                <div className="text-[11px] text-text-secondary mt-0.5">
+                <div className="text-[11px] text-text-secondary mt-0.5 truncate">
                   required fields present
                 </div>
               </div>
@@ -154,18 +156,18 @@ export const Data: React.FC<DataProps> = ({
           </div>
 
           {/* Quality Findings Table / Rows */}
-          <div className="bg-white border border-app-border rounded-xl p-6 shadow-subtle">
-            <div className="flex items-center justify-between mb-4">
-              <div>
-                <h3 className="text-base font-bold text-text-primary tracking-tight">
+          <div className="bg-white border border-app-border rounded-xl p-5 md:p-6 shadow-subtle min-w-0 overflow-hidden">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4 min-w-0">
+              <div className="min-w-0">
+                <h3 className="text-base font-bold text-text-primary tracking-tight truncate">
                   Data Quality Findings
                 </h3>
-                <p className="text-xs text-text-secondary">
+                <p className="text-xs text-text-secondary truncate">
                   Detailed inspection of record hygiene, anomalies, and metric exclusions.
                 </p>
               </div>
 
-              <div className="flex items-center gap-2 text-xs font-semibold">
+              <div className="flex items-center gap-2 text-xs font-semibold shrink-0">
                 <span className="px-2 py-0.5 rounded bg-rose-50 text-brand-critical border border-rose-200">
                   {data.quality.critical_findings} Critical
                 </span>
@@ -186,26 +188,26 @@ export const Data: React.FC<DataProps> = ({
                 </p>
               </div>
             ) : (
-              <div className="space-y-3">
+              <div className="space-y-3 min-w-0">
                 {data.quality.findings.map((f, idx) => (
                   <div
                     key={idx}
-                    className="p-4 rounded-xl border border-app-border bg-app-bg/60 hover:bg-app-bg transition-colors flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                    className="p-4 rounded-xl border border-app-border bg-app-bg/60 hover:bg-app-bg transition-colors flex flex-col sm:flex-row sm:items-center justify-between gap-3 min-w-0 overflow-hidden"
                   >
-                    <div className="flex items-start gap-3">
-                      <div className="mt-0.5">{getSeverityBadge(f.severity)}</div>
-                      <div>
-                        <div className="text-xs font-bold text-text-primary">
+                    <div className="flex items-start gap-3 min-w-0 flex-1">
+                      <div className="mt-0.5 shrink-0">{getSeverityBadge(f.severity)}</div>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-xs font-bold text-text-primary truncate">
                           {(f.category || f.code || 'DATA QUALITY ISSUE').replace(/_/g, ' ').toUpperCase()}
                           {f.field ? ` · [${f.field}]` : ''}
                         </div>
-                        <p className="text-xs text-text-secondary mt-0.5 leading-relaxed">
+                        <p className="text-xs text-text-secondary mt-0.5 leading-relaxed break-words">
                           {f.message}
                         </p>
                       </div>
                     </div>
 
-                    <div className="text-right shrink-0">
+                    <div className="text-left sm:text-right shrink-0">
                       <div className="text-xs font-bold text-text-primary">
                         {f.count} {f.count === 1 ? 'occurrence' : 'occurrences'}
                       </div>
@@ -219,12 +221,12 @@ export const Data: React.FC<DataProps> = ({
             )}
           </div>
 
-          {/* Upload New / Replace Dataset Accordion/Dropzone */}
-          <div className="bg-white border border-app-border rounded-xl p-6 shadow-subtle">
-            <h3 className="text-sm font-bold text-text-primary mb-1">
+          {/* Upload New / Replace Dataset Dropzone */}
+          <div className="bg-white border border-app-border rounded-xl p-5 md:p-6 shadow-subtle min-w-0 overflow-hidden">
+            <h3 className="text-sm font-bold text-text-primary mb-1 truncate">
               Upload New Dataset
             </h3>
-            <p className="text-xs text-text-secondary mb-4">
+            <p className="text-xs text-text-secondary mb-4 truncate">
               Replace active dataset in session memory with a new workforce report.
             </p>
             <UploadDropzone

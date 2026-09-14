@@ -157,8 +157,9 @@ def test_pre_policy_labels_and_observations():
     assert res.status_code == 200
     data = res.json()
     assert data["dataset"]["policy_period"] == "PRE_POLICY"
+    assert data["dataset"]["display_period"] is not None
     obs_texts = [o["text"] for o in data["observations"]]
-    assert any("pre-policy baseline" in t.lower() or "benchmark" in t.lower() for t in obs_texts)
+    assert any("leave application compliance was" in t.lower() for t in obs_texts)
 
 
 # 8. Filter endpoint & dynamic recalculation
@@ -236,6 +237,7 @@ def test_actual_sample_file_api_smoke_test():
     data = res.json()
     assert data["dataset"]["unique_employees"] == 6
     assert data["dataset"]["policy_period"] == "PRE_POLICY"
+    assert data["dataset"]["display_period"] == "1–12 September 2026"
     assert data["quality"]["core_completeness"] == 100.0
     assert data["quality"]["critical_findings"] == 1
     att = data["metrics"]["attendance_exception_rate"]

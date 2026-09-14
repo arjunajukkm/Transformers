@@ -47,6 +47,24 @@ def _serialize_value(val: Any) -> Any:
     return val
 
 
+def format_display_period(d_min: Optional[date], d_max: Optional[date]) -> str:
+    """Return clean human-readable date display according to Stage 3.1 specification."""
+    if not d_min or not d_max:
+        return "No active date range"
+    if d_min == d_max:
+        return d_min.strftime("%d %B %Y")
+    if d_min.year == d_max.year:
+        if d_min.month == d_max.month:
+            # Check if it covers full month
+            import calendar
+            _, last_day = calendar.monthrange(d_min.year, d_min.month)
+            if d_min.day == 1 and d_max.day == last_day:
+                return d_min.strftime("%B %Y")
+            return f"{d_min.day}–{d_max.day} {d_min.strftime('%B %Y')}"
+        return f"{d_min.strftime('%B')}–{d_max.strftime('%B %Y')}"
+    return f"{d_min.strftime('%B %Y')}–{d_max.strftime('%B %Y')}"
+
+
 class AnalysisSession:
     """Holds active analysis state in application memory."""
 
@@ -158,17 +176,20 @@ class AnalysisSession:
 
         # 1. Dataset metadata
         unique_emps = int(df["Employee Number"].nunique()) if "Employee Number" in df.columns else 0
-        date_min_str: Optional[str] = None
-        date_max_str: Optional[str] = None
+        d_min: Optional[date] = None
+        d_max: Optional[date] = None
         if "Date" in df.columns and not df["Date"].dropna().empty:
-            date_min_str = df["Date"].dropna().min().strftime("%Y-%m-%d")
-            date_max_str = df["Date"].dropna().max().strftime("%Y-%m-%d")
+            d_min = df["Date"].dropna().min().date()
+            d_max = df["Date"].dropna().max().date()
+            date_min_str = d_min.strftime("%Y-%m-%d")
+            date_max_str = d_max.strftime("%Y-%m-%d")
+
+        display_period = format_display_period(d_min, d_max)
 
         # Period classification: PRE_POLICY if entire data is before 2026-10-01
         is_all_pre = True
-        if "Date" in df.columns and not df["Date"].dropna().empty:
-            max_date = df["Date"].dropna().max().date()
-            if max_date >= POLICY_EFFECTIVE_DATE:
+        if d_max is not None:
+            if d_max >= POLICY_EFFECTIVE_DATE:
                 is_all_pre = False
 
         policy_period = "PRE_POLICY" if is_all_pre else "POST_POLICY"
@@ -244,23 +265,27 @@ class AnalysisSession:
                 "text": f"{excluded_days} employee-day was excluded from leadership attendance KPIs due to critical source-data quantity errors.",
             })
 
+        # Month name for observation
+        month_label = d_min.strftime("%B") if d_min else "Period"
+
         # Leave & WFH Benchmark / Compliance observation
         if policy_period == "PRE_POLICY":
             lv_bench = metrics["pre_policy_leave_benchmark"]["rate"]
-            wfh_bench = metrics["pre_policy_wfh_benchmark"]["rate"]
+            lv_eval_count = metrics["pre_policy_leave_benchmark"]["denominator"]
             lv_str = f"{lv_bench:.1f}%" if lv_bench is not None else "N/A"
-            wfh_str = f"{wfh_bench:.1f}%" if wfh_bench is not None else "N/A"
+            req_text = f"across {lv_eval_count} evaluable request" if lv_eval_count == 1 else f"across {lv_eval_count} evaluable requests"
             observations.append({
                 "type": "policy",
-                "text": f"The dataset is pre-policy baseline; leave ({lv_str}) and WFH ({wfh_str}) metrics represent benchmark compliance, not enforceable violations.",
+                "text": f"{month_label} leave application compliance was {lv_str} {req_text}. The revised policy becomes effective from 1 October 2026.",
             })
         else:
             lv_comp = metrics["overall_leave_application_compliance"]["rate"]
             lv_str = f"{lv_comp:.1f}%" if lv_comp is not None else "N/A"
             eval_req_count = metrics["overall_leave_application_compliance"]["denominator"]
+            req_text = f"across {eval_req_count} evaluable request" if eval_req_count == 1 else f"across {eval_req_count} evaluable requests"
             observations.append({
                 "type": "policy",
-                "text": f"Overall leave application policy compliance is {lv_str} across {eval_req_count} evaluable leave requests.",
+                "text": f"{month_label} leave application compliance was {lv_str} {req_text}.",
             })
 
         # Approvals observation
@@ -285,6 +310,7 @@ class AnalysisSession:
                 "unique_employees": unique_emps,
                 "date_min": date_min_str,
                 "date_max": date_max_str,
+                "display_period": display_period,
                 "policy_period": policy_period,
                 "policy_effective_date": POLICY_EFFECTIVE_DATE_STR,
             },

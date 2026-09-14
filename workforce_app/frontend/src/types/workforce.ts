@@ -12,6 +12,7 @@ export interface DatasetInfo {
   unique_employees: number;
   date_min: string | null;
   date_max: string | null;
+  display_period?: string;
   policy_period: PolicyPeriod;
   policy_effective_date: string;
 }

@@ -9,7 +9,7 @@ import {
   Tooltip,
   ReferenceLine,
 } from 'recharts';
-import { Info, TrendingUp } from 'lucide-react';
+import { TrendingUp } from 'lucide-react';
 import { TrendPoint, PolicyPeriod } from '../../types/workforce';
 
 interface TrendChartProps {
@@ -62,12 +62,11 @@ const METRIC_OPTIONS: MetricOption[] = [
   },
 ];
 
-export const TrendChart: React.FC<TrendChartProps> = ({ data, policyPeriod }) => {
+export const TrendChart: React.FC<TrendChartProps> = ({ data }) => {
   const [selectedKey, setSelectedKey] = useState<MetricKey>('attendance_exception_rate');
 
   const activeOption = METRIC_OPTIONS.find((o) => o.key === selectedKey) || METRIC_OPTIONS[0];
   const hasSingleMonth = data.length <= 1;
-  const isPrePolicy = policyPeriod === 'PRE_POLICY';
 
   // Format data for Recharts
   const chartData = data.map((d) => ({
@@ -85,7 +84,7 @@ export const TrendChart: React.FC<TrendChartProps> = ({ data, policyPeriod }) =>
           <div className="font-semibold text-text-primary mb-1">{label}</div>
           <div className="flex items-center gap-2">
             <span
-              className="w-2.5 h-2.5 rounded-sm"
+              className="w-2.5 h-2.5 rounded-sm shrink-0"
               style={{ backgroundColor: activeOption.color }}
             />
             <span className="text-text-secondary">{activeOption.label}:</span>
@@ -100,30 +99,30 @@ export const TrendChart: React.FC<TrendChartProps> = ({ data, policyPeriod }) =>
   };
 
   return (
-    <div className="bg-white border border-app-border rounded-xl p-6 shadow-subtle mb-6">
+    <div className="bg-white border border-app-border rounded-xl p-5 md:p-6 shadow-subtle mb-6 min-w-0 overflow-hidden">
       {/* Chart Header & Metric Selectors */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
-        <div>
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-5 min-w-0">
+        <div className="min-w-0">
           <div className="flex items-center gap-2">
-            <TrendingUp className="w-4 h-4 text-brand-blue" />
-            <h3 className="text-base font-bold text-text-primary tracking-tight">
+            <TrendingUp className="w-4 h-4 text-brand-blue shrink-0" />
+            <h3 className="text-base font-bold text-text-primary tracking-tight truncate">
               Process Health Trend
             </h3>
           </div>
-          <p className="text-xs text-text-secondary mt-0.5">
+          <p className="text-xs text-text-secondary mt-0.5 truncate">
             Monthly aggregate process and compliance trajectory.
           </p>
         </div>
 
         {/* Metric Selector Tabs */}
-        <div className="flex flex-wrap items-center bg-app-bg p-1 rounded-lg border border-app-border gap-1">
+        <div className="flex flex-wrap items-center bg-app-bg p-1 rounded-lg border border-app-border gap-1 shrink-0">
           {METRIC_OPTIONS.map((opt) => {
             const isSelected = opt.key === selectedKey;
             return (
               <button
                 key={opt.key}
                 onClick={() => setSelectedKey(opt.key)}
-                className={`px-3 py-1.5 rounded-md text-xs font-semibold transition-all duration-150 ${
+                className={`px-2.5 py-1 rounded-md text-xs font-semibold transition-all duration-150 ${
                   isSelected
                     ? 'bg-white text-brand-blue shadow-sm'
                     : 'text-text-secondary hover:text-text-primary'
@@ -136,25 +135,8 @@ export const TrendChart: React.FC<TrendChartProps> = ({ data, policyPeriod }) =>
         </div>
       </div>
 
-      {/* Policy Callout banner if pre-policy */}
-      {isPrePolicy ? (
-        <div className="mb-4 px-3.5 py-2.5 rounded-lg bg-blue-50/70 border border-blue-100 flex items-center gap-2.5 text-xs text-blue-900">
-          <Info className="w-4 h-4 text-brand-blue shrink-0" />
-          <span>
-            Current dataset is pre-policy and is being used as the baseline.
-          </span>
-        </div>
-      ) : (
-        <div className="mb-4 px-3.5 py-2.5 rounded-lg bg-emerald-50/70 border border-emerald-100 flex items-center gap-2.5 text-xs text-emerald-900">
-          <Info className="w-4 h-4 text-brand-positive shrink-0" />
-          <span>
-            Active monitoring against policy effective from 01 Oct 2026.
-          </span>
-        </div>
-      )}
-
       {/* Chart Canvas */}
-      <div className="h-64 w-full">
+      <div className="h-64 w-full min-w-0 overflow-hidden">
         {data.length === 0 ? (
           <div className="h-full flex items-center justify-center text-xs text-text-muted">
             No trend points available for this selection.
@@ -163,8 +145,8 @@ export const TrendChart: React.FC<TrendChartProps> = ({ data, policyPeriod }) =>
           <ResponsiveContainer width="100%" height="100%">
             <BarChart
               data={chartData}
-              margin={{ top: 10, right: 20, left: -10, bottom: 0 }}
-              barSize={hasSingleMonth ? 60 : 36}
+              margin={{ top: 10, right: 15, left: -15, bottom: 0 }}
+              barSize={hasSingleMonth ? 54 : 32}
             >
               <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#EAECF0" />
               <XAxis
@@ -182,8 +164,8 @@ export const TrendChart: React.FC<TrendChartProps> = ({ data, policyPeriod }) =>
                 unit={activeOption.unit === '%' ? '%' : ''}
               />
               <Tooltip content={<CustomTooltip />} cursor={{ fill: '#F7F8FA' }} />
-              {/* If dataset crosses policy date, vertical reference line could be drawn */}
-              {!isPrePolicy && data.some((d) => d.month.includes('Oct 2026')) && (
+              {/* Subtle reference line only if trend data crosses Oct 2026 */}
+              {data.some((d) => d.month.includes('Oct 2026')) && (
                 <ReferenceLine
                   x="Oct 2026"
                   stroke="#194CFF"
@@ -206,7 +188,7 @@ export const TrendChart: React.FC<TrendChartProps> = ({ data, policyPeriod }) =>
         )}
       </div>
 
-      {/* Single Month Subtle Note as required */}
+      {/* Single Month Context Note */}
       {hasSingleMonth && data.length > 0 && (
         <div className="mt-4 pt-3 border-t border-app-border/60 text-center">
           <p className="text-xs text-text-muted italic">

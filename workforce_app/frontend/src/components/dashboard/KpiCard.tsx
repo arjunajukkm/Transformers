@@ -40,43 +40,46 @@ export const KpiCard: React.FC<KpiCardProps> = ({
   };
 
   return (
-    <div className="bg-white border border-app-border rounded-xl p-5 shadow-subtle hover:shadow-card-hover transition-shadow duration-200 flex flex-col justify-between">
-      <div>
-        <div className="flex items-center justify-between gap-2 mb-3">
-          <span className="text-xs font-semibold text-text-secondary uppercase tracking-wider">
+    <div className="bg-white border border-app-border rounded-xl p-5 shadow-subtle hover:shadow-card-hover transition-shadow duration-200 flex flex-col justify-between min-w-0 overflow-hidden">
+      <div className="min-w-0">
+        <div className="flex items-center justify-between gap-2 mb-3 min-w-0">
+          <span
+            className="text-xs font-semibold text-text-secondary uppercase tracking-wider truncate"
+            title={label}
+          >
             {label}
           </span>
-          <div className={`p-1.5 rounded-lg border border-transparent ${statusBg[status]}`}>
+          <div className={`p-1.5 rounded-lg border border-transparent shrink-0 ${statusBg[status]}`}>
             <Icon className="w-4 h-4" />
           </div>
         </div>
 
-        <div className="flex items-baseline gap-2 mb-1.5">
-          <span className={`text-3xl font-bold tracking-tight ${statusColors[status]}`}>
+        <div className="flex items-baseline gap-2 mb-1.5 min-w-0">
+          <span className={`text-2xl lg:text-3xl font-bold tracking-tight truncate ${statusColors[status]}`}>
             {value}
           </span>
           {subValue && (
-            <span className="text-xs font-medium text-text-muted">
+            <span className="text-xs font-medium text-text-muted truncate">
               {subValue}
             </span>
           )}
         </div>
 
         {caption && (
-          <p className="text-xs font-medium text-text-secondary leading-relaxed">
+          <p className="text-xs font-medium text-text-secondary leading-relaxed break-words">
             {caption}
           </p>
         )}
       </div>
 
-      <div className="mt-4 pt-3 border-t border-app-border/60 flex flex-col gap-1">
+      <div className="mt-4 pt-3 border-t border-app-border/60 flex flex-col gap-1 min-w-0">
         {contextTag && (
-          <div className="text-[11px] font-semibold tracking-wide uppercase text-text-muted">
+          <div className="text-[11px] font-semibold tracking-wide uppercase text-text-muted truncate">
             {contextTag}
           </div>
         )}
         {note && (
-          <div className="text-[11px] text-amber-600 font-medium">
+          <div className="text-[11px] text-amber-600 font-medium break-words">
             {note}
           </div>
         )}
@@ -93,7 +96,7 @@ interface PrimaryKpiGridProps {
 export const PrimaryKpiGrid: React.FC<PrimaryKpiGridProps> = ({ metrics, policyPeriod }) => {
   const isPrePolicy = policyPeriod === 'PRE_POLICY';
 
-  // 1. Leave Compliance / Benchmark
+  // 1. Leave Compliance (standard leadership name)
   const leaveData = isPrePolicy
     ? metrics.pre_policy_leave_benchmark
     : metrics.overall_leave_application_compliance;
@@ -101,9 +104,9 @@ export const PrimaryKpiGrid: React.FC<PrimaryKpiGridProps> = ({ metrics, policyP
   const leaveCaption = isPrePolicy
     ? 'Would meet Oct policy'
     : `${leaveData.compliant_count} of ${leaveData.denominator} compliant requests`;
-  const leaveTag = isPrePolicy ? 'Benchmark (Pre-Policy)' : 'Policy Compliance';
+  const leaveTag = `${leaveData.compliant_count} of ${leaveData.denominator} compliant`;
 
-  // 2. WFH Compliance / Benchmark
+  // 2. WFH Compliance (standard leadership name)
   const wfhData = isPrePolicy
     ? metrics.pre_policy_wfh_benchmark
     : metrics.wfh_application_compliance;
@@ -111,7 +114,7 @@ export const PrimaryKpiGrid: React.FC<PrimaryKpiGridProps> = ({ metrics, policyP
   const wfhCaption = isPrePolicy
     ? 'Would meet Oct policy'
     : `${wfhData.compliant_count} of ${wfhData.denominator} compliant events`;
-  const wfhTag = isPrePolicy ? 'Benchmark (Pre-Policy)' : 'Policy Compliance';
+  const wfhTag = `${wfhData.compliant_count} of ${wfhData.denominator} compliant`;
 
   // 3. Governed Attendance Exception Rate
   const attData = metrics.attendance_exception_rate;
@@ -133,9 +136,9 @@ export const PrimaryKpiGrid: React.FC<PrimaryKpiGridProps> = ({ metrics, policyP
     : 'No pending approvals';
 
   return (
-    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+    <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 mb-6 min-w-0">
       <KpiCard
-        label={isPrePolicy ? 'Leave Application Benchmark' : 'Leave Application Compliance'}
+        label="Leave Application Compliance"
         value={leaveVal}
         caption={leaveCaption}
         contextTag={leaveTag}
@@ -144,7 +147,7 @@ export const PrimaryKpiGrid: React.FC<PrimaryKpiGridProps> = ({ metrics, policyP
       />
 
       <KpiCard
-        label={isPrePolicy ? 'WFH Application Benchmark' : 'WFH Application Compliance'}
+        label="WFH Application Compliance"
         value={wfhVal}
         caption={wfhCaption}
         contextTag={wfhTag}
