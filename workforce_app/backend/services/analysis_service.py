@@ -13,9 +13,11 @@ import pandas as pd
 
 from workforce_intelligence import (
     DataQualityReport,
+    PATTERN_DEFINITIONS,
     build_employee_day_facts,
     calculate_core_metrics,
     calculate_time_series_trends,
+    detect_patterns,
     evaluate_policy,
     get_trend_metric_catalogue,
     load_workforce_data,
@@ -392,6 +394,116 @@ class AnalysisSession:
     def get_trend_metrics(self) -> Dict[str, Any]:
         """Return grouped trend metrics catalogue."""
         return _serialize_value(get_trend_metric_catalogue())
+
+    def get_patterns(
+        self,
+        filters: Optional[Dict[str, Any]] = None,
+        category: Optional[str] = None,
+        pattern_type: Optional[str] = None,
+        entity_type: Optional[str] = None,
+        strength: Optional[str] = None,
+        status: Optional[str] = None,
+        employee_number: Optional[str] = None,
+        reporting_manager: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Execute pattern intelligence detection on the active session,
+        recalculating dynamically for any population filters.
+        """
+        if not self.is_loaded or self.evaluated_df is None:
+            return {
+                "loaded": False,
+                "message": "No workforce dataset loaded",
+                "summary": {},
+                "patterns": [],
+            }
+
+        df = self.evaluated_df.copy()
+        facts = self.employee_day_facts.copy() if self.employee_day_facts is not None else pd.DataFrame()
+        reqs = list(self.leave_requests) if self.leave_requests is not None else []
+
+        active_filters = {}
+        if filters:
+            for k, col in [
+                ("business_unit", "Business Unit"),
+                ("department", "Department"),
+                ("sub_department", "Sub Department"),
+                ("location", "Location"),
+                ("reporting_manager", "Reporting Manager"),
+            ]:
+                val = filters.get(k)
+                if val:
+                    val_str = str(val).strip()
+                    if col in df.columns:
+                        df = df[df[col].astype(str).str.strip() == val_str]
+                    if not facts.empty and col in facts.columns:
+                        facts = facts[facts[col].astype(str).str.strip() == val_str]
+                    active_filters[k] = val_str
+
+            active_emps = set(df["Employee Number"].dropna())
+            reqs = [r for r in reqs if r.get("employee_number") in active_emps]
+
+        # Combine dimensional filters with pattern attribute filters
+        detector_filters: Dict[str, Any] = {}
+        if category:
+            detector_filters["category"] = category
+        if pattern_type:
+            detector_filters["pattern_type"] = pattern_type
+        if entity_type:
+            detector_filters["entity_type"] = entity_type
+        if strength:
+            detector_filters["strength"] = strength
+        if status:
+            detector_filters["status"] = status
+        if employee_number:
+            detector_filters["employee_number"] = employee_number
+        if reporting_manager:
+            detector_filters["reporting_manager"] = reporting_manager
+
+        summary, pattern_results = detect_patterns(
+            evaluated_df=df,
+            evaluated_requests=reqs,
+            employee_day_facts=facts,
+            filters=detector_filters if detector_filters else None,
+        )
+
+        payload = {
+            "loaded": True,
+            "filename": self.filename,
+            "active_filters": {**active_filters, **detector_filters},
+            "available_filters": self.get_available_filters(),
+            "summary": summary.to_dict(),
+            "patterns": [p.to_dict(include_full_evidence=False) for p in pattern_results],
+        }
+        return _serialize_value(payload)
+
+    def get_pattern_by_id(self, pattern_id: str) -> Optional[Dict[str, Any]]:
+        """Return a single PatternResult with complete evidence items for drilldown."""
+        if not self.is_loaded or self.evaluated_df is None:
+            return None
+
+        _, pattern_results = detect_patterns(
+            evaluated_df=self.evaluated_df,
+            evaluated_requests=list(self.leave_requests) if self.leave_requests is not None else [],
+            employee_day_facts=self.employee_day_facts,
+        )
+
+        for p in pattern_results:
+            if p.pattern_id == pattern_id:
+                return _serialize_value(p.to_dict(include_full_evidence=True))
+
+        return None
+
+    def get_pattern_catalogue(self) -> Dict[str, Any]:
+        """Return grouped pattern definition catalogue."""
+        grouped: Dict[str, List[Dict[str, Any]]] = {}
+        for p_type, defn in PATTERN_DEFINITIONS.items():
+            cat = defn.get("category", "Other")
+            if cat not in grouped:
+                grouped[cat] = []
+            grouped[cat].append(defn)
+
+        return _serialize_value(grouped)
 
 
 # Global analysis session singleton

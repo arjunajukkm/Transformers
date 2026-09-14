@@ -3,6 +3,7 @@ import { Sidebar, NavTab } from './components/layout/Sidebar';
 import { Overview } from './pages/Overview';
 import { Data } from './pages/Data';
 import { Trends } from './pages/Trends';
+import { Patterns } from './pages/Patterns';
 import { PlaceholderPage } from './pages/PlaceholderPage';
 import { fetchSummary, uploadDataset } from './services/api';
 import { DashboardResponse, ActiveFilters } from './types/workforce';
@@ -101,11 +102,12 @@ export const App: React.FC = () => {
 
       case 'patterns':
         return (
-          <PlaceholderPage
-            title="Patterns"
-            subtitle="Discover recurring employee, team and manager behaviours."
+          <Patterns
+            data={data}
+            onNavigateToData={() => setActiveTab('data')}
           />
         );
+
 
       case 'anomalies':
         return (

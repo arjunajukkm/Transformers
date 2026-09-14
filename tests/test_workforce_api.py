@@ -491,3 +491,83 @@ def test_multi_file_duplicate_governance_via_api():
     assert trend_data["time_series"][0]["evaluable"] == 3
 
 
+# 19. GET /api/workforce/patterns/catalogue
+def test_get_pattern_catalogue():
+    res = client.get("/api/workforce/patterns/catalogue")
+    assert res.status_code == 200
+    data = res.json()
+    assert "Attendance" in data
+    assert "Leave" in data
+    assert "WFH" in data
+    assert "Approval" in data
+    assert "Calendar" in data
+    assert "Sequence" in data
+    assert "Process" in data
+    p_types = [item["pattern_type"] for items in data.values() for item in items]
+    assert "WEEKDAY_EXCEPTION_CONCENTRATION" in p_types
+    assert "RECURRING_LATE_LEAVE_APPLICATION" in p_types
+
+
+# 20. GET /api/workforce/patterns with no dataset loaded
+def test_get_patterns_no_dataset():
+    res = client.get("/api/workforce/patterns")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["loaded"] is False
+    assert "No workforce dataset loaded" in data["message"]
+    assert data["patterns"] == []
+
+
+# 21. GET /api/workforce/patterns with detected synthetic patterns and drilldown
+def test_patterns_detection_and_drilldown_via_api():
+    # 3 Missing Swipes for EMP01 (Attendance pattern), 3 Late CL for EMP02 (Leave pattern)
+    rows = [
+        {"Employee Number": "EMP01", "Employee Name": "Alice", "Department": "Eng", "Date": "2026-09-01", "Status": "MS", "Attendance Type": "Missing Swipes", "Quantity": 1.0},
+        {"Employee Number": "EMP01", "Employee Name": "Alice", "Department": "Eng", "Date": "2026-09-02", "Status": "MS", "Attendance Type": "Missing Swipes", "Quantity": 1.0},
+        {"Employee Number": "EMP01", "Employee Name": "Alice", "Department": "Eng", "Date": "2026-09-03", "Status": "MS", "Attendance Type": "Missing Swipes", "Quantity": 1.0},
+
+        {"Employee Number": "EMP02", "Employee Name": "Bob", "Department": "Sales", "Date": "2026-09-01", "Status": "CL", "Attendance Type": "Leave", "Leave Name": "Casual Leave", "Quantity": 1.0, "Applied On": "2026-09-06"},
+        {"Employee Number": "EMP02", "Employee Name": "Bob", "Department": "Sales", "Date": "2026-09-10", "Status": "CL", "Attendance Type": "Leave", "Leave Name": "Casual Leave", "Quantity": 1.0, "Applied On": "2026-09-15"},
+        {"Employee Number": "EMP02", "Employee Name": "Bob", "Department": "Sales", "Date": "2026-10-01", "Status": "CL", "Attendance Type": "Leave", "Leave Name": "Casual Leave", "Quantity": 1.0, "Applied On": "2026-10-06"},
+    ]
+    csv_bytes = pd.DataFrame(rows).to_csv(index=False).encode("utf-8")
+    client.post(
+        "/api/workforce/upload",
+        files={"file": ("patterns_sample.csv", io.BytesIO(csv_bytes), "text/csv")},
+    )
+
+    # 1. Fetch all patterns
+    res = client.get("/api/workforce/patterns")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["loaded"] is True
+    assert data["summary"]["total_patterns"] >= 2
+    assert "category_counts" in data["summary"]
+
+    p_ids = [p["pattern_id"] for p in data["patterns"]]
+    assert any("RECURRING_MISSING_SWIPE" in pid for pid in p_ids)
+    assert any("RECURRING_LATE_LEAVE_APPLICATION" in pid for pid in p_ids)
+
+    # 2. Category filter: Leave
+    res_leave = client.get("/api/workforce/patterns?category=Leave")
+    assert res_leave.status_code == 200
+    leave_data = res_leave.json()
+    assert all(p["pattern_category"] == "Leave" for p in leave_data["patterns"])
+
+    # 3. Department filter: Eng (recalculated population)
+    res_eng = client.get("/api/workforce/patterns?department=Eng")
+    assert res_eng.status_code == 200
+    eng_data = res_eng.json()
+    assert all(p["entity_id"] == "EMP01" or p["pattern_category"] == "Attendance" for p in eng_data["patterns"])
+
+    # 4. Detail drilldown
+    first_pid = data["patterns"][0]["pattern_id"]
+    res_detail = client.get(f"/api/workforce/patterns/{first_pid}")
+    assert res_detail.status_code == 200
+    detail = res_detail.json()
+    assert detail["pattern_id"] == first_pid
+    assert "evidence_items" in detail
+    assert len(detail["evidence_items"]) >= 3
+
+
+

@@ -212,3 +212,118 @@ export interface TrendResponse {
 }
 
 export type GroupedTrendMetrics = Record<string, TrendMetricMeta[]>;
+
+// ── PATTERN INTELLIGENCE TYPES ────────────────────────────────────────────────
+export type PatternCategoryType =
+  | 'Attendance'
+  | 'Leave'
+  | 'WFH'
+  | 'Approval'
+  | 'Calendar'
+  | 'Sequence'
+  | 'Process';
+
+export type PatternSeverityType = 'INFO' | 'ATTENTION' | 'PRIORITY';
+export type PatternStrengthType = 'LOW' | 'MODERATE' | 'HIGH';
+export type PatternPersistenceType = 'SINGLE_PERIOD' | 'MULTI_MONTH' | 'PERSISTENT';
+export type PatternStatusType = 'ACTIVE' | 'RECENT' | 'HISTORICAL';
+
+export interface PatternEvidenceItem {
+  date?: string | null;
+  employee_number?: string | null;
+  employee_name?: string | null;
+  reporting_manager?: string | null;
+  event_type?: string | null;
+  status?: string | null;
+  leave_name?: string | null;
+  quantity?: number | null;
+  application_lag_days?: number | null;
+  approval_turnaround_days?: number | null;
+  details?: string | null;
+  source_file_name?: string | null;
+  source_row_number?: number | null;
+  record_id?: string | null;
+  request_id?: string | null;
+}
+
+export interface PatternResult {
+  pattern_id: string;
+  pattern_type: string;
+  pattern_category: PatternCategoryType;
+  pattern_title: string;
+  entity_type: string;
+  entity_id: string;
+  entity_name: string;
+  severity: PatternSeverityType;
+  strength: PatternStrengthType;
+  persistence: PatternPersistenceType;
+  status: PatternStatusType;
+  event_count: number;
+  opportunity_count?: number | null;
+  rate?: number | null;
+  reference_rate?: number | null;
+  first_observed_date?: string | null;
+  last_observed_date?: string | null;
+  months_active: string[];
+  distinct_months: number;
+  recurrence_count: number;
+  pattern_score: number;
+  score_components?: {
+    frequency: number;
+    persistence: number;
+    concentration: number;
+    recency: number;
+  };
+  description: string;
+  why_detected: string;
+  summary_evidence: string;
+  evidence_count: number;
+  latest_period?: string | null;
+  data_quality_excluded_count?: number;
+  evidence_preview?: PatternEvidenceItem[];
+  evidence_items?: PatternEvidenceItem[];
+  evidence_record_ids?: string[];
+  evidence_source_rows?: number[];
+}
+
+export interface PatternSummary {
+  total_patterns: number;
+  active_patterns: number;
+  high_strength_patterns: number;
+  employees_with_patterns: number;
+  managers_with_patterns: number;
+  category_counts: Record<string, number>;
+  severity_counts: Record<string, number>;
+}
+
+export interface PatternFilters extends ActiveFilters {
+  category?: string;
+  pattern_type?: string;
+  entity_type?: string;
+  strength?: string;
+  status?: string;
+  search?: string;
+}
+
+export interface PatternResponse {
+  loaded: boolean;
+  message?: string;
+  filename?: string | null;
+  active_filters?: PatternFilters;
+  available_filters?: FilterOptions;
+  summary: PatternSummary;
+  patterns: PatternResult[];
+}
+
+export interface PatternCatalogueItem {
+  pattern_type: string;
+  label: string;
+  category: PatternCategoryType;
+  description: string;
+  default_min_support: number;
+  severity: PatternSeverityType;
+  entity_levels: string[];
+}
+
+export type GroupedPatternCatalogue = Record<string, PatternCatalogueItem[]>;
+

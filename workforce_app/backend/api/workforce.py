@@ -208,3 +208,96 @@ def post_trends(trend_req: TrendFilterRequest):
 def get_trend_metrics():
     """Return the centralized trend metric catalogue grouped by category."""
     return SESSION.get_trend_metrics()
+
+
+class PatternFilterRequest(BaseModel):
+    category: Optional[str] = None
+    pattern_type: Optional[str] = None
+    entity_type: Optional[str] = None
+    strength: Optional[str] = None
+    status: Optional[str] = None
+    business_unit: Optional[str] = None
+    department: Optional[str] = None
+    sub_department: Optional[str] = None
+    location: Optional[str] = None
+    reporting_manager: Optional[str] = None
+    employee_number: Optional[str] = None
+
+
+@router.get("/workforce/patterns")
+def get_patterns(
+    category: Optional[str] = Query(None),
+    pattern_type: Optional[str] = Query(None),
+    entity_type: Optional[str] = Query(None),
+    strength: Optional[str] = Query(None),
+    status: Optional[str] = Query(None),
+    business_unit: Optional[str] = Query(None),
+    department: Optional[str] = Query(None),
+    sub_department: Optional[str] = Query(None),
+    location: Optional[str] = Query(None),
+    reporting_manager: Optional[str] = Query(None),
+    employee_number: Optional[str] = Query(None),
+):
+    """
+    Return detected behavioral and process patterns for the active session.
+    Dynamically re-evaluates patterns when population or attribute filters are applied.
+    """
+    dim_filters = {}
+    if business_unit:
+        dim_filters["business_unit"] = business_unit
+    if department:
+        dim_filters["department"] = department
+    if sub_department:
+        dim_filters["sub_department"] = sub_department
+    if location:
+        dim_filters["location"] = location
+    if reporting_manager:
+        dim_filters["reporting_manager"] = reporting_manager
+    if employee_number:
+        dim_filters["employee_number"] = employee_number
+
+    return SESSION.get_patterns(
+        filters=dim_filters if dim_filters else None,
+        category=category,
+        pattern_type=pattern_type,
+        entity_type=entity_type,
+        strength=strength,
+        status=status,
+        employee_number=employee_number,
+        reporting_manager=reporting_manager,
+    )
+
+
+@router.post("/workforce/patterns")
+def post_patterns(filter_req: PatternFilterRequest):
+    """Filter patterns endpoint accepting JSON payload."""
+    data = filter_req.dict(exclude_none=True)
+    dim_keys = {"business_unit", "department", "sub_department", "location", "reporting_manager", "employee_number"}
+    dim_filters = {k: v for k, v in data.items() if k in dim_keys}
+
+    return SESSION.get_patterns(
+        filters=dim_filters if dim_filters else None,
+        category=data.get("category"),
+        pattern_type=data.get("pattern_type"),
+        entity_type=data.get("entity_type"),
+        strength=data.get("strength"),
+        status=data.get("status"),
+        employee_number=data.get("employee_number"),
+        reporting_manager=data.get("reporting_manager"),
+    )
+
+
+@router.get("/workforce/patterns/catalogue")
+def get_pattern_catalogue():
+    """Return central pattern definitions catalogue grouped by category."""
+    return SESSION.get_pattern_catalogue()
+
+
+@router.get("/workforce/patterns/{pattern_id}")
+def get_pattern_detail(pattern_id: str):
+    """Return detailed evidence and timeline records for a specific pattern ID."""
+    res = SESSION.get_pattern_by_id(pattern_id)
+    if res is None:
+        raise HTTPException(status_code=404, detail=f"Pattern '{pattern_id}' not found.")
+    return res
+

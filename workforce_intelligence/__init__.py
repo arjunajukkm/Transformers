@@ -36,6 +36,19 @@ from workforce_intelligence.trends import (
     calculate_time_series_trends,
     get_trend_metric_catalogue,
 )
+from workforce_intelligence.patterns import (
+    PATTERN_DEFINITIONS,
+    PatternCategory,
+    PatternContext,
+    PatternEvidenceItem,
+    PatternPersistence,
+    PatternResult,
+    PatternSeverity,
+    PatternStatus,
+    PatternStrength,
+    PatternSummary,
+    detect_patterns,
+)
 
 __all__ = [
     "load_workforce_data",
@@ -46,6 +59,17 @@ __all__ = [
     "calculate_compliance_breakdown",
     "calculate_time_series_trends",
     "get_trend_metric_catalogue",
+    "detect_patterns",
+    "PatternContext",
+    "PatternResult",
+    "PatternSummary",
+    "PatternEvidenceItem",
+    "PATTERN_DEFINITIONS",
+    "PatternCategory",
+    "PatternSeverity",
+    "PatternStrength",
+    "PatternPersistence",
+    "PatternStatus",
     "TREND_METRICS",
     "TrendMetricDefinition",
     "PolicyConfig",

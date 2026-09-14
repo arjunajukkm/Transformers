@@ -10,6 +10,10 @@ import {
   ActiveFilters,
   TrendResponse,
   GroupedTrendMetrics,
+  PatternResponse,
+  PatternResult,
+  PatternFilters,
+  GroupedPatternCatalogue,
 } from '../types/workforce';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000';
@@ -97,3 +101,40 @@ export async function fetchTrendMetrics(): Promise<GroupedTrendMetrics> {
   }
   return res.json();
 }
+
+export async function fetchPatterns(filters?: PatternFilters): Promise<PatternResponse> {
+  const params = new URLSearchParams();
+  if (filters) {
+    Object.entries(filters).forEach(([k, v]) => {
+      if (v !== undefined && v !== null && v !== '') {
+        params.append(k, String(v));
+      }
+    });
+  }
+
+  const url = `${API_BASE}/api/workforce/patterns${params.toString() ? `?${params.toString()}` : ''}`;
+  const res = await fetch(url);
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(errorData.detail || `Failed to fetch patterns: ${res.statusText}`);
+  }
+  return res.json();
+}
+
+export async function fetchPatternById(patternId: string): Promise<PatternResult> {
+  const res = await fetch(`${API_BASE}/api/workforce/patterns/${encodeURIComponent(patternId)}`);
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(errorData.detail || `Failed to fetch pattern details: ${res.statusText}`);
+  }
+  return res.json();
+}
+
+export async function fetchPatternCatalogue(): Promise<GroupedPatternCatalogue> {
+  const res = await fetch(`${API_BASE}/api/workforce/patterns/catalogue`);
+  if (!res.ok) {
+    throw new Error(`Failed to fetch pattern catalogue: ${res.statusText}`);
+  }
+  return res.json();
+}
+
