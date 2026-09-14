@@ -96,10 +96,43 @@ def build_employee_day_facts(df: pd.DataFrame) -> pd.DataFrame:
         quantities = group["Quantity"].dropna() if "Quantity" in group.columns else pd.Series([], dtype=float)
         qty_sum = round(float(quantities.sum()), 4) if not quantities.empty else None
 
-        dq_exceed = bool(
+        has_qty_exceed = bool(
             (group["dq_daily_quantity_exceeds_one"].any() if "dq_daily_quantity_exceeds_one" in group.columns else False)
             or (qty_sum is not None and qty_sum > 1.000001)
         )
+        has_missing_emp = bool(group["dq_missing_employee"].any() if "dq_missing_employee" in group.columns else False)
+        has_missing_date = bool(group["dq_missing_date"].any() if "dq_missing_date" in group.columns else False)
+        has_invalid_date = bool(group["dq_invalid_date"].any() if "dq_invalid_date" in group.columns else False)
+
+        has_warning = bool(
+            (group["dq_exact_duplicate"].any() if "dq_exact_duplicate" in group.columns else False)
+            or (group["dq_missing_quantity"].any() if "dq_missing_quantity" in group.columns else False)
+            or (group["dq_unknown_attendance"].any() if "dq_unknown_attendance" in group.columns else False)
+        )
+
+        # Determine employee-day data quality status & evaluability
+        is_critical = has_qty_exceed or has_missing_emp or has_missing_date or has_invalid_date
+        if is_critical:
+            quality_status = "CRITICAL"
+            is_evaluable = False
+            exclusion_reasons = []
+            if has_qty_exceed:
+                exclusion_reasons.append("DAILY_QUANTITY_EXCEEDS_ONE")
+            if has_missing_emp:
+                exclusion_reasons.append("MISSING_EMPLOYEE")
+            if has_missing_date:
+                exclusion_reasons.append("MISSING_DATE")
+            if has_invalid_date:
+                exclusion_reasons.append("INVALID_DATE")
+            exclusion_reason_str = ", ".join(exclusion_reasons) if exclusion_reasons else "CRITICAL_DATA_QUALITY"
+        elif has_warning:
+            quality_status = "WARNING"
+            is_evaluable = True
+            exclusion_reason_str = "NONE"
+        else:
+            quality_status = "VALID"
+            is_evaluable = True
+            exclusion_reason_str = "NONE"
 
         records.append({
             "Employee Number": emp,
@@ -123,7 +156,10 @@ def build_employee_day_facts(df: pd.DataFrame) -> pd.DataFrame:
             "is_attendance_exception": is_exception,
             "attendance_exception_types": exception_type_str,
             "is_eligible_attendance_day": is_eligible,
-            "dq_daily_quantity_exceeds_one": dq_exceed,
+            "dq_daily_quantity_exceeds_one": has_qty_exceed,
+            "employee_day_quality_status": quality_status,
+            "is_metric_evaluable": is_evaluable,
+            "metric_exclusion_reason": exclusion_reason_str,
         })
 
     return pd.DataFrame(records)
@@ -136,6 +172,20 @@ def _safe_rate(numerator: int, denominator: int) -> Optional[float]:
     return round((numerator / denominator) * 100.0, 2)
 
 
+def _make_metric_contract(total_applicable: int, excluded_dq: int, numerator: int) -> Dict[str, Any]:
+    """Helper to produce consistent metric dictionary contract."""
+    evaluable = total_applicable - excluded_dq
+    return {
+        "total_applicable": total_applicable,
+        "evaluable": evaluable,
+        "excluded_data_quality": excluded_dq,
+        "data_quality_uncertain_count": excluded_dq,
+        "numerator": numerator,
+        "denominator": evaluable,
+        "rate": _safe_rate(numerator, evaluable),
+    }
+
+
 def calculate_core_metrics(
     evaluated_df: pd.DataFrame,
     evaluated_requests: Optional[List[Dict[str, Any]]] = None,
@@ -144,7 +194,8 @@ def calculate_core_metrics(
 ) -> Dict[str, Any]:
     """
     Compute structured, transparent compliance metrics and operational indicators.
-    All rates return explicit numerator, denominator, and rate fields.
+    All rates return explicit numerator, denominator, evaluable, and rate fields.
+    Critical data-quality issues are excluded from leadership denominators.
     """
     if employee_day_facts is None:
         employee_day_facts = build_employee_day_facts(evaluated_df)
@@ -153,63 +204,82 @@ def calculate_core_metrics(
     req_df = pd.DataFrame(evaluated_requests) if evaluated_requests else pd.DataFrame()
 
     # 1. Post-Policy Leave Application Compliance
+    post_leave_tot = 0
+    post_leave_dq = 0
     post_leave_num = 0
-    post_leave_den = 0
+
+    pl_post_tot = 0
+    pl_post_dq = 0
     pl_post_num = 0
-    pl_post_den = 0
+
+    non_pl_post_tot = 0
+    non_pl_post_dq = 0
     non_pl_post_num = 0
-    non_pl_post_den = 0
 
     # 2. Pre-Policy Leave Benchmark
+    pre_leave_tot = 0
+    pre_leave_dq = 0
     pre_leave_num = 0
-    pre_leave_den = 0
 
     if not req_df.empty:
-        # Filter evaluable requests (excluding critical data quality errors)
-        evaluable_reqs = req_df[req_df["compliance_status"] != "DATA_QUALITY_UNCERTAIN"]
-
         # Post-policy requests
-        post_reqs = evaluable_reqs[evaluable_reqs["policy_period"] == "POST_POLICY"]
-        post_leave_den = len(post_reqs)
+        post_reqs = req_df[req_df["policy_period"] == "POST_POLICY"]
+        post_leave_tot = len(post_reqs)
+        post_leave_dq = int((post_reqs["compliance_status"] == "DATA_QUALITY_UNCERTAIN").sum())
         post_leave_num = int((post_reqs["policy_compliant"] == True).sum())
 
         # PL Post-policy
         pl_post_reqs = post_reqs[post_reqs["is_pl"] == True]
-        pl_post_den = len(pl_post_reqs)
+        pl_post_tot = len(pl_post_reqs)
+        pl_post_dq = int((pl_post_reqs["compliance_status"] == "DATA_QUALITY_UNCERTAIN").sum())
         pl_post_num = int((pl_post_reqs["policy_compliant"] == True).sum())
 
         # Non-PL Post-policy
         non_pl_post_reqs = post_reqs[post_reqs["is_pl"] == False]
-        non_pl_post_den = len(non_pl_post_reqs)
+        non_pl_post_tot = len(non_pl_post_reqs)
+        non_pl_post_dq = int((non_pl_post_reqs["compliance_status"] == "DATA_QUALITY_UNCERTAIN").sum())
         non_pl_post_num = int((non_pl_post_reqs["policy_compliant"] == True).sum())
 
         # Pre-policy benchmark requests
-        pre_reqs = evaluable_reqs[evaluable_reqs["policy_period"] == "PRE_POLICY"]
-        pre_leave_den = len(pre_reqs)
+        pre_reqs = req_df[req_df["policy_period"] == "PRE_POLICY"]
+        pre_leave_tot = len(pre_reqs)
+        pre_leave_dq = int((pre_reqs["compliance_status"] == "DATA_QUALITY_UNCERTAIN").sum())
         pre_leave_num = int((pre_reqs["benchmark_compliant"] == True).sum())
 
     # 3. WFH Application Compliance (evaluated at row/event level)
     wfh_rows = evaluated_df[evaluated_df["policy_event_type"] == "WFH"].copy()
-    evaluable_wfh = wfh_rows[wfh_rows["compliance_status"] != "DATA_QUALITY_UNCERTAIN"]
 
     # Post-policy WFH
-    post_wfh = evaluable_wfh[evaluable_wfh["policy_period"] == "POST_POLICY"]
-    post_wfh_den = len(post_wfh)
+    post_wfh = wfh_rows[wfh_rows["policy_period"] == "POST_POLICY"]
+    post_wfh_tot = len(post_wfh)
+    post_wfh_dq = int((post_wfh["compliance_status"] == "DATA_QUALITY_UNCERTAIN").sum())
     post_wfh_num = int((post_wfh["policy_compliant"] == True).sum())
 
     # Pre-policy WFH benchmark
-    pre_wfh = evaluable_wfh[evaluable_wfh["policy_period"] == "PRE_POLICY"]
-    pre_wfh_den = len(pre_wfh)
+    pre_wfh = wfh_rows[wfh_rows["policy_period"] == "PRE_POLICY"]
+    pre_wfh_tot = len(pre_wfh)
+    pre_wfh_dq = int((pre_wfh["compliance_status"] == "DATA_QUALITY_UNCERTAIN").sum())
     pre_wfh_num = int((pre_wfh["benchmark_compliant"] == True).sum())
 
-    # 4. Attendance Exception Rate (using employee-day facts)
-    eligible_days = int(employee_day_facts["is_eligible_attendance_day"].sum()) if not employee_day_facts.empty else 0
-    exception_days = int(
-        (employee_day_facts["is_eligible_attendance_day"] & employee_day_facts["is_attendance_exception"]).sum()
-    ) if not employee_day_facts.empty else 0
+    # 4. Attendance Exception Rate (Governed vs. Raw)
+    eligible_days_raw = int(employee_day_facts["is_eligible_attendance_day"].sum()) if not employee_day_facts.empty else 0
+    evaluable_mask = (
+        (employee_day_facts["is_eligible_attendance_day"] == True) & (employee_day_facts["is_metric_evaluable"] == True)
+    ) if not employee_day_facts.empty else pd.Series(dtype=bool)
+    evaluable_days = int(evaluable_mask.sum()) if not employee_day_facts.empty else 0
+    dq_excluded_days = eligible_days_raw - evaluable_days
+
+    # Governed attendance exception days: only evaluable eligible days with an exception
+    gov_exception_mask = evaluable_mask & (employee_day_facts["is_attendance_exception"] == True)
+    gov_exception_days = int(gov_exception_mask.sum()) if not employee_day_facts.empty else 0
+
+    # Raw attendance exception days: all eligible days with an exception
+    raw_exception_mask = (
+        (employee_day_facts["is_eligible_attendance_day"] == True) & (employee_day_facts["is_attendance_exception"] == True)
+    ) if not employee_day_facts.empty else pd.Series(dtype=bool)
+    raw_exception_days = int(raw_exception_mask.sum()) if not employee_day_facts.empty else 0
 
     # 5. Approval Cycle Diagnostics
-    # Compute approval state and pending age
     df_eval = evaluated_df.copy()
     df_eval["approval_state"] = df_eval["Approval Status"].apply(normalize_approval_state) if "Approval Status" in df_eval.columns else "UNKNOWN"
 
@@ -253,46 +323,57 @@ def calculate_core_metrics(
 
     return {
         # Post-Policy Leave Application Compliance
-        "overall_leave_application_compliance": {
-            "numerator": post_leave_num,
-            "denominator": post_leave_den,
-            "rate": _safe_rate(post_leave_num, post_leave_den),
-        },
-        "pl_application_compliance": {
-            "numerator": pl_post_num,
-            "denominator": pl_post_den,
-            "rate": _safe_rate(pl_post_num, pl_post_den),
-        },
-        "non_pl_application_compliance": {
-            "numerator": non_pl_post_num,
-            "denominator": non_pl_post_den,
-            "rate": _safe_rate(non_pl_post_num, non_pl_post_den),
-        },
+        "overall_leave_application_compliance": _make_metric_contract(
+            total_applicable=post_leave_tot,
+            excluded_dq=post_leave_dq,
+            numerator=post_leave_num,
+        ),
+        "pl_application_compliance": _make_metric_contract(
+            total_applicable=pl_post_tot,
+            excluded_dq=pl_post_dq,
+            numerator=pl_post_num,
+        ),
+        "non_pl_application_compliance": _make_metric_contract(
+            total_applicable=non_pl_post_tot,
+            excluded_dq=non_pl_post_dq,
+            numerator=non_pl_post_num,
+        ),
 
         # Pre-Policy Leave Benchmark
-        "pre_policy_leave_benchmark": {
-            "numerator": pre_leave_num,
-            "denominator": pre_leave_den,
-            "rate": _safe_rate(pre_leave_num, pre_leave_den),
-        },
+        "pre_policy_leave_benchmark": _make_metric_contract(
+            total_applicable=pre_leave_tot,
+            excluded_dq=pre_leave_dq,
+            numerator=pre_leave_num,
+        ),
 
         # WFH Application Compliance
-        "wfh_application_compliance": {
-            "numerator": post_wfh_num,
-            "denominator": post_wfh_den,
-            "rate": _safe_rate(post_wfh_num, post_wfh_den),
-        },
-        "pre_policy_wfh_benchmark": {
-            "numerator": pre_wfh_num,
-            "denominator": pre_wfh_den,
-            "rate": _safe_rate(pre_wfh_num, pre_wfh_den),
-        },
+        "wfh_application_compliance": _make_metric_contract(
+            total_applicable=post_wfh_tot,
+            excluded_dq=post_wfh_dq,
+            numerator=post_wfh_num,
+        ),
+        "pre_policy_wfh_benchmark": _make_metric_contract(
+            total_applicable=pre_wfh_tot,
+            excluded_dq=pre_wfh_dq,
+            numerator=pre_wfh_num,
+        ),
 
-        # Attendance Exception Rate
+        # Governed Attendance Exception Rate (Primary Leadership KPI)
         "attendance_exception_rate": {
-            "attendance_exception_days": exception_days,
-            "eligible_employee_days": eligible_days,
-            "rate": _safe_rate(exception_days, eligible_days),
+            "total_applicable": eligible_days_raw,
+            "eligible_employee_days_raw": eligible_days_raw,
+            "evaluable": evaluable_days,
+            "evaluable_employee_days": evaluable_days,
+            "excluded_data_quality": dq_excluded_days,
+            "data_quality_excluded_employee_days": dq_excluded_days,
+            "numerator": gov_exception_days,
+            "attendance_exception_days": gov_exception_days,
+            "denominator": evaluable_days,
+            "eligible_employee_days": evaluable_days,  # backward compatibility alias
+            "rate": _safe_rate(gov_exception_days, evaluable_days),
+            # Diagnostic raw metrics
+            "raw_attendance_exception_days": raw_exception_days,
+            "raw_attendance_exception_rate": _safe_rate(raw_exception_days, eligible_days_raw),
         },
 
         # Approval Cycle Diagnostics
@@ -305,10 +386,11 @@ def calculate_core_metrics(
             "max_pending_approval_age_days": max_pending_age,
         },
 
-        # Data Quality Uncertainty
+        # Data Quality Uncertainty Summary
         "data_quality_uncertainty": {
             "uncertain_policy_rows": dq_uncertain_records,
             "uncertain_leave_requests": dq_uncertain_requests,
+            "data_quality_excluded_employee_days": dq_excluded_days,
         },
     }
 
@@ -340,9 +422,11 @@ def calculate_compliance_breakdown(
 
         grp_dict = {col: val for col, val in zip(valid_group_cols, group_vals)}
 
-        # Evaluable records
+        # Evaluable records (excluding DATA_QUALITY_UNCERTAIN)
+        total_app = len(grp)
         evaluable = grp[grp["compliance_status"] != "DATA_QUALITY_UNCERTAIN"]
         total_eval = len(evaluable)
+        excluded_dq = total_app - total_eval
 
         # Check pre vs post compliance
         comp_count = int(
@@ -351,8 +435,10 @@ def calculate_compliance_breakdown(
             else (evaluable["benchmark_compliant"] == True).sum()
         )
 
-        grp_dict["compliant_count"] = comp_count
+        grp_dict["total_applicable"] = total_app
         grp_dict["evaluable_count"] = total_eval
+        grp_dict["excluded_data_quality"] = excluded_dq
+        grp_dict["compliant_count"] = comp_count
         grp_dict["compliance_rate"] = _safe_rate(comp_count, total_eval)
 
         records.append(grp_dict)

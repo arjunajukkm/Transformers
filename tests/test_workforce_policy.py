@@ -479,3 +479,124 @@ def test_core_metrics_calculation():
     assert metrics["approval_turnaround"]["approval_count"] == 2
     assert metrics["approval_turnaround"]["average_approval_turnaround_days"] == 2.5
     assert metrics["approval_turnaround"]["pending_approval_count"] == 1
+
+
+# ── Analytical Correction Tests: Governed Metrics & DQ Exclusions ─────
+
+def test_governed_attendance_exception_dq_excluded():
+    # Employee-day is an attendance exception but has daily quantity exceeds one
+    df = pd.DataFrame({
+        "Employee Number": ["EMP01", "EMP01"],
+        "Employee Name": ["Alice", "Alice"],
+        "Date": ["2026-10-01", "2026-10-01"],
+        "Status": ["A(R)", "WOH"],
+        "Attendance Type": ["Regularized", "Worked on Holiday"],
+        "Quantity": [1.0, 1.0],  # sum = 2.0 > 1.0
+    })
+    eval_df, eval_reqs, _ = _load_and_evaluate(df)
+    facts = build_employee_day_facts(eval_df)
+    assert len(facts) == 1
+    assert facts.loc[0, "employee_day_quality_status"] == "CRITICAL"
+    assert facts.loc[0, "is_metric_evaluable"] == False
+    assert "DAILY_QUANTITY_EXCEEDS_ONE" in facts.loc[0, "metric_exclusion_reason"]
+    assert facts.loc[0, "is_attendance_exception"] == True
+
+    # Governed metrics check: excluded from denominator and numerator
+    metrics = calculate_core_metrics(eval_df, eval_reqs, facts)
+    att = metrics["attendance_exception_rate"]
+    assert att["eligible_employee_days_raw"] == 1
+    assert att["evaluable_employee_days"] == 0
+    assert att["data_quality_excluded_employee_days"] == 1
+    assert att["attendance_exception_days"] == 0
+    assert att["rate"] is None  # safe when denominator is 0
+    # Raw metrics check
+    assert att["raw_attendance_exception_days"] == 1
+    assert att["raw_attendance_exception_rate"] == 100.0
+
+
+def test_governed_attendance_exception_valid_missing_swipe():
+    df = pd.DataFrame({
+        "Employee Number": ["EMP01"],
+        "Employee Name": ["Alice"],
+        "Date": ["2026-10-01"],
+        "Status": ["P(MS)"],
+        "Attendance Type": ["Missing Swipes"],
+        "Quantity": [1.0],
+    })
+    eval_df, eval_reqs, _ = _load_and_evaluate(df)
+    facts = build_employee_day_facts(eval_df)
+    assert facts.loc[0, "is_metric_evaluable"] == True
+    assert facts.loc[0, "is_attendance_exception"] == True
+
+    metrics = calculate_core_metrics(eval_df, eval_reqs, facts)
+    att = metrics["attendance_exception_rate"]
+    assert att["evaluable_employee_days"] == 1
+    assert att["attendance_exception_days"] == 1
+    assert att["rate"] == 100.0
+
+
+def test_governed_attendance_valid_present():
+    df = pd.DataFrame({
+        "Employee Number": ["EMP01"],
+        "Employee Name": ["Alice"],
+        "Date": ["2026-10-01"],
+        "Status": ["P"],
+        "Attendance Type": ["Present"],
+        "Quantity": [1.0],
+    })
+    eval_df, eval_reqs, _ = _load_and_evaluate(df)
+    facts = build_employee_day_facts(eval_df)
+    assert facts.loc[0, "is_metric_evaluable"] == True
+    assert facts.loc[0, "is_attendance_exception"] == False
+
+    metrics = calculate_core_metrics(eval_df, eval_reqs, facts)
+    att = metrics["attendance_exception_rate"]
+    assert att["evaluable_employee_days"] == 1
+    assert att["attendance_exception_days"] == 0
+    assert att["rate"] == 0.0
+
+
+def test_governed_leave_compliance_dq_uncertain():
+    # Leave request on day with daily quantity exceeds 1
+    df = pd.DataFrame({
+        "Employee Number": ["EMP01", "EMP01"],
+        "Employee Name": ["Alice", "Alice"],
+        "Date": ["2026-10-05", "2026-10-05"],
+        "Applied On": ["2026-10-05", "2026-10-05"],
+        "Status": ["CL", "CL"],
+        "Attendance Type": ["Leave", "Leave"],
+        "Leave Name": ["Casual Leave", "Casual Leave"],
+        "Quantity": [1.0, 0.5],
+    })
+    eval_df, eval_reqs, _ = _load_and_evaluate(df)
+    metrics = calculate_core_metrics(eval_df, eval_reqs)
+    leave_met = metrics["overall_leave_application_compliance"]
+    assert leave_met["total_applicable"] == 1
+    assert leave_met["excluded_data_quality"] == 1
+    assert leave_met["data_quality_uncertain_count"] == 1
+    assert leave_met["evaluable"] == 0
+    assert leave_met["denominator"] == 0
+    assert leave_met["numerator"] == 0
+    assert leave_met["rate"] is None
+
+
+def test_governed_wfh_compliance_dq_uncertain():
+    # WFH event on day with daily quantity exceeds 1
+    df = pd.DataFrame({
+        "Employee Number": ["EMP01", "EMP01"],
+        "Employee Name": ["Alice", "Alice"],
+        "Date": ["2026-10-05", "2026-10-05"],
+        "Applied On": ["2026-10-05", "2026-10-05"],
+        "Status": ["WFH", "P"],
+        "Attendance Type": ["Work From Home", "Present"],
+        "Quantity": [1.0, 0.5],
+    })
+    eval_df, eval_reqs, _ = _load_and_evaluate(df)
+    metrics = calculate_core_metrics(eval_df, eval_reqs)
+    wfh_met = metrics["wfh_application_compliance"]
+    assert wfh_met["total_applicable"] == 1
+    assert wfh_met["excluded_data_quality"] == 1
+    assert wfh_met["data_quality_uncertain_count"] == 1
+    assert wfh_met["evaluable"] == 0
+    assert wfh_met["rate"] is None
+
