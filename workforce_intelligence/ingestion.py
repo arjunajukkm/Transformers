@@ -33,9 +33,9 @@ def load_workforce_data(
     Returns:
         Tuple of:
             - cleaned_df: Fully normalized pandas DataFrame with derived analytical
-              fields and row-level data quality flags.
+              fields, immutable record_id, source_row_number, and row-level data quality flags.
             - quality_report: DataQualityReport detailing data health, missingness,
-              and validation warnings.
+              same-day quantity validations, exact duplicate counts, and structured findings.
 
     Raises:
         FileNotFoundError: If the specified file does not exist.
@@ -60,18 +60,19 @@ def load_workforce_data(
             df = xl.parse(xl.sheet_names[0], dtype=object)
 
     # 2. Normalize and Map Column Names to Canonical Schema
-    # Preserves all existing columns, mapping recognizable ones to canonical names
     column_mapping = {col: resolve_canonical_column(col) for col in df.columns}
+    source_columns_mapped = list(column_mapping.values())
     df = df.rename(columns=column_mapping)
 
     # 3. Validate Required Schema
     _, missing_optional = validate_schema(df)
 
-    # 4. Normalize Data Types & Derived Analytical Fields
+    # 4. Normalize Data Types, Traceability Fields & Derived Analytical Fields
     normalized_df, norm_meta = normalize_workforce_dataframe(df)
 
     # 5. Apply Non-Destructive Data Quality Flags
-    flagged_df = apply_quality_flags(normalized_df)
+    # Exact duplicate detection strictly evaluates original source columns
+    flagged_df = apply_quality_flags(normalized_df, source_columns=source_columns_mapped)
 
     # 6. Compute Data Quality Report
     quality_report = compute_quality_report(

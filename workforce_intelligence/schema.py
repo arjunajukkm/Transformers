@@ -54,7 +54,7 @@ CANONICAL_COLUMNS: List[str] = (
     + TIME_COLUMNS
 )
 
-# ── Required vs. Optional Fields ──────────────────────────────────────
+# ── Required / Core vs. Optional Fields ───────────────────────────────
 
 REQUIRED_COLUMNS: List[str] = [
     "Employee Number",
@@ -64,8 +64,44 @@ REQUIRED_COLUMNS: List[str] = [
     "Attendance Type",
 ]
 
+CORE_COLUMNS: List[str] = REQUIRED_COLUMNS
+
 OPTIONAL_COLUMNS: List[str] = [
     col for col in CANONICAL_COLUMNS if col not in REQUIRED_COLUMNS
+]
+
+# ── Row-Level Data Quality Flags ──────────────────────────────────────
+
+DQ_FLAGS: List[str] = [
+    "dq_missing_employee",
+    "dq_missing_date",
+    "dq_invalid_date",
+    "dq_unknown_attendance",
+    "dq_exact_duplicate",
+    "dq_multiple_records_same_date",
+    "dq_daily_quantity_exceeds_one",
+    "dq_missing_quantity",
+]
+
+# ── Derived Analytical Metric Columns ─────────────────────────────────
+
+DERIVED_COLUMNS: List[str] = [
+    "record_id",
+    "source_row_number",
+    "attendance_category",
+    "daily_total_quantity",
+    "in_time_minutes",
+    "out_time_minutes",
+    "total_hours_minutes",
+    "break_duration_minutes",
+    "effective_hours_minutes",
+    "event_month",
+    "event_year",
+    "day_of_week",
+    "day_of_week_number",
+    "is_weekend",
+    "application_lag_days",
+    "approval_turnaround_days",
 ]
 
 # ── Case-Insensitive / Alias Normalization Mapping ────────────────────
@@ -74,10 +110,8 @@ def _build_column_lookup() -> Dict[str, str]:
     """Create normalized key lookup dictionary for standard column names."""
     lookup: Dict[str, str] = {}
     for col in CANONICAL_COLUMNS:
-        # standard normalized key: lowercase with spaces and special chars stripped
         norm_key = "".join(ch for ch in col.lower() if ch.isalnum())
         lookup[norm_key] = col
-        # also exact lower stripped key
         lookup[col.strip().lower()] = col
 
     # Common aliases
@@ -104,6 +138,7 @@ def _build_column_lookup() -> Dict[str, str]:
         "breakduration": "Break Duration",
         "intime": "In Time",
         "outtime": "Out Time",
+        "qty": "Quantity",
     }
     for alias_key, canonical in aliases.items():
         lookup[alias_key] = canonical
@@ -121,10 +156,8 @@ def resolve_canonical_column(col_name: str) -> str:
     If no match is found, returns the original column name stripped of whitespace.
     """
     cleaned = str(col_name).strip()
-    # Direct case-insensitive match
     if cleaned.lower() in COLUMN_LOOKUP:
         return COLUMN_LOOKUP[cleaned.lower()]
-    # Alphanumeric normalized match
     norm_key = "".join(ch for ch in cleaned.lower() if ch.isalnum())
     if norm_key in COLUMN_LOOKUP:
         return COLUMN_LOOKUP[norm_key]
