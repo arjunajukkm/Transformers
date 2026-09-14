@@ -48,7 +48,7 @@ export const PatternFilterBar: React.FC<PatternFilterBarProps> = ({
         )}
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2.5">
+      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 lg:grid-cols-4 xl:grid-cols-8 gap-2.5">
         {/* Search */}
         <div className="relative min-w-0">
           <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
@@ -112,6 +112,39 @@ export const PatternFilterBar: React.FC<PatternFilterBarProps> = ({
           </select>
         </div>
 
+        {/* Location */}
+        <div className="min-w-0">
+          <select
+            value={filters.location || ''}
+            onChange={(e) => handleChange('location', e.target.value)}
+            disabled={isLoading || (options.location?.length || 0) === 0}
+            className="w-full px-2.5 py-1.5 text-xs bg-slate-50 border border-app-border rounded-lg text-app-text-primary focus:outline-none focus:ring-1 focus:ring-brand-blue focus:bg-white transition-all cursor-pointer truncate"
+          >
+            <option value="">All Locations</option>
+            {options.location?.map((loc) => (
+              <option key={loc} value={loc}>
+                {loc}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {/* Reporting Manager */}
+        <div className="min-w-0">
+          <select
+            value={filters.reporting_manager || ''}
+            onChange={(e) => handleChange('reporting_manager', e.target.value)}
+            disabled={isLoading || (options.reporting_manager?.length || 0) === 0}
+            className="w-full px-2.5 py-1.5 text-xs bg-slate-50 border border-app-border rounded-lg text-app-text-primary focus:outline-none focus:ring-1 focus:ring-brand-blue focus:bg-white transition-all cursor-pointer truncate"
+          >
+            <option value="">All Managers</option>
+            {options.reporting_manager?.map((mgr) => (
+              <option key={mgr} value={mgr}>
+                {mgr}
+              </option>
+            ))}
+          </select>
+        </div>
 
         {/* Strength */}
         <div className="min-w-0">
@@ -146,3 +179,4 @@ export const PatternFilterBar: React.FC<PatternFilterBarProps> = ({
     </div>
   );
 };
+

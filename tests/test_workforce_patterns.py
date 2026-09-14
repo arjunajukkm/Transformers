@@ -306,13 +306,13 @@ def test_extended_remote_leave_sequence():
 # ── TEST 11: REPEAT PROCESS NON-COMPLIANCE ─────────────────────────────────────
 def test_repeat_process_non_compliance():
     """
-    Employee has 2 late leave requests + 1 late WFH event across 3 distinct dates.
+    Employee has 2 late leave requests + 1 late WFH event across 3 distinct dates (all post-policy effective date).
     Matches REPEAT_PROCESS_NON_COMPLIANCE with PRIORITY severity.
     """
     rows = [
-        {"Employee Number": "EMP01", "Employee Name": "Alice", "Date": "2026-09-01", "Status": "CL", "Attendance Type": "Leave", "Quantity": 1.0, "Applied On": "2026-09-08", "include_in_analysis": True},
-        {"Employee Number": "EMP01", "Employee Name": "Alice", "Date": "2026-09-15", "Status": "CL", "Attendance Type": "Leave", "Quantity": 1.0, "Applied On": "2026-09-22", "include_in_analysis": True},
-        {"Employee Number": "EMP01", "Employee Name": "Alice", "Date": "2026-10-01", "Status": "WFH", "Attendance Type": "Work From Home", "Quantity": 1.0, "Applied On": "2026-10-08", "include_in_analysis": True},
+        {"Employee Number": "EMP01", "Employee Name": "Alice", "Date": "2026-10-01", "Status": "CL", "Attendance Type": "Leave", "Quantity": 1.0, "Applied On": "2026-10-08", "include_in_analysis": True},
+        {"Employee Number": "EMP01", "Employee Name": "Alice", "Date": "2026-10-15", "Status": "CL", "Attendance Type": "Leave", "Quantity": 1.0, "Applied On": "2026-10-22", "include_in_analysis": True},
+        {"Employee Number": "EMP01", "Employee Name": "Alice", "Date": "2026-11-01", "Status": "WFH", "Attendance Type": "Work From Home", "Quantity": 1.0, "Applied On": "2026-11-08", "include_in_analysis": True},
     ]
     df = pd.DataFrame(rows)
     eval_df, eval_reqs = evaluate_policy(df)
@@ -322,6 +322,7 @@ def test_repeat_process_non_compliance():
     assert len(proc_p) == 1
     assert proc_p[0].event_count == 3
     assert proc_p[0].severity == PatternSeverity.PRIORITY.value
+
 
 
 # ── TEST 12: GROUP CONCENTRATION VS ORGANIZATION BASELINE ──────────────────────
@@ -422,3 +423,188 @@ def test_pattern_score_and_id_stability():
     assert stat == PatternStatus.ACTIVE.value
     assert comp["frequency"] == 60.0
     assert comp["persistence"] == 100.0
+
+
+# ── TEST 16: POLICY-EFFECTIVE-DATE GOVERNANCE — ALL HISTORICAL (SEP 2026) ─────
+def test_pre_policy_late_leave_timing_governance():
+    """
+    3 late leave applications in September 2026 (pre-policy effective date).
+    Expected:
+    - Recurring timing pattern detected
+    - enforceable_failure_count = 0
+    - historical_timing_miss_count = 3
+    - severity = INFO (observational, not non-compliance)
+    - description / why_detected does NOT call them enforceable non-compliance
+    """
+    rows = [
+        {"Employee Number": "EMP01", "Employee Name": "Alice", "Date": "2026-09-02", "Status": "CL", "Attendance Type": "Casual Leave", "Quantity": 1.0, "Applied On": "2026-09-08", "Approved On": "2026-09-09", "Approval Status": "Approved", "include_in_analysis": True},
+        {"Employee Number": "EMP01", "Employee Name": "Alice", "Date": "2026-09-10", "Status": "CL", "Attendance Type": "Casual Leave", "Quantity": 1.0, "Applied On": "2026-09-16", "Approved On": "2026-09-17", "Approval Status": "Approved", "include_in_analysis": True},
+        {"Employee Number": "EMP01", "Employee Name": "Alice", "Date": "2026-09-20", "Status": "CL", "Attendance Type": "Casual Leave", "Quantity": 1.0, "Applied On": "2026-09-26", "Approved On": "2026-09-27", "Approval Status": "Approved", "include_in_analysis": True},
+    ]
+    df = pd.DataFrame(rows)
+    eval_df, reqs = evaluate_policy(df)
+    summary, patterns = detect_patterns(eval_df, evaluated_requests=reqs)
+
+    p = next((p for p in patterns if p.pattern_type == "RECURRING_LATE_LEAVE_APPLICATION"), None)
+    assert p is not None
+    assert p.enforceable_failure_count == 0
+    assert p.historical_timing_miss_count == 3
+    assert p.historical_evidence_count == 3
+    assert p.enforceable_evidence_count == 0
+    assert p.severity == PatternSeverity.INFO.value
+    assert "Timing" in p.pattern_title
+    assert "before the revised policy became effective" in p.why_detected
+
+
+# ── TEST 17: POLICY-EFFECTIVE-DATE GOVERNANCE — ALL ENFORCEABLE (OCT/NOV 2026) ─
+def test_post_policy_late_leave_timing_governance():
+    """
+    3 late leave applications in October/November 2026 (post-effective date).
+    Expected:
+    - enforceable_failure_count = 3
+    - historical_timing_miss_count = 0
+    - severity = ATTENTION
+    """
+    rows = [
+        {"Employee Number": "EMP01", "Employee Name": "Alice", "Date": "2026-10-05", "Status": "CL", "Attendance Type": "Casual Leave", "Quantity": 1.0, "Applied On": "2026-10-12", "Approved On": "2026-10-13", "Approval Status": "Approved", "include_in_analysis": True},
+        {"Employee Number": "EMP01", "Employee Name": "Alice", "Date": "2026-10-15", "Status": "CL", "Attendance Type": "Casual Leave", "Quantity": 1.0, "Applied On": "2026-10-22", "Approved On": "2026-10-23", "Approval Status": "Approved", "include_in_analysis": True},
+        {"Employee Number": "EMP01", "Employee Name": "Alice", "Date": "2026-11-02", "Status": "CL", "Attendance Type": "Casual Leave", "Quantity": 1.0, "Applied On": "2026-11-09", "Approved On": "2026-11-10", "Approval Status": "Approved", "include_in_analysis": True},
+    ]
+    df = pd.DataFrame(rows)
+    eval_df, reqs = evaluate_policy(df)
+    summary, patterns = detect_patterns(eval_df, evaluated_requests=reqs)
+
+    p = next((p for p in patterns if p.pattern_type == "RECURRING_LATE_LEAVE_APPLICATION"), None)
+    assert p is not None
+    assert p.enforceable_failure_count == 3
+    assert p.historical_timing_miss_count == 0
+    assert p.severity == PatternSeverity.ATTENTION.value
+
+
+# ── TEST 18: POLICY-EFFECTIVE-DATE GOVERNANCE — MIXED HISTORICAL & ENFORCEABLE ──
+def test_mixed_policy_late_leave_timing_governance():
+    """
+    2 September benchmark misses + 2 October actual failures.
+    Expected:
+    - Total event_count = 4
+    - historical_evidence_count = 2
+    - enforceable_evidence_count = 2
+    - description distinguishes both
+    """
+    rows = [
+        {"Employee Number": "EMP01", "Employee Name": "Alice", "Date": "2026-09-02", "Status": "CL", "Attendance Type": "Casual Leave", "Quantity": 1.0, "Applied On": "2026-09-08", "Approved On": "2026-09-09", "Approval Status": "Approved", "include_in_analysis": True},
+        {"Employee Number": "EMP01", "Employee Name": "Alice", "Date": "2026-09-10", "Status": "CL", "Attendance Type": "Casual Leave", "Quantity": 1.0, "Applied On": "2026-09-16", "Approved On": "2026-09-17", "Approval Status": "Approved", "include_in_analysis": True},
+        {"Employee Number": "EMP01", "Employee Name": "Alice", "Date": "2026-10-05", "Status": "CL", "Attendance Type": "Casual Leave", "Quantity": 1.0, "Applied On": "2026-10-12", "Approved On": "2026-10-13", "Approval Status": "Approved", "include_in_analysis": True},
+        {"Employee Number": "EMP01", "Employee Name": "Alice", "Date": "2026-10-15", "Status": "CL", "Attendance Type": "Casual Leave", "Quantity": 1.0, "Applied On": "2026-10-22", "Approved On": "2026-10-23", "Approval Status": "Approved", "include_in_analysis": True},
+    ]
+    df = pd.DataFrame(rows)
+    eval_df, reqs = evaluate_policy(df)
+    summary, patterns = detect_patterns(eval_df, evaluated_requests=reqs)
+
+    p = next((p for p in patterns if p.pattern_type == "RECURRING_LATE_LEAVE_APPLICATION"), None)
+    assert p is not None
+    assert p.event_count == 4
+    assert p.historical_evidence_count == 2
+    assert p.enforceable_evidence_count == 2
+    assert p.historical_timing_miss_count == 2
+    assert p.enforceable_failure_count == 2
+    assert "2 occurred after 1 October 2026 and were enforceable process non-compliance" in p.why_detected
+
+
+# ── TEST 19: REPEAT_PROCESS_NON_COMPLIANCE GATING BY POLICY EFFECTIVE DATE ────
+def test_repeat_process_non_compliance_policy_governance():
+    """
+    Test that REPEAT_PROCESS_NON_COMPLIANCE is:
+    - NOT generated when failures are only pre-October benchmark misses.
+    - GENERATED when >= 3 failures occur on/after 1 October 2026.
+    """
+    # A. Only September failures -> NOT generated
+    rows_sep = [
+        {"Employee Number": "EMP01", "Employee Name": "Alice", "Date": "2026-09-02", "Status": "CL", "Attendance Type": "Casual Leave", "Quantity": 1.0, "Applied On": "2026-09-08", "Approved On": "2026-09-09", "Approval Status": "Approved", "include_in_analysis": True},
+        {"Employee Number": "EMP01", "Employee Name": "Alice", "Date": "2026-09-10", "Status": "WFH", "Attendance Type": "Work From Home", "Quantity": 1.0, "Applied On": "2026-09-16", "Approved On": "2026-09-17", "Approval Status": "Approved", "include_in_analysis": True},
+        {"Employee Number": "EMP01", "Employee Name": "Alice", "Date": "2026-09-20", "Status": "CL", "Attendance Type": "Casual Leave", "Quantity": 1.0, "Applied On": "2026-09-26", "Approved On": "2026-09-27", "Approval Status": "Approved", "include_in_analysis": True},
+    ]
+    df_sep = pd.DataFrame(rows_sep)
+    eval_df_sep, reqs_sep = evaluate_policy(df_sep)
+    _, patterns_sep = detect_patterns(eval_df_sep, evaluated_requests=reqs_sep)
+    p_rep_sep = next((p for p in patterns_sep if p.pattern_type == "REPEAT_PROCESS_NON_COMPLIANCE"), None)
+    assert p_rep_sep is None, "REPEAT_PROCESS_NON_COMPLIANCE must not trigger from pre-policy benchmark failures alone."
+
+    # B. Post-October failures -> GENERATED
+    rows_oct = [
+        {"Employee Number": "EMP01", "Employee Name": "Alice", "Date": "2026-10-02", "Status": "CL", "Attendance Type": "Casual Leave", "Quantity": 1.0, "Applied On": "2026-10-08", "Approved On": "2026-10-09", "Approval Status": "Approved", "include_in_analysis": True},
+        {"Employee Number": "EMP01", "Employee Name": "Alice", "Date": "2026-10-10", "Status": "WFH", "Attendance Type": "Work From Home", "Quantity": 1.0, "Applied On": "2026-10-16", "Approved On": "2026-10-17", "Approval Status": "Approved", "include_in_analysis": True},
+        {"Employee Number": "EMP01", "Employee Name": "Alice", "Date": "2026-10-20", "Status": "CL", "Attendance Type": "Casual Leave", "Quantity": 1.0, "Applied On": "2026-10-26", "Approved On": "2026-10-27", "Approval Status": "Approved", "include_in_analysis": True},
+    ]
+    df_oct = pd.DataFrame(rows_oct)
+    eval_df_oct, reqs_oct = evaluate_policy(df_oct)
+    _, patterns_oct = detect_patterns(eval_df_oct, evaluated_requests=reqs_oct)
+    p_rep_oct = next((p for p in patterns_oct if p.pattern_type == "REPEAT_PROCESS_NON_COMPLIANCE"), None)
+    assert p_rep_oct is not None
+    assert p_rep_oct.enforceable_failure_count == 3
+    assert p_rep_oct.severity == PatternSeverity.PRIORITY.value
+
+
+# ── TEST 20: REFERENCE POPULATION & CONCENTRATION SEMANTICS ───────────────────
+def test_concentration_reference_population_retains_org_baseline():
+    """
+    Verify that GROUP_CONCENTRATION explicitly returns:
+    - entity_rate
+    - reference_rate (Organization rate)
+    - reference_population = 'ORGANIZATION'
+    - rate_difference_pp
+    And when passed org_baseline_exception_rate, it does not silently mutate.
+    """
+    # Department A has 4 exceptions out of 10 days = 40%
+    # Overall org baseline = 10%
+    dept_rows = []
+    for i in range(10):
+        d_str = f"2026-09-{i+1:02d}"
+        is_exc = i < 4
+        dept_rows.append({
+            "Employee Number": f"EMP{i:02d}",
+            "Employee Name": f"User {i}",
+            "Department": "Finance",
+            "Date": d_str,
+            "Status": "MS" if is_exc else "P",
+            "Attendance Type": "Missing Swipes" if is_exc else "Present",
+            "Quantity": 1.0,
+            "include_in_analysis": True,
+        })
+
+    df = pd.DataFrame(dept_rows)
+    eval_df, _ = evaluate_policy(df)
+    summary, patterns = detect_patterns(
+        eval_df,
+        org_baseline_exception_rate=10.0,
+    )
+
+    p_dept = next((p for p in patterns if p.pattern_type == "GROUP_CONCENTRATION" and p.entity_id == "Finance"), None)
+    assert p_dept is not None
+    assert p_dept.rate == 40.0
+    assert p_dept.reference_rate == 10.0
+    assert p_dept.reference_population == "ORGANIZATION"
+    assert p_dept.rate_difference_pp == 30.0
+
+
+# ── TEST 21: MULTI-FILE EVIDENCE TRACEABILITY IDENTITY ────────────────────────
+def test_multi_file_evidence_identity():
+    """
+    Verify that evidence items preserve source_file_name, source_row_number, and record_id.
+    """
+    rows = [
+        {"Employee Number": "EMP01", "Employee Name": "Alice", "Date": "2026-10-01", "Status": "WFH", "Attendance Type": "Work From Home", "Quantity": 1.0, "Applied On": "2026-10-08", "Approved On": "2026-10-09", "Approval Status": "Approved", "include_in_analysis": True, "source_file_name": "October.xlsx", "source_row_number": 418, "record_id": "REC_OCT_418"},
+        {"Employee Number": "EMP01", "Employee Name": "Alice", "Date": "2026-10-02", "Status": "WFH", "Attendance Type": "Work From Home", "Quantity": 1.0, "Applied On": "2026-10-09", "Approved On": "2026-10-10", "Approval Status": "Approved", "include_in_analysis": True, "source_file_name": "October.xlsx", "source_row_number": 419, "record_id": "REC_OCT_419"},
+        {"Employee Number": "EMP01", "Employee Name": "Alice", "Date": "2026-10-03", "Status": "WFH", "Attendance Type": "Work From Home", "Quantity": 1.0, "Applied On": "2026-10-10", "Approved On": "2026-10-11", "Approval Status": "Approved", "include_in_analysis": True, "source_file_name": "October.xlsx", "source_row_number": 420, "record_id": "REC_OCT_420"},
+    ]
+    df = pd.DataFrame(rows)
+    eval_df, _ = evaluate_policy(df)
+    _, patterns = detect_patterns(eval_df)
+
+    p_wfh = next((p for p in patterns if p.pattern_type == "RECURRING_LATE_WFH_APPLICATION"), None)
+    assert p_wfh is not None
+    assert len(p_wfh.evidence_items) == 3
+    assert p_wfh.evidence_items[0].source_file_name == "October.xlsx"
+    assert p_wfh.evidence_items[0].source_row_number == 418
+    assert p_wfh.evidence_items[0].record_id == "REC_OCT_418"
+

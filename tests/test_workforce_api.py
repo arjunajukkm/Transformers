@@ -570,4 +570,115 @@ def test_patterns_detection_and_drilldown_via_api():
     assert len(detail["evidence_items"]) >= 3
 
 
+# 22. Filter recalculation for patterns (Reporting Manager & Location)
+def test_patterns_reporting_manager_and_location_filter_recalculation():
+    """
+    Test 19 from Stage 5.1 spec:
+    Verify Reporting Manager and Location filters recalculate PatternContext from underlying population.
+    Manager A patterns must not appear when Manager B is selected.
+    """
+    rows = [
+        # Emp 1 under Manager A, Location Mumbai -> 3 Missing Swipes
+        {"Employee Number": "EMP01", "Employee Name": "Alice", "Department": "Eng", "Location": "Mumbai", "Reporting Manager": "Manager A", "Date": "2026-09-01", "Status": "MS", "Attendance Type": "Missing Swipes", "Quantity": 1.0},
+        {"Employee Number": "EMP01", "Employee Name": "Alice", "Department": "Eng", "Location": "Mumbai", "Reporting Manager": "Manager A", "Date": "2026-09-02", "Status": "MS", "Attendance Type": "Missing Swipes", "Quantity": 1.0},
+        {"Employee Number": "EMP01", "Employee Name": "Alice", "Department": "Eng", "Location": "Mumbai", "Reporting Manager": "Manager A", "Date": "2026-09-03", "Status": "MS", "Attendance Type": "Missing Swipes", "Quantity": 1.0},
 
+        # Emp 2 under Manager B, Location Bengaluru -> 3 Missing Swipes
+        {"Employee Number": "EMP02", "Employee Name": "Bob", "Department": "Sales", "Location": "Bengaluru", "Reporting Manager": "Manager B", "Date": "2026-09-01", "Status": "MS", "Attendance Type": "Missing Swipes", "Quantity": 1.0},
+        {"Employee Number": "EMP02", "Employee Name": "Bob", "Department": "Sales", "Location": "Bengaluru", "Reporting Manager": "Manager B", "Date": "2026-09-02", "Status": "MS", "Attendance Type": "Missing Swipes", "Quantity": 1.0},
+        {"Employee Number": "EMP02", "Employee Name": "Bob", "Department": "Sales", "Location": "Bengaluru", "Reporting Manager": "Manager B", "Date": "2026-09-03", "Status": "MS", "Attendance Type": "Missing Swipes", "Quantity": 1.0},
+    ]
+    csv_bytes = pd.DataFrame(rows).to_csv(index=False).encode("utf-8")
+    client.post(
+        "/api/workforce/upload",
+        files={"file": ("manager_location_sample.csv", io.BytesIO(csv_bytes), "text/csv")},
+    )
+
+    # 1. Unfiltered: both EMP01 and EMP02 patterns present
+    res_all = client.get("/api/workforce/patterns")
+    assert res_all.status_code == 200
+    all_entity_ids = [p["entity_id"] for p in res_all.json()["patterns"]]
+    assert "EMP01" in all_entity_ids
+    assert "EMP02" in all_entity_ids
+
+    # 2. Filter by reporting_manager=Manager A: only EMP01 patterns
+    res_mgr_a = client.get("/api/workforce/patterns?reporting_manager=Manager%20A")
+    assert res_mgr_a.status_code == 200
+    mgr_a_entity_ids = [p["entity_id"] for p in res_mgr_a.json()["patterns"]]
+    assert "EMP01" in mgr_a_entity_ids
+    assert "EMP02" not in mgr_a_entity_ids
+
+    # 3. Filter by reporting_manager=Manager B: only EMP02 patterns
+    res_mgr_b = client.get("/api/workforce/patterns?reporting_manager=Manager%20B")
+    assert res_mgr_b.status_code == 200
+    mgr_b_entity_ids = [p["entity_id"] for p in res_mgr_b.json()["patterns"]]
+    assert "EMP02" in mgr_b_entity_ids
+    assert "EMP01" not in mgr_b_entity_ids
+
+    # 4. Filter by location=Mumbai: only EMP01 patterns
+    res_mumbai = client.get("/api/workforce/patterns?location=Mumbai")
+    assert res_mumbai.status_code == 200
+    mumbai_entity_ids = [p["entity_id"] for p in res_mumbai.json()["patterns"]]
+    assert "EMP01" in mumbai_entity_ids
+    assert "EMP02" not in mumbai_entity_ids
+
+    # 5. Filter by location=Bengaluru: only EMP02 patterns
+    res_blr = client.get("/api/workforce/patterns?location=Bengaluru")
+    assert res_blr.status_code == 200
+    blr_entity_ids = [p["entity_id"] for p in res_blr.json()["patterns"]]
+    assert "EMP02" in blr_entity_ids
+    assert "EMP01" not in blr_entity_ids
+
+
+# 23. Score guardrails: Verify forbidden risk / person scores are absent from all API endpoints
+def test_score_guardrails_across_api_responses():
+    """
+    Test 20 from Stage 5.1 spec:
+    Verify no API response contains fields such as employee_risk_score,
+    manager_risk_score, overall_risk_score, or performance_score.
+    """
+    rows = [
+        {"Employee Number": "EMP01", "Employee Name": "Alice", "Department": "Eng", "Date": "2026-09-01", "Status": "MS", "Attendance Type": "Missing Swipes", "Quantity": 1.0},
+        {"Employee Number": "EMP01", "Employee Name": "Alice", "Department": "Eng", "Date": "2026-09-02", "Status": "MS", "Attendance Type": "Missing Swipes", "Quantity": 1.0},
+        {"Employee Number": "EMP01", "Employee Name": "Alice", "Department": "Eng", "Date": "2026-09-03", "Status": "MS", "Attendance Type": "Missing Swipes", "Quantity": 1.0},
+    ]
+    csv_bytes = pd.DataFrame(rows).to_csv(index=False).encode("utf-8")
+    client.post(
+        "/api/workforce/upload",
+        files={"file": ("guardrail_sample.csv", io.BytesIO(csv_bytes), "text/csv")},
+    )
+
+    forbidden_fields = [
+        "employee_risk_score",
+        "manager_risk_score",
+        "overall_risk_score",
+        "performance_score",
+        "employee_score",
+        "manager_score",
+        "risk_score",
+        "people_score",
+        "overall_people_score",
+    ]
+
+    endpoints = [
+        "/api/workforce/summary",
+        "/api/workforce/trends?metric=attendance_exception_rate",
+        "/api/workforce/patterns",
+        "/api/workforce/patterns/catalogue",
+    ]
+
+    for ep in endpoints:
+        res = client.get(ep)
+        assert res.status_code == 200
+        text = res.text.lower()
+        for field in forbidden_fields:
+            assert f'"{field}"' not in text, f"Forbidden field '{field}' found in {ep} response"
+
+    # Also check pattern detail response
+    patterns_res = client.get("/api/workforce/patterns")
+    p_id = patterns_res.json()["patterns"][0]["pattern_id"]
+    detail_res = client.get(f"/api/workforce/patterns/{p_id}")
+    assert detail_res.status_code == 200
+    detail_text = detail_res.text.lower()
+    for field in forbidden_fields:
+        assert f'"{field}"' not in detail_text, f"Forbidden field '{field}' found in detail response"

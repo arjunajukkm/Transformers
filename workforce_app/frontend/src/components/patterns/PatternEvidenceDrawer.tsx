@@ -187,7 +187,7 @@ export const PatternEvidenceDrawer: React.FC<PatternEvidenceDrawerProps> = ({
               </div>
 
               <div className="bg-slate-50 rounded-lg p-3 border border-slate-100">
-                <div className="text-[11px] font-medium text-slate-500 uppercase">Pattern Score</div>
+                <div className="text-[11px] font-medium text-slate-500 uppercase">Pattern Strength Score</div>
                 <div className="text-lg font-bold text-purple-700 mt-0.5">
                   {current.pattern_score} / 100
                 </div>
@@ -256,16 +256,12 @@ export const PatternEvidenceDrawer: React.FC<PatternEvidenceDrawerProps> = ({
                               )}
                             </td>
                             <td className="py-2.5 px-3 text-slate-500 text-[11px] whitespace-nowrap">
-                              {item.source_file_name && (
-                                <div className="font-mono text-slate-600 truncate max-w-[140px]" title={item.source_file_name}>
-                                  {item.source_file_name}
-                                </div>
-                              )}
-                              {item.source_row_number && (
-                                <div>Row #{item.source_row_number}</div>
-                              )}
+                              <div className="font-mono text-slate-700">
+                                {item.source_file_name ? `${item.source_file_name} · ` : ''}
+                                {item.source_row_number ? `Row ${item.source_row_number}` : (item.request_id ? `Req ${item.request_id.slice(0, 12)}` : 'Governed Fact')}
+                              </div>
                               {item.record_id && (
-                                <div className="text-[10px] text-slate-400 font-mono">
+                                <div className="text-[10px] text-slate-400 font-mono truncate max-w-[150px]" title={item.record_id}>
                                   {item.record_id.slice(0, 16)}...
                                 </div>
                               )}
@@ -278,9 +274,15 @@ export const PatternEvidenceDrawer: React.FC<PatternEvidenceDrawerProps> = ({
                 </div>
               )}
             </div>
+
+            {/* Subtle Investigation Disclaimer */}
+            <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg text-[11px] text-slate-500 leading-relaxed">
+              <strong>Notice:</strong> Patterns highlight recurring process behaviour for investigation. They do not establish intent, misconduct, or individual performance.
+            </div>
           </div>
 
           {/* Drawer Footer */}
+
           <div className="p-4 border-t border-app-border bg-slate-50 flex items-center justify-between text-xs text-app-text-muted">
             <span>Pattern ID: {current.pattern_id}</span>
             <button

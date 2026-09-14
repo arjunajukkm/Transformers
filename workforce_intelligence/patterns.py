@@ -33,6 +33,11 @@ from workforce_intelligence.requests import LeaveRequest, build_leave_requests
 MIN_PATTERN_EVENTS = 3
 DEFAULT_LONG_APPROVAL_DAYS = 5
 MONTH_BOUNDARY_DAYS = 3  # First / Last 3 calendar days of month
+POLICY_EFFECTIVE_DATE_STR = "2026-10-01"
+
+# GUARDRAIL: pattern_score is STRICTLY an instance-level recurrence strength score (0-100) for one specific pattern.
+# It MUST NEVER be aggregated into employee_score, manager_score, risk_score, overall_people_score, or performance_score.
+# Its purpose is strictly to explain the recurrence strength of this specific observed pattern.
 
 
 class PatternCategory(str, Enum):
@@ -154,7 +159,7 @@ PATTERN_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "pattern_type": "RECURRING_LONG_APPROVAL_TURNAROUND",
         "label": "Long Approval Turnaround",
         "category": PatternCategory.APPROVAL.value,
-        "description": "Manager approval turnaround repeatedly exceeds 5 calendar days from submission.",
+        "description": "Long turnaround is currently identified using a configurable 5-day operational review threshold. This is not an official approval SLA.",
         "default_min_support": 3,
         "severity": PatternSeverity.ATTENTION.value,
         "entity_levels": [EntityType.REPORTING_MANAGER.value],
@@ -232,7 +237,7 @@ PATTERN_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "pattern_type": "REPEAT_PROCESS_NON_COMPLIANCE",
         "label": "Repeat Process Non-Compliance",
         "category": PatternCategory.PROCESS.value,
-        "description": "Multiple process timing non-compliances (late leave, insufficient notice, late WFH, missing date) across dates.",
+        "description": "Multiple enforceable process timing non-compliances (late leave, insufficient notice, late WFH, missing date) across dates after the policy effective date.",
         "default_min_support": 3,
         "severity": PatternSeverity.PRIORITY.value,
         "entity_levels": [EntityType.EMPLOYEE.value],
@@ -319,6 +324,8 @@ class PatternResult:
     opportunity_count: Optional[int]
     rate: Optional[float]
     reference_rate: Optional[float] = None
+    reference_population: Optional[str] = None
+    rate_difference_pp: Optional[float] = None
 
     first_observed_date: Optional[str] = None
     last_observed_date: Optional[str] = None
@@ -333,6 +340,13 @@ class PatternResult:
     description: str = ""
     why_detected: str = ""
     summary_evidence: str = ""
+
+    # Policy Governance Fields
+    historical_evidence_count: int = 0
+    enforceable_evidence_count: int = 0
+    policy_effective_date: Optional[str] = None
+    enforceable_failure_count: Optional[int] = None
+    historical_timing_miss_count: Optional[int] = None
 
     evidence_record_ids: List[str] = field(default_factory=list)
     evidence_source_rows: List[int] = field(default_factory=list)
@@ -358,6 +372,8 @@ class PatternResult:
             "opportunity_count": self.opportunity_count,
             "rate": self.rate,
             "reference_rate": self.reference_rate,
+            "reference_population": self.reference_population,
+            "rate_difference_pp": self.rate_difference_pp,
             "first_observed_date": self.first_observed_date,
             "last_observed_date": self.last_observed_date,
             "months_active": self.months_active,
@@ -369,6 +385,11 @@ class PatternResult:
             "why_detected": self.why_detected,
             "summary_evidence": self.summary_evidence,
             "evidence_count": len(self.evidence_items),
+            "historical_evidence_count": self.historical_evidence_count,
+            "enforceable_evidence_count": self.enforceable_evidence_count,
+            "policy_effective_date": self.policy_effective_date,
+            "enforceable_failure_count": self.enforceable_failure_count,
+            "historical_timing_miss_count": self.historical_timing_miss_count,
             "latest_period": self.latest_period,
             "data_quality_excluded_count": self.data_quality_excluded_count,
         }
@@ -380,6 +401,7 @@ class PatternResult:
             # First 5 items in summary view
             d["evidence_preview"] = [item.to_dict() for item in self.evidence_items[:5]]
         return d
+
 
 
 @dataclass
@@ -512,6 +534,7 @@ class PatternContext:
         employee_day_facts: Optional[pd.DataFrame] = None,
         min_events: int = MIN_PATTERN_EVENTS,
         long_approval_days: int = DEFAULT_LONG_APPROVAL_DAYS,
+        org_baseline_exception_rate: Optional[float] = None,
     ):
         self.min_events = min_events
         self.long_approval_days = long_approval_days
@@ -561,14 +584,17 @@ class PatternContext:
         else:
             self.dataset_max_date = date.today()
 
-        # 5. Organization Baselines
+        # 5. Organization Baselines (Preserve organization-wide reference rate if provided)
         self.org_evaluable_days = int(self.facts["is_metric_evaluable"].sum()) if not self.facts.empty else 0
         self.org_exception_days = int((self.facts["is_attendance_exception"] == True).sum()) if not self.facts.empty else 0
-        self.org_exception_rate = (
-            round((self.org_exception_days / self.org_evaluable_days) * 100.0, 2)
-            if self.org_evaluable_days > 0
-            else 0.0
-        )
+        if org_baseline_exception_rate is not None:
+            self.org_exception_rate = float(org_baseline_exception_rate)
+        else:
+            self.org_exception_rate = (
+                round((self.org_exception_days / self.org_evaluable_days) * 100.0, 2)
+                if self.org_evaluable_days > 0
+                else 0.0
+            )
 
         self.org_missing_swipes = int((self.facts["has_missing_swipe"] == True).sum()) if not self.facts.empty else 0
         self.org_missing_swipe_rate = (
@@ -576,6 +602,7 @@ class PatternContext:
             if self.org_evaluable_days > 0
             else 0.0
         )
+
 
 
 # ── MODULAR DETECTORS ──────────────────────────────────────────────────────────
@@ -794,6 +821,8 @@ def detect_attendance_recurrence_patterns(ctx: PatternContext) -> List[PatternRe
 def detect_leave_wfh_timing_patterns(ctx: PatternContext) -> List[PatternResult]:
     """
     Detect recurring late leave applications, late WFH applications, and missing application dates.
+    Accurately distinguishes pre-policy historical timing behavior (before 2026-10-01) from
+    enforceable post-policy non-compliance (from 2026-10-01 onwards).
     """
     results: List[PatternResult] = []
 
@@ -817,6 +846,12 @@ def detect_leave_wfh_timing_patterns(ctx: PatternContext) -> List[PatternResult]
 
                 dates = late_reqs["request_start_date"].dropna().tolist()
                 first_d, last_d, months_active, dist_months = _extract_date_metadata(dates)
+
+                # Partition into pre-policy (historical) vs post-policy (enforceable)
+                hist_reqs = late_reqs[late_reqs["request_start_date"].astype(str) < POLICY_EFFECTIVE_DATE_STR]
+                enf_reqs = late_reqs[late_reqs["request_start_date"].astype(str) >= POLICY_EFFECTIVE_DATE_STR]
+                hist_count = len(hist_reqs)
+                enf_count = len(enf_reqs)
 
                 days_since = (ctx.dataset_max_date - pd.to_datetime(last_d).date()).days if last_d and ctx.dataset_max_date else 0
                 score, components, strength, persistence, status = _calculate_pattern_score_and_badges(
@@ -846,21 +881,42 @@ def detect_leave_wfh_timing_patterns(ctx: PatternContext) -> List[PatternResult]
                         )
                     )
 
-                why = (
-                    f"Detected because {late_count} of {total_reqs} leave requests ({rate:.1f}%) "
-                    f"were submitted outside the policy notice/submission window across {dist_months} month(s)."
-                )
+                # Neutral wording based on policy effective date
+                if enf_count == 0:
+                    title = "Recurring Late Leave Application Timing"
+                    severity = PatternSeverity.INFO.value
+                    why = (
+                        f"Detected because {late_count} late application timing events were observed across {', '.join(months_active)}. "
+                        f"These occurred before the revised policy became effective on 1 October 2026."
+                    )
+                    summary_ev = f"{late_count} historical late timing events (pre-policy effective date)"
+                elif enf_count > 0 and hist_count == 0:
+                    title = "Recurring Late Leave Applications"
+                    severity = PatternSeverity.ATTENTION.value
+                    why = (
+                        f"Detected because {late_count} of {total_reqs} leave requests ({rate:.1f}%) "
+                        f"were submitted outside the policy notice/submission window across {', '.join(months_active)}."
+                    )
+                    summary_ev = f"{late_count} of {total_reqs} leave requests submitted late ({rate:.1f}%)"
+                else:
+                    title = "Recurring Late Leave Applications"
+                    severity = PatternSeverity.ATTENTION.value
+                    why = (
+                        f"Detected because {late_count} late application timing events were observed across {dist_months} month(s); "
+                        f"{enf_count} occurred after 1 October 2026 and were enforceable process non-compliance."
+                    )
+                    summary_ev = f"{late_count} late applications ({enf_count} enforceable, {hist_count} pre-policy)"
 
                 results.append(
                     PatternResult(
                         pattern_id=f"RECURRING_LATE_LEAVE_APPLICATION_EMP_{emp_num_str}",
                         pattern_type="RECURRING_LATE_LEAVE_APPLICATION",
                         pattern_category=PatternCategory.LEAVE.value,
-                        pattern_title="Recurring Late Leave Applications",
+                        pattern_title=title,
                         entity_type=EntityType.EMPLOYEE.value,
                         entity_id=emp_num_str,
                         entity_name=emp_name_str,
-                        severity=PatternSeverity.ATTENTION.value,
+                        severity=severity,
                         strength=strength,
                         persistence=persistence,
                         status=status,
@@ -876,7 +932,12 @@ def detect_leave_wfh_timing_patterns(ctx: PatternContext) -> List[PatternResult]
                         score_components=components,
                         description=f"Repeated late leave submissions for {emp_name_str}.",
                         why_detected=why,
-                        summary_evidence=f"{late_count} of {total_reqs} leave requests submitted late ({rate:.1f}%)",
+                        summary_evidence=summary_ev,
+                        historical_evidence_count=hist_count,
+                        enforceable_evidence_count=enf_count,
+                        policy_effective_date=POLICY_EFFECTIVE_DATE_STR,
+                        enforceable_failure_count=enf_count,
+                        historical_timing_miss_count=hist_count,
                         evidence_items=evidence_items,
                         latest_period=months_active[-1] if months_active else None,
                     )
@@ -890,6 +951,9 @@ def detect_leave_wfh_timing_patterns(ctx: PatternContext) -> List[PatternResult]
                 rate = round((missing_count / total_reqs) * 100.0, 1) if total_reqs > 0 else 100.0
                 dates = missing_app_reqs["request_start_date"].dropna().tolist()
                 first_d, last_d, months_active, dist_months = _extract_date_metadata(dates)
+
+                hist_missing = missing_app_reqs[missing_app_reqs["request_start_date"].astype(str) < POLICY_EFFECTIVE_DATE_STR]
+                enf_missing = missing_app_reqs[missing_app_reqs["request_start_date"].astype(str) >= POLICY_EFFECTIVE_DATE_STR]
 
                 days_since = (ctx.dataset_max_date - pd.to_datetime(last_d).date()).days if last_d and ctx.dataset_max_date else 0
                 score, components, strength, persistence, status = _calculate_pattern_score_and_badges(
@@ -943,6 +1007,11 @@ def detect_leave_wfh_timing_patterns(ctx: PatternContext) -> List[PatternResult]
                         description=f"Leave requests lacking application timestamp for {emp_name_str}.",
                         why_detected=f"Detected because {missing_count} leave requests lacked an application timestamp across {dist_months} month(s).",
                         summary_evidence=f"{missing_count} leave requests with missing application dates",
+                        historical_evidence_count=len(hist_missing),
+                        enforceable_evidence_count=len(enf_missing),
+                        policy_effective_date=POLICY_EFFECTIVE_DATE_STR,
+                        enforceable_failure_count=len(enf_missing),
+                        historical_timing_miss_count=len(hist_missing),
                         evidence_items=evidence_items,
                         latest_period=months_active[-1] if months_active else None,
                     )
@@ -967,6 +1036,11 @@ def detect_leave_wfh_timing_patterns(ctx: PatternContext) -> List[PatternResult]
 
                     dates = late_wfh["Date"].dropna().tolist()
                     first_d, last_d, months_active, dist_months = _extract_date_metadata(dates)
+
+                    hist_wfh = late_wfh[late_wfh["Date"].astype(str) < POLICY_EFFECTIVE_DATE_STR]
+                    enf_wfh = late_wfh[late_wfh["Date"].astype(str) >= POLICY_EFFECTIVE_DATE_STR]
+                    hist_count = len(hist_wfh)
+                    enf_count = len(enf_wfh)
 
                     days_since = (ctx.dataset_max_date - pd.to_datetime(last_d).date()).days if last_d and ctx.dataset_max_date else 0
                     score, components, strength, persistence, status = _calculate_pattern_score_and_badges(
@@ -996,16 +1070,41 @@ def detect_leave_wfh_timing_patterns(ctx: PatternContext) -> List[PatternResult]
                             )
                         )
 
+                    if enf_count == 0:
+                        title = "Recurring Late WFH Application Timing"
+                        severity = PatternSeverity.INFO.value
+                        why = (
+                            f"Detected because {late_count} WFH application timing events were observed across {', '.join(months_active)}. "
+                            f"These occurred before the revised policy became effective on 1 October 2026."
+                        )
+                        summary_ev = f"{late_count} historical late WFH submissions (pre-policy effective date)"
+                    elif enf_count > 0 and hist_count == 0:
+                        title = "Recurring Late WFH Applications"
+                        severity = PatternSeverity.ATTENTION.value
+                        why = (
+                            f"Detected because {late_count} of {total_wfh} WFH events ({rate:.1f}%) "
+                            f"were submitted >3 days after the availed date across {dist_months} month(s)."
+                        )
+                        summary_ev = f"{late_count} of {total_wfh} WFH applications submitted late ({rate:.1f}%)"
+                    else:
+                        title = "Recurring Late WFH Applications"
+                        severity = PatternSeverity.ATTENTION.value
+                        why = (
+                            f"Detected because {late_count} late WFH application timing events were observed across {dist_months} month(s); "
+                            f"{enf_count} occurred after 1 October 2026 and were enforceable process non-compliance."
+                        )
+                        summary_ev = f"{late_count} late WFH submissions ({enf_count} enforceable, {hist_count} pre-policy)"
+
                     results.append(
                         PatternResult(
                             pattern_id=f"RECURRING_LATE_WFH_APPLICATION_EMP_{emp_num_str}",
                             pattern_type="RECURRING_LATE_WFH_APPLICATION",
                             pattern_category=PatternCategory.WFH.value,
-                            pattern_title="Recurring Late WFH Applications",
+                            pattern_title=title,
                             entity_type=EntityType.EMPLOYEE.value,
                             entity_id=emp_num_str,
                             entity_name=emp_name_str,
-                            severity=PatternSeverity.ATTENTION.value,
+                            severity=severity,
                             strength=strength,
                             persistence=persistence,
                             status=status,
@@ -1020,14 +1119,20 @@ def detect_leave_wfh_timing_patterns(ctx: PatternContext) -> List[PatternResult]
                             pattern_score=score,
                             score_components=components,
                             description=f"Repeated late WFH submissions for {emp_name_str}.",
-                            why_detected=f"Detected because {late_count} of {total_wfh} WFH events ({rate:.1f}%) were submitted >3 days after the availed date across {dist_months} month(s).",
-                            summary_evidence=f"{late_count} of {total_wfh} WFH applications submitted late ({rate:.1f}%)",
+                            why_detected=why,
+                            summary_evidence=summary_ev,
+                            historical_evidence_count=hist_count,
+                            enforceable_evidence_count=enf_count,
+                            policy_effective_date=POLICY_EFFECTIVE_DATE_STR,
+                            enforceable_failure_count=enf_count,
+                            historical_timing_miss_count=hist_count,
                             evidence_items=evidence_items,
                             latest_period=months_active[-1] if months_active else None,
                         )
                     )
 
     return results
+
 
 
 def detect_approval_delay_patterns(ctx: PatternContext) -> List[PatternResult]:
@@ -1098,7 +1203,8 @@ def detect_approval_delay_patterns(ctx: PatternContext) -> List[PatternResult]:
         why = (
             f"Detected because {long_count} of {total_appr} approved requests ({pct_long:.1f}%) "
             f"had an approval turnaround >= {ctx.long_approval_days} calendar days (median: {med_turnaround}d, avg: {avg_turnaround}d) "
-            f"across {dist_months} month(s)."
+            f"across {dist_months} month(s). Long turnaround is currently identified using a configurable {ctx.long_approval_days}-day "
+            f"operational review threshold. This is not an official approval SLA."
         )
 
         results.append(
@@ -1126,13 +1232,14 @@ def detect_approval_delay_patterns(ctx: PatternContext) -> List[PatternResult]:
                 score_components=components,
                 description=f"Long approval cycles for requests under {mgr_str}.",
                 why_detected=why,
-                summary_evidence=f"{long_count} of {total_appr} approvals took >={ctx.long_approval_days} days (median: {med_turnaround}d)",
+                summary_evidence=f"{long_count} of {total_appr} approvals took >={ctx.long_approval_days} days (median: {med_turnaround}d, operational threshold)",
                 evidence_items=evidence_items,
                 latest_period=months_active[-1] if months_active else None,
             )
         )
 
     return results
+
 
 
 def detect_calendar_patterns(ctx: PatternContext) -> List[PatternResult]:
@@ -1622,7 +1729,8 @@ def detect_process_non_compliance_patterns(ctx: PatternContext) -> List[PatternR
     Detect broader multi-type process non-compliance at the employee level:
     Aggregates late leave, insufficient notice, late WFH, and missing timestamps.
     Requirements:
-    - >= 3 failures
+    - ONLY counts enforceable failures occurring ON or AFTER the policy effective date (2026-10-01).
+    - >= 3 enforceable failures
     - >= 2 distinct dates
     """
     results: List[PatternResult] = []
@@ -1645,6 +1753,7 @@ def detect_process_non_compliance_patterns(ctx: PatternContext) -> List[PatternR
                 "date": st_d,
                 "type": f"Leave ({r.get('leave_name_normalized') or 'Leave'})",
                 "reason": str(r.get("non_compliance_reason")),
+                "status": str(r.get("compliance_status")),
                 "name": str(r.get("employee_name") or emp_num),
                 "manager": str(r.get("reporting_manager") or ""),
                 "lag": r.get("request_application_lag_days"),
@@ -1667,6 +1776,7 @@ def detect_process_non_compliance_patterns(ctx: PatternContext) -> List[PatternR
                 "date": dt_str,
                 "type": "Work From Home",
                 "reason": str(r.get("non_compliance_reason")),
+                "status": str(r.get("compliance_status")),
                 "name": str(r.get("Employee Name") or emp_num),
                 "manager": str(r.get("Reporting Manager") or ""),
                 "lag": r.get("application_lag_days"),
@@ -1676,15 +1786,20 @@ def detect_process_non_compliance_patterns(ctx: PatternContext) -> List[PatternR
             })
 
     for emp_num, fails in emp_failures.items():
-        if len(fails) < ctx.min_events:
+        # Separate enforceable (>= 2026-10-01) from historical (< 2026-10-01)
+        enf_fails = [f for f in fails if f["date"] >= POLICY_EFFECTIVE_DATE_STR]
+        hist_fails = [f for f in fails if f["date"] < POLICY_EFFECTIVE_DATE_STR]
+
+        # Gating: Must have at least 3 enforceable failures across at least 2 distinct dates
+        if len(enf_fails) < ctx.min_events:
             continue
 
-        distinct_dates = {f["date"] for f in fails if f["date"]}
+        distinct_dates = {f["date"] for f in enf_fails if f["date"]}
         if len(distinct_dates) < 2:
             continue
 
-        count = len(fails)
-        emp_name_str = fails[0]["name"]
+        count = len(enf_fails)
+        emp_name_str = enf_fails[0]["name"]
         dates = list(distinct_dates)
         first_d, last_d, months_active, dist_months = _extract_date_metadata(dates)
 
@@ -1697,9 +1812,9 @@ def detect_process_non_compliance_patterns(ctx: PatternContext) -> List[PatternR
             days_since_last=days_since,
         )
 
-        fail_types = sorted(list({f["type"] for f in fails}))
+        fail_types = sorted(list({f["type"] for f in enf_fails}))
         evidence_items = []
-        for f in fails:
+        for f in enf_fails:
             evidence_items.append(
                 PatternEvidenceItem(
                     date=f["date"],
@@ -1708,7 +1823,7 @@ def detect_process_non_compliance_patterns(ctx: PatternContext) -> List[PatternR
                     reporting_manager=f["manager"] or None,
                     event_type="PROCESS_NON_COMPLIANCE",
                     status=f["type"],
-                    details=f"{f['type']}: {f['reason'].replace('_', ' ').title()}",
+                    details=f"{f['type']}: {f['reason'].replace('_', ' ').title()} (enforceable)",
                     request_id=f.get("req_id"),
                     record_id=f.get("rec_id"),
                     source_file_name=f.get("source_file"),
@@ -1717,8 +1832,8 @@ def detect_process_non_compliance_patterns(ctx: PatternContext) -> List[PatternR
             )
 
         why = (
-            f"Detected because {count} process non-compliance events across {len(distinct_dates)} distinct dates "
-            f"were observed across {dist_months} month(s) (involving {', '.join(fail_types)})."
+            f"Detected because {count} enforceable process non-compliance events across {len(distinct_dates)} distinct dates "
+            f"were observed after 1 October 2026 across {dist_months} month(s) (involving {', '.join(fail_types)})."
         )
 
         results.append(
@@ -1744,9 +1859,14 @@ def detect_process_non_compliance_patterns(ctx: PatternContext) -> List[PatternR
                 recurrence_count=count,
                 pattern_score=score,
                 score_components=components,
-                description=f"Multiple process timing failures across leave and WFH for {emp_name_str}.",
+                description=f"Multiple enforceable process timing non-compliances for {emp_name_str}.",
                 why_detected=why,
-                summary_evidence=f"{count} process failures across {len(distinct_dates)} dates ({', '.join(fail_types)})",
+                summary_evidence=f"{count} enforceable process failures across {len(distinct_dates)} dates ({', '.join(fail_types)})",
+                historical_evidence_count=len(hist_fails),
+                enforceable_evidence_count=len(enf_fails),
+                policy_effective_date=POLICY_EFFECTIVE_DATE_STR,
+                enforceable_failure_count=len(enf_fails),
+                historical_timing_miss_count=len(hist_fails),
                 evidence_items=evidence_items,
                 latest_period=months_active[-1] if months_active else None,
             )
@@ -1831,20 +1951,21 @@ def detect_group_concentration_patterns(ctx: PatternContext) -> List[PatternResu
 
             ent_key = group_name.replace(" ", "_").upper()
             pattern_id = f"{p_type}_{ent_type.value}_{ent_key}"
+            diff_pp = round(group_rate - ctx.org_exception_rate, 1)
 
             if ent_type == EntityType.REPORTING_MANAGER:
                 title = f"Team Exception Concentration Under {group_name}"
                 desc = f"Attendance exceptions for team members reporting to {group_name} exceed organization average."
                 why = (
                     f"Detected because the team under {group_name} recorded {exc_count} exceptions in {opp_count} evaluable days "
-                    f"({group_rate:.1f}%), exceeding the organization baseline of {ctx.org_exception_rate:.1f}% by {group_rate - ctx.org_exception_rate:.1f} points."
+                    f"({group_rate:.1f}%), exceeding the organization baseline of {ctx.org_exception_rate:.1f}% by {diff_pp:.1f} points."
                 )
             else:
                 title = f"{group_name} Exception Rate Concentration"
                 desc = f"Exception rate in {group_name} is materially higher than the organization baseline."
                 why = (
                     f"Detected because {group_name} recorded {exc_count} exceptions across {opp_count} evaluable days "
-                    f"({group_rate:.1f}%), compared to the organization baseline of {ctx.org_exception_rate:.1f}%."
+                    f"({group_rate:.1f}%), compared to the organization baseline of {ctx.org_exception_rate:.1f}% (+{diff_pp:.1f} pp)."
                 )
 
             results.append(
@@ -1864,6 +1985,8 @@ def detect_group_concentration_patterns(ctx: PatternContext) -> List[PatternResu
                     opportunity_count=opp_count,
                     rate=group_rate,
                     reference_rate=ctx.org_exception_rate,
+                    reference_population="ORGANIZATION",
+                    rate_difference_pp=diff_pp,
                     first_observed_date=first_d,
                     last_observed_date=last_d,
                     months_active=months_active,
@@ -1880,6 +2003,7 @@ def detect_group_concentration_patterns(ctx: PatternContext) -> List[PatternResu
             )
 
     return results
+
 
 
 def detect_month_boundary_patterns(ctx: PatternContext) -> List[PatternResult]:
@@ -2051,6 +2175,7 @@ def detect_patterns(
     filters: Optional[Dict[str, Any]] = None,
     min_events: int = MIN_PATTERN_EVENTS,
     long_approval_days: int = DEFAULT_LONG_APPROVAL_DAYS,
+    org_baseline_exception_rate: Optional[float] = None,
 ) -> Tuple[PatternSummary, List[PatternResult]]:
     """
     Execute all modular pattern detectors against the governed analytical context.
@@ -2063,7 +2188,9 @@ def detect_patterns(
         employee_day_facts=employee_day_facts,
         min_events=min_events,
         long_approval_days=long_approval_days,
+        org_baseline_exception_rate=org_baseline_exception_rate,
     )
+
 
     all_patterns: List[PatternResult] = []
 

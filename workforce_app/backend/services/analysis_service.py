@@ -459,13 +459,22 @@ class AnalysisSession:
             detector_filters["employee_number"] = employee_number
         if reporting_manager:
             detector_filters["reporting_manager"] = reporting_manager
+        # Compute true organization-wide exception baseline from full dataset
+
+        org_baseline_rate: Optional[float] = None
+        if self.employee_day_facts is not None and not self.employee_day_facts.empty:
+            full_eval = int(self.employee_day_facts["is_metric_evaluable"].sum())
+            full_exc = int((self.employee_day_facts["is_attendance_exception"] == True).sum())
+            org_baseline_rate = round((full_exc / full_eval) * 100.0, 2) if full_eval > 0 else 0.0
 
         summary, pattern_results = detect_patterns(
             evaluated_df=df,
             evaluated_requests=reqs,
             employee_day_facts=facts,
             filters=detector_filters if detector_filters else None,
+            org_baseline_exception_rate=org_baseline_rate,
         )
+
 
         payload = {
             "loaded": True,

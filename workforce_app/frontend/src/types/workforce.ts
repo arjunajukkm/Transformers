@@ -262,6 +262,8 @@ export interface PatternResult {
   opportunity_count?: number | null;
   rate?: number | null;
   reference_rate?: number | null;
+  reference_population?: string | null;
+  rate_difference_pp?: number | null;
   first_observed_date?: string | null;
   last_observed_date?: string | null;
   months_active: string[];
@@ -278,6 +280,11 @@ export interface PatternResult {
   why_detected: string;
   summary_evidence: string;
   evidence_count: number;
+  historical_evidence_count?: number;
+  enforceable_evidence_count?: number;
+  policy_effective_date?: string | null;
+  enforceable_failure_count?: number | null;
+  historical_timing_miss_count?: number | null;
   latest_period?: string | null;
   data_quality_excluded_count?: number;
   evidence_preview?: PatternEvidenceItem[];
@@ -285,6 +292,7 @@ export interface PatternResult {
   evidence_record_ids?: string[];
   evidence_source_rows?: number[];
 }
+
 
 export interface PatternSummary {
   total_patterns: number;
