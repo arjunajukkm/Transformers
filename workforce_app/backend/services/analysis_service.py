@@ -15,7 +15,9 @@ from workforce_intelligence import (
     DataQualityReport,
     build_employee_day_facts,
     calculate_core_metrics,
+    calculate_time_series_trends,
     evaluate_policy,
+    get_trend_metric_catalogue,
     load_workforce_data,
 )
 from workforce_intelligence.policy_config import POLICY_EFFECTIVE_DATE, POLICY_EFFECTIVE_DATE_STR
@@ -81,9 +83,14 @@ class AnalysisSession:
     def is_loaded(self) -> bool:
         return self.evaluated_df is not None and not self.evaluated_df.empty
 
-    def load_dataset(self, file_path: Union[str, Path], filename: str) -> Dict[str, Any]:
-        """Ingest, evaluate, and store workforce dataset."""
-        cleaned_df, report = load_workforce_data(file_path)
+    def load_dataset(
+        self,
+        file_path: Union[str, Path, Sequence[Union[str, Path]]],
+        filename: str,
+        file_names: Optional[Sequence[str]] = None,
+    ) -> Dict[str, Any]:
+        """Ingest, evaluate, and store workforce dataset (single or multi-file)."""
+        cleaned_df, report = load_workforce_data(file_path, file_names=file_names)
         eval_df, eval_reqs = evaluate_policy(cleaned_df)
         facts = build_employee_day_facts(eval_df)
 
@@ -178,6 +185,8 @@ class AnalysisSession:
         unique_emps = int(df["Employee Number"].nunique()) if "Employee Number" in df.columns else 0
         d_min: Optional[date] = None
         d_max: Optional[date] = None
+        date_min_str: Optional[str] = None
+        date_max_str: Optional[str] = None
         if "Date" in df.columns and not df["Date"].dropna().empty:
             d_min = df["Date"].dropna().min().date()
             d_max = df["Date"].dropna().max().date()
@@ -216,12 +225,14 @@ class AnalysisSession:
             "core_completeness": qr.core_data_completeness_percentage,
             "full_completeness": qr.full_data_completeness_percentage,
             "exact_duplicate_rows": qr.exact_duplicate_rows,
+            "cross_file_exact_duplicate_rows": qr.cross_file_exact_duplicate_rows,
             "critical_findings": crit_count,
             "warning_findings": warn_count,
             "info_findings": info_count,
             "excluded_employee_days": excluded_days,
             "findings": normalized_findings,
             "missing_optional_columns": qr.missing_expected_optional_columns,
+            "source_files": qr.source_files,
         }
 
         # 3. Monthly Trend points
@@ -323,6 +334,63 @@ class AnalysisSession:
         }
 
         return _serialize_value(payload)
+
+    def get_trends(
+        self,
+        metric: str = "attendance_exception_rate",
+        filters: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Generate time series and trends payload for a selected metric."""
+        if not self.is_loaded or self.evaluated_df is None:
+            return {
+                "loaded": False,
+                "message": "No workforce dataset loaded",
+            }
+
+        df = self.evaluated_df.copy()
+        facts = self.employee_day_facts.copy() if self.employee_day_facts is not None else pd.DataFrame()
+        reqs = list(self.leave_requests) if self.leave_requests is not None else []
+
+        active_filters = {}
+        if filters:
+            for k, col in [
+                ("business_unit", "Business Unit"),
+                ("department", "Department"),
+                ("sub_department", "Sub Department"),
+                ("location", "Location"),
+                ("reporting_manager", "Reporting Manager"),
+            ]:
+                val = filters.get(k)
+                if val:
+                    val_str = str(val).strip()
+                    if col in df.columns:
+                        df = df[df[col].astype(str).str.strip() == val_str]
+                    if not facts.empty and col in facts.columns:
+                        facts = facts[facts[col].astype(str).str.strip() == val_str]
+                    active_filters[k] = val_str
+
+            active_emps = set(df["Employee Number"].dropna())
+            reqs = [r for r in reqs if r.get("employee_number") in active_emps]
+
+        trend_res = calculate_time_series_trends(
+            evaluated_df=df,
+            evaluated_requests=reqs,
+            employee_day_facts=facts,
+            metric_id=metric,
+        )
+
+        payload = {
+            "loaded": True,
+            "filename": self.filename,
+            "active_filters": active_filters,
+            "available_filters": self.get_available_filters(),
+            **trend_res,
+        }
+        return _serialize_value(payload)
+
+    def get_trend_metrics(self) -> Dict[str, Any]:
+        """Return grouped trend metrics catalogue."""
+        return _serialize_value(get_trend_metric_catalogue())
 
 
 # Global analysis session singleton

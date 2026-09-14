@@ -48,6 +48,8 @@ def build_employee_day_facts(df: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame(columns=cols)
 
     # Filter rows with valid Employee Number and Date
+    if "Employee Number" not in df.columns or "Date" not in df.columns:
+        return pd.DataFrame()
     valid_mask = df["Employee Number"].notna() & df["Date"].notna()
     work_df = df[valid_mask].copy()
 

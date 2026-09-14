@@ -30,6 +30,13 @@ from workforce_intelligence.validation import (
     ValidationError,
 )
 
+from workforce_intelligence.trends import (
+    TREND_METRICS,
+    TrendMetricDefinition,
+    calculate_time_series_trends,
+    get_trend_metric_catalogue,
+)
+
 __all__ = [
     "load_workforce_data",
     "evaluate_policy",
@@ -37,6 +44,10 @@ __all__ = [
     "build_employee_day_facts",
     "calculate_core_metrics",
     "calculate_compliance_breakdown",
+    "calculate_time_series_trends",
+    "get_trend_metric_catalogue",
+    "TREND_METRICS",
+    "TrendMetricDefinition",
     "PolicyConfig",
     "LeaveRequest",
     "DataQualityReport",

@@ -41,6 +41,7 @@ class DataQualityReport:
 
     # Duplication & same-day distribution
     exact_duplicate_rows: int = 0
+    cross_file_exact_duplicate_rows: int = 0
     employee_date_multiple_record_groups: int = 0
     daily_quantity_exceeds_one_groups: int = 0
     daily_quantity_exceeds_one_rows: int = 0
@@ -58,6 +59,9 @@ class DataQualityReport:
     invalid_applied_on_count: int = 0
     invalid_approved_on_count: int = 0
     unknown_attendance_category_count: int = 0
+
+    # Source files summary
+    source_files: List[Dict[str, Any]] = field(default_factory=list)
 
     # Diagnostics & findings
     missing_expected_optional_columns: List[str] = field(default_factory=list)
@@ -77,6 +81,7 @@ def compute_quality_report(
     df: pd.DataFrame,
     meta: Dict[str, Any],
     missing_optional_cols: List[str],
+    source_files: Optional[List[Dict[str, Any]]] = None,
 ) -> DataQualityReport:
     """
     Compute comprehensive data quality metrics and structured findings
@@ -98,6 +103,7 @@ def compute_quality_report(
             missing_expected_optional_columns=missing_optional_cols,
             quality_findings=[empty_finding.to_dict()],
             warnings=["Dataset contains 0 rows."],
+            source_files=source_files or [],
         )
 
     # 1. Unique employees
@@ -122,6 +128,7 @@ def compute_quality_report(
 
     # 4. Exact duplicate rows
     exact_duplicate_rows = int(df["dq_exact_duplicate"].sum()) if "dq_exact_duplicate" in df.columns else 0
+    cross_file_exact_duplicate_rows = int(df["dq_cross_file_exact_duplicate"].sum()) if "dq_cross_file_exact_duplicate" in df.columns else 0
 
     # 5. Multiple records on same (Employee Number, Date)
     employee_date_multiple_record_groups = 0
@@ -210,6 +217,13 @@ def compute_quality_report(
             count=exact_duplicate_rows,
             message=f"{exact_duplicate_rows} exact duplicate row(s) detected in source dataset.",
         ))
+    if cross_file_exact_duplicate_rows > 0:
+        findings.append(QualityFinding(
+            severity="WARNING",
+            code="CROSS_FILE_EXACT_DUPLICATE",
+            count=cross_file_exact_duplicate_rows,
+            message=f"{cross_file_exact_duplicate_rows} exact duplicate row(s) detected across uploaded source files.",
+        ))
     if missing_qty > 0:
         findings.append(QualityFinding(
             severity="WARNING",
@@ -267,6 +281,7 @@ def compute_quality_report(
         core_data_completeness_percentage=core_completeness,
         full_data_completeness_percentage=full_completeness,
         exact_duplicate_rows=exact_duplicate_rows,
+        cross_file_exact_duplicate_rows=cross_file_exact_duplicate_rows,
         employee_date_multiple_record_groups=employee_date_multiple_record_groups,
         daily_quantity_exceeds_one_groups=daily_quantity_exceeds_one_groups,
         daily_quantity_exceeds_one_rows=daily_quantity_exceeds_one_rows,
@@ -281,6 +296,7 @@ def compute_quality_report(
         invalid_applied_on_count=invalid_applied_on_cnt,
         invalid_approved_on_count=invalid_approved_on_cnt,
         unknown_attendance_category_count=unknown_attendance_cnt,
+        source_files=source_files or [],
         quality_findings=[f.to_dict() for f in findings],
         warnings=warnings,
         data_completeness_percentage=full_completeness,

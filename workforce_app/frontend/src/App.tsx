@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { Sidebar, NavTab } from './components/layout/Sidebar';
 import { Overview } from './pages/Overview';
 import { Data } from './pages/Data';
+import { Trends } from './pages/Trends';
 import { PlaceholderPage } from './pages/PlaceholderPage';
 import { fetchSummary, uploadDataset } from './services/api';
 import { DashboardResponse, ActiveFilters } from './types/workforce';
@@ -33,17 +34,17 @@ export const App: React.FC = () => {
     loadSummary();
   }, [loadSummary]);
 
-  // Handle file upload
-  const handleFileUpload = async (file: File) => {
+  // Handle file upload (supports single or multi-file)
+  const handleFileUpload = async (fileOrFiles: File | File[]) => {
     setIsLoading(true);
     setUploadError(null);
     try {
-      const result = await uploadDataset(file);
+      const result = await uploadDataset(fileOrFiles);
       setData(result);
       setActiveFilters({});
       setActiveTab('overview');
     } catch (err: any) {
-      setUploadError(err.message || 'Failed to process file.');
+      setUploadError(err.message || 'Failed to process file(s).');
     } finally {
       setIsLoading(false);
     }
@@ -92,9 +93,9 @@ export const App: React.FC = () => {
 
       case 'trends':
         return (
-          <PlaceholderPage
-            title="Trends"
-            subtitle="Track process behaviour and policy adoption over time."
+          <Trends
+            data={data}
+            onNavigateToData={() => setActiveTab('data')}
           />
         );
 

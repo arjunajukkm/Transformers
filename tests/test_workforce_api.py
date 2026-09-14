@@ -246,3 +246,174 @@ def test_actual_sample_file_api_smoke_test():
     assert att["data_quality_excluded_employee_days"] == 1
     assert att["attendance_exception_days"] == 2
     assert att["rate"] == 28.57
+
+
+# 11. GET /api/workforce/trends/metrics returns grouped catalogue
+def test_get_trend_metrics_catalogue():
+    res = client.get("/api/workforce/trends/metrics")
+    assert res.status_code == 200
+    data = res.json()
+    assert "Compliance" in data
+    assert "Attendance" in data
+    assert "Approval" in data
+    assert "Working Time" in data
+    comp_ids = [m["id"] for m in data["Compliance"]]
+    assert "leave_application_compliance" in comp_ids
+    att_ids = [m["id"] for m in data["Attendance"]]
+    assert "attendance_exception_rate" in att_ids
+
+
+# 12. GET /api/workforce/trends with no dataset loaded
+def test_get_trends_no_dataset():
+    res = client.get("/api/workforce/trends")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["loaded"] is False
+    assert "No workforce dataset loaded" in data["message"]
+
+
+# 13. GET /api/workforce/trends invalid metric
+def test_get_trends_invalid_metric():
+    df = pd.DataFrame({
+        "Employee Number": ["EMP01"],
+        "Employee Name": ["Alice"],
+        "Date": ["2026-09-04"],
+        "Status": ["P"],
+        "Attendance Type": ["Present"],
+        "Quantity": [1.0],
+    })
+    csv_bytes = df.to_csv(index=False).encode("utf-8")
+    client.post(
+        "/api/workforce/upload",
+        files={"file": ("sample.csv", io.BytesIO(csv_bytes), "text/csv")},
+    )
+
+    res = client.get("/api/workforce/trends?metric=non_existent_metric")
+    assert res.status_code == 400
+    assert "Unknown trend metric" in res.json()["detail"]
+
+
+# 14. GET /api/workforce/trends single-month dataset
+def test_get_trends_single_month():
+    df = pd.DataFrame({
+        "Employee Number": ["EMP01", "EMP02"],
+        "Employee Name": ["Alice", "Bob"],
+        "Date": ["2026-09-04", "2026-09-05"],
+        "Status": ["P", "A"],
+        "Attendance Type": ["Present", "Absent"],
+        "Quantity": [1.0, 1.0],
+    })
+    csv_bytes = df.to_csv(index=False).encode("utf-8")
+    client.post(
+        "/api/workforce/upload",
+        files={"file": ("single_month.csv", io.BytesIO(csv_bytes), "text/csv")},
+    )
+
+    res = client.get("/api/workforce/trends?metric=attendance_exception_rate")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["loaded"] is True
+    assert len(data["time_series"]) == 1
+    assert data["time_series"][0]["period_display"] == "Sep 2026"
+    assert data["trend_direction"] == "INSUFFICIENT_DATA"
+    assert data["current_value"] == 50.0
+    assert any("more history is required" in o.lower() for o in data["observations"])
+
+
+# 15. Multi-file upload via API
+def test_multi_file_upload_via_api():
+    df1 = pd.DataFrame({
+        "Employee Number": ["EMP01"],
+        "Employee Name": ["Alice"],
+        "Date": ["2026-08-04"],
+        "Status": ["P"],
+        "Attendance Type": ["Present"],
+        "Quantity": [1.0],
+    })
+    df2 = pd.DataFrame({
+        "Employee Number": ["EMP02"],
+        "Employee Name": ["Bob"],
+        "Date": ["2026-09-04"],
+        "Status": ["P"],
+        "Attendance Type": ["Present"],
+        "Quantity": [1.0],
+    })
+    b1 = df1.to_csv(index=False).encode("utf-8")
+    b2 = df2.to_csv(index=False).encode("utf-8")
+
+    res = client.post(
+        "/api/workforce/upload",
+        files=[
+            ("files", ("August.csv", io.BytesIO(b1), "text/csv")),
+            ("files", ("September.csv", io.BytesIO(b2), "text/csv")),
+        ],
+    )
+    assert res.status_code == 200
+    data = res.json()
+    assert data["loaded"] is True
+    assert data["dataset"]["rows"] == 2
+    assert len(data["quality"]["source_files"]) == 2
+    f_names = [f["file_name"] for f in data["quality"]["source_files"]]
+    assert "August.csv" in f_names
+    assert "September.csv" in f_names
+
+
+# 16. Multi-file upload cross-file duplicate warning via API
+def test_multi_file_cross_duplicate_via_api():
+    df1 = pd.DataFrame({
+        "Employee Number": ["EMP01"],
+        "Employee Name": ["Alice"],
+        "Date": ["2026-09-04"],
+        "Status": ["P"],
+        "Attendance Type": ["Present"],
+        "Quantity": [1.0],
+    })
+    b1 = df1.to_csv(index=False).encode("utf-8")
+    b2 = df1.to_csv(index=False).encode("utf-8")
+
+    res = client.post(
+        "/api/workforce/upload",
+        files=[
+            ("files", ("Month1.csv", io.BytesIO(b1), "text/csv")),
+            ("files", ("Month2.csv", io.BytesIO(b2), "text/csv")),
+        ],
+    )
+    assert res.status_code == 200
+    data = res.json()
+    assert data["quality"]["cross_file_exact_duplicate_rows"] == 1
+    codes = [f["code"] for f in data["quality"]["findings"]]
+    assert "CROSS_FILE_EXACT_DUPLICATE" in codes
+
+
+# 17. Filter recalculation for trends
+def test_trends_filter_recalculation():
+    df = pd.DataFrame({
+        "Employee Number": ["EMP01", "EMP02", "EMP01", "EMP02"],
+        "Employee Name": ["Alice", "Bob", "Alice", "Bob"],
+        "Date": ["2026-08-01", "2026-08-01", "2026-09-01", "2026-09-01"],
+        "Status": ["P", "A", "P", "P"],
+        "Attendance Type": ["Present", "Absent", "Present", "Present"],
+        "Quantity": [1.0, 1.0, 1.0, 1.0],
+        "Department": ["Eng", "Sales", "Eng", "Sales"],
+    })
+    csv_bytes = df.to_csv(index=False).encode("utf-8")
+    client.post(
+        "/api/workforce/upload",
+        files={"file": ("dept_trends.csv", io.BytesIO(csv_bytes), "text/csv")},
+    )
+
+    # Filter by Eng: 0 exceptions in both Aug and Sep
+    res_eng = client.get("/api/workforce/trends?metric=attendance_exception_rate&department=Eng")
+    assert res_eng.status_code == 200
+    data_eng = res_eng.json()
+    assert len(data_eng["time_series"]) == 2
+    assert all(pt["rate"] == 0.0 for pt in data_eng["time_series"])
+
+    # Filter by Sales: Aug exception is 100%, Sep exception is 0%
+    res_sales = client.get("/api/workforce/trends?metric=attendance_exception_rate&department=Sales")
+    assert res_sales.status_code == 200
+    data_sales = res_sales.json()
+    assert len(data_sales["time_series"]) == 2
+    assert data_sales["time_series"][0]["rate"] == 100.0
+    assert data_sales["time_series"][1]["rate"] == 0.0
+

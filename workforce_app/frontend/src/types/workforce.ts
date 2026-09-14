@@ -26,16 +26,29 @@ export interface QualityFinding {
   message: string;
 }
 
+export interface SourceFileInfo {
+  file_name: string;
+  file_index: number;
+  rows_ingested: number;
+  unique_employees: number;
+  date_from: string | null;
+  date_to: string | null;
+  critical_findings: number;
+  warnings: number;
+}
+
 export interface QualitySummary {
   core_completeness: number;
   full_completeness: number;
   exact_duplicate_rows: number;
+  cross_file_exact_duplicate_rows?: number;
   critical_findings: number;
   warning_findings: number;
   info_findings: number;
   excluded_employee_days: number;
   findings: QualityFinding[];
   missing_optional_columns: string[];
+  source_files?: SourceFileInfo[];
 }
 
 export interface AttendanceMetric {
@@ -110,6 +123,7 @@ export interface ActiveFilters {
   sub_department?: string;
   location?: string;
   reporting_manager?: string;
+  employee_number?: string;
 }
 
 export interface DashboardResponse {
@@ -125,3 +139,73 @@ export interface DashboardResponse {
   filters?: FilterOptions;
   active_filters?: ActiveFilters;
 }
+
+// ── Stage 4 Trends Interfaces ──────────────────────────────────────────
+
+export interface TrendMetricMeta {
+  id: string;
+  label: string;
+  category: 'Compliance' | 'Attendance' | 'Approval' | 'Working Time';
+  format: 'percentage' | 'days' | 'duration' | 'time' | 'integer';
+  direction: 'higher_is_better' | 'lower_is_better' | 'neutral';
+  description: string;
+}
+
+export interface MonthlyTrendPoint {
+  period: string;
+  period_display: string;
+  value: number | null;
+  formatted_value: string | null;
+  total_applicable?: number | null;
+  evaluable?: number | null;
+  excluded_data_quality?: number | null;
+  numerator?: number | null;
+  denominator?: number | null;
+  rate?: number | null;
+  valid_observation_count?: number | null;
+  volume_status?: 'LOW' | 'MODERATE' | 'HIGH' | null;
+  volume_label?: string | null;
+  previous_value?: number | null;
+  mom_change?: number | null;
+  mom_change_pp?: number | null;
+}
+
+export type TrendDirection =
+  | 'IMPROVING'
+  | 'DETERIORATING'
+  | 'STABLE'
+  | 'INCREASING'
+  | 'DECREASING'
+  | 'INSUFFICIENT_DATA';
+
+export interface TrendResponse {
+  loaded: boolean;
+  message?: string;
+  filename?: string | null;
+  metric?: TrendMetricMeta;
+  time_series: MonthlyTrendPoint[];
+  current_period?: string | null;
+  current_period_display?: string | null;
+  current_value: number | null;
+  current_value_formatted: string | null;
+  previous_value: number | null;
+  previous_value_formatted: string | null;
+  mom_change: number | null;
+  mom_change_pp: number | null;
+  first_available_value: number | null;
+  first_available_value_formatted: string | null;
+  change_since_first: number | null;
+  change_since_first_pp: number | null;
+  trend_direction: TrendDirection;
+  streak_direction: string | null;
+  streak_months: number;
+  regression_detected: boolean;
+  volume_status: 'LOW' | 'MODERATE' | 'HIGH' | null;
+  observations: string[];
+  date_range_display?: string;
+  policy_effective_date: string;
+  available_filters?: FilterOptions;
+  active_filters?: ActiveFilters;
+}
+
+export type GroupedTrendMetrics = Record<string, TrendMetricMeta[]>;

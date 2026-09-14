@@ -307,7 +307,11 @@ def normalize_attendance_category(
 
 # ── DataFrame Normalization Pipeline ──────────────────────────────────
 
-def normalize_workforce_dataframe(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+def normalize_workforce_dataframe(
+    df: pd.DataFrame,
+    source_file_name: Optional[str] = None,
+    source_file_index: Optional[int] = None,
+) -> Tuple[pd.DataFrame, Dict[str, Any]]:
     """
     Apply full normalization and derived field generation to a dataframe
     whose columns have already been mapped to canonical names.
@@ -320,10 +324,17 @@ def normalize_workforce_dataframe(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[
         "invalid_approved_on_count": 0,
     }
 
-    # 1. Traceability fields (record_id & source_row_number)
+    # 1. Traceability fields (record_id, source_row_number, source_file_name, source_file_index)
     # Excel header is row 1, data rows start at row 2
     df["source_row_number"] = list(range(2, len(df) + 2))
-    df["record_id"] = [f"rec_{i+1:06d}" for i in range(len(df))]
+    if source_file_index is not None:
+        df["record_id"] = [f"f{source_file_index:03d}_rec_{i+1:06d}" for i in range(len(df))]
+        df["source_file_index"] = source_file_index
+    else:
+        df["record_id"] = [f"rec_{i+1:06d}" for i in range(len(df))]
+        df["source_file_index"] = 1
+    df["source_file_name"] = source_file_name
+    df["dq_cross_file_exact_duplicate"] = False
 
     # 2. Normalize Employee Number
     if "Employee Number" in df.columns:
@@ -412,12 +423,16 @@ def normalize_workforce_dataframe(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[
         df["is_weekend"] = df["Date"].apply(
             lambda d: bool(d.dayofweek >= 5) if pd.notna(d) else None
         ).astype("boolean")
+        df["period_month"] = df["Date"].apply(
+            lambda d: d.strftime("%Y-%m-01") if pd.notna(d) else None
+        )
     else:
         df["event_month"] = pd.Series([pd.NA] * len(df), dtype="Int64")
         df["event_year"] = pd.Series([pd.NA] * len(df), dtype="Int64")
         df["day_of_week"] = pd.Series([None] * len(df), dtype="object")
         df["day_of_week_number"] = pd.Series([pd.NA] * len(df), dtype="Int64")
         df["is_weekend"] = pd.Series([pd.NA] * len(df), dtype="boolean")
+        df["period_month"] = pd.Series([None] * len(df), dtype="object")
 
     # 9. Derived Lag & Turnaround Fields
     if "Applied On" in df.columns and "Date" in df.columns:
