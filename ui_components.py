@@ -7,6 +7,7 @@ badges, and navigation items — all styled to the enterprise design system.
 """
 
 import customtkinter as ctk
+from pathlib import Path
 from tkinter import filedialog
 
 # ════════════════════════════════════════════════════════════════
@@ -43,6 +44,7 @@ ICON_HOME       = "⬢"
 ICON_KRA        = "◈"
 ICON_ABSENT     = "◉"
 ICON_ATTENDANCE = "◧"
+ICON_TIME_LEAVE = "◫"
 ICON_ANALYSE    = "⬡"
 ICON_DASHBOARD  = "⊞"
 ICON_SETTINGS   = "⚙"
@@ -414,3 +416,116 @@ def _browse_file(string_var):
     )
     if path:
         string_var.set(path)
+
+
+def create_multi_upload_row(parent, file_list: list, title: str,
+                            placeholder: str = "No files selected...",
+                            row: int = 0, on_change=None):
+    """
+    Create a multi-file upload row allowing single or multiple file selection.
+    Displays file count and names, with Add/Browse and Clear buttons.
+    """
+    frame = ctk.CTkFrame(parent, fg_color="transparent")
+    frame.grid(row=row, column=0, sticky="ew", padx=16, pady=(0, 12))
+    frame.grid_columnconfigure(0, weight=1)
+
+    lbl_title = ctk.CTkLabel(
+        frame, text=title,
+        font=ctk.CTkFont(family=FONT_FAMILY, size=12, weight="bold"),
+        text_color=COLOR_TEXT_DIM
+    )
+    lbl_title.grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 4))
+
+    info_var = ctk.StringVar(value=placeholder)
+
+    entry = ctk.CTkEntry(
+        frame, textvariable=info_var, state="readonly",
+        height=32, font=ctk.CTkFont(family=FONT_FAMILY, size=12),
+        fg_color=COLOR_INPUT_BG, border_color=COLOR_BORDER,
+        border_width=1, corner_radius=6,
+        text_color=COLOR_TEXT,
+    )
+    entry.grid(row=1, column=0, sticky="ew", padx=(0, 8))
+
+    def _refresh():
+        if not file_list:
+            info_var.set(placeholder)
+        elif len(file_list) == 1:
+            info_var.set(Path(file_list[0]).name)
+        else:
+            names = ", ".join(Path(f).name for f in file_list[:2])
+            suffix = f" (+{len(file_list)-2} more)" if len(file_list) > 2 else ""
+            info_var.set(f"{len(file_list)} files: {names}{suffix}")
+        if on_change:
+            on_change()
+
+    def _browse():
+        paths = filedialog.askopenfilenames(
+            filetypes=[("Supported files (*.xlsx, *.xls, *.csv)", "*.xlsx *.xls *.csv"),
+                       ("Excel files", "*.xlsx *.xls"),
+                       ("CSV files", "*.csv"),
+                       ("All files", "*.*")]
+        )
+        if paths:
+            for p in paths:
+                if p not in file_list:
+                    file_list.append(p)
+            _refresh()
+
+    def _clear():
+        file_list.clear()
+        _refresh()
+
+    btn_browse = ctk.CTkButton(
+        frame, text="Browse...", width=90, height=32, corner_radius=6,
+        font=ctk.CTkFont(family=FONT_FAMILY, size=12, weight="bold"),
+        fg_color=COLOR_BTN_SEC, hover_color=COLOR_BTN_SEC_HOV,
+        text_color=COLOR_TEXT,
+        command=_browse,
+    )
+    btn_browse.grid(row=1, column=1, padx=(0, 6))
+
+    btn_clear = ctk.CTkButton(
+        frame, text="Clear", width=60, height=32, corner_radius=6,
+        font=ctk.CTkFont(family=FONT_FAMILY, size=12, weight="bold"),
+        fg_color="transparent", hover_color=COLOR_BTN_SEC_HOV,
+        border_width=1, border_color=COLOR_BORDER,
+        text_color=COLOR_TEXT_SEC,
+        command=_clear,
+    )
+    btn_clear.grid(row=1, column=2)
+
+    return frame, entry, btn_browse, btn_clear, _refresh
+
+
+def create_kpi_metric_card(parent, title: str, accent_color: str = COLOR_ACCENT):
+    """Create a modern KPI display card with title, large value, and secondary subtitle."""
+    card = ctk.CTkFrame(
+        parent, corner_radius=10, fg_color=COLOR_CARD,
+        border_width=1, border_color=COLOR_BORDER
+    )
+    card.grid_columnconfigure(0, weight=1)
+
+    lbl_title = ctk.CTkLabel(
+        card, text=title,
+        font=ctk.CTkFont(family=FONT_FAMILY, size=12, weight="bold"),
+        text_color=COLOR_TEXT_SEC, anchor="w"
+    )
+    lbl_title.grid(row=0, column=0, sticky="w", padx=16, pady=(14, 4))
+
+    lbl_val = ctk.CTkLabel(
+        card, text="--",
+        font=ctk.CTkFont(family=FONT_FAMILY, size=22, weight="bold"),
+        text_color=COLOR_TEXT, anchor="w"
+    )
+    lbl_val.grid(row=1, column=0, sticky="w", padx=16, pady=(0, 2))
+
+    lbl_sub = ctk.CTkLabel(
+        card, text="--",
+        font=ctk.CTkFont(family=FONT_FAMILY, size=11),
+        text_color=COLOR_TEXT_DIM, anchor="w"
+    )
+    lbl_sub.grid(row=2, column=0, sticky="w", padx=16, pady=(0, 14))
+
+    return card, lbl_val, lbl_sub
+

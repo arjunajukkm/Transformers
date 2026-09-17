@@ -5,16 +5,15 @@ import os
 import ctypes
 from datetime import datetime
 from pathlib import Path
-from tkinter import filedialog, messagebox
+from tkinter import filedialog, messagebox, ttk
 
 import pandas as pd
 import customtkinter as ctk
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 
-
-
 import ui_components as ui
+import time_series_analysis as tsa
 
 ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
@@ -55,6 +54,22 @@ class App(ctk.CTk):
         self.absent_wfh_file = ctk.StringVar()
         self.att_summary_file = ctk.StringVar()
         self.analyse_upload_file = ctk.StringVar()
+
+        # Time Series Analysis state
+        self.ts_dataset = None
+        self.ts_file_path = ctk.StringVar()
+        self.ts_bu_var = ctk.StringVar(value="All Business Units")
+        self.ts_dept_var = ctk.StringVar(value="All Departments")
+        self.ts_month_var = ctk.StringVar(value="All Months")
+        self.ts_level_var = ctk.StringVar(value="Business Unit")
+        self.ts_search_var = ctk.StringVar()
+        self.is_ts_loading = False
+
+        # Time and Leave Master multi-file lists
+        self.tl_perf_files = []
+        self.tl_leave_active_files = []
+        self.tl_leave_inactive_files = []
+        self.tl_wfh_files = []
         
         # State flags
         self.is_processing = False
@@ -112,11 +127,12 @@ class App(ctk.CTk):
         self.sub_menu_frame.grid(row=3, column=0, sticky="ew")
         self.sub_menu_frame.grid_columnconfigure(0, weight=1)
 
-        # Sub-items: KRA Management, Absent Management, Attendance Summary
+        # Sub-items: KRA Management, Absent Management, Attendance Summary, Time and Leave Master
         transform_sub_items = [
             ("transform", "KRA Management", ui.ICON_KRA),
             ("absent", "Absent Management", ui.ICON_ABSENT),
             ("att_summary", "Attendance Summary", ui.ICON_ATTENDANCE),
+            ("time_leave", "Time and Leave Master", ui.ICON_TIME_LEAVE),
         ]
 
         for idx, (name, text, icon) in enumerate(transform_sub_items):
@@ -144,9 +160,9 @@ class App(ctk.CTk):
         self.analyse_sub_menu_frame.grid(row=5, column=0, sticky="ew")
         self.analyse_sub_menu_frame.grid_columnconfigure(0, weight=1)
 
-        # Sub-items: Dashboard, Upload
+        # Sub-items: Time Series Analysis, Upload
         analyse_sub_items = [
-            ("analyse_dashboard", "Dashboard", ui.ICON_DASHBOARD),
+            ("analyse_time_series", "Time Series Analysis", ui.ICON_DASHBOARD),
             ("analyse_upload", "Upload", ui.ICON_UPLOAD),
         ]
 
@@ -173,7 +189,8 @@ class App(ctk.CTk):
         self._build_generate_frame()
         self._build_absent_frame()
         self._build_att_summary_frame()
-        self._build_analyse_dashboard_frame()
+        self._build_time_leave_frame()
+        self._build_time_series_frame()
         self._build_analyse_upload_frame()
 
     def _on_transform_parent_clicked(self):
@@ -198,10 +215,10 @@ class App(ctk.CTk):
             self.nav_chevron.configure(text="▸")
 
     def _on_analyse_parent_clicked(self):
-        """When the Analyse header is clicked, ensure menu is open and show Analyse Dashboard."""
+        """When the Analyse header is clicked, ensure menu is open and show Time Series Analysis."""
         if not self.analyse_menu_expanded:
             self.toggle_analyse_menu(force_state=True)
-        self.select_frame_by_name("analyse_dashboard")
+        self.select_frame_by_name("analyse_time_series")
 
     def toggle_analyse_menu(self, force_state=None):
         """Toggle the collapsible Analyse sub-menu between expanded and collapsed states."""
@@ -218,11 +235,13 @@ class App(ctk.CTk):
             self.analyse_chevron.configure(text="▸")
 
     def select_frame_by_name(self, name: str):
+        if name == "analyse_dashboard":
+            name = "analyse_time_series"
         is_transform_parent = (name == "dashboard")
         is_analyse_parent = False
 
-        transform_children = ("dashboard", "transform", "generate", "absent", "att_summary")
-        analyse_children = ("analyse_dashboard", "analyse_upload")
+        transform_children = ("dashboard", "transform", "generate", "absent", "att_summary", "time_leave")
+        analyse_children = ("analyse_time_series", "analyse_dashboard", "analyse_upload")
 
         # Auto-expand menu if navigating to a child module
         if name in transform_children and not self.transform_menu_expanded:
@@ -260,6 +279,7 @@ class App(ctk.CTk):
         ui.create_dashboard_card(f, ui.ICON_KRA, "KRA Management", "Transform KRA Excel sheets and generate final KEKA upload files.", "Active", lambda: self.select_frame_by_name("transform"), 1, 0)
         ui.create_dashboard_card(f, ui.ICON_ABSENT, "Absent Management", "Process employee data to generate Absent Intimation Reports.", "Active", lambda: self.select_frame_by_name("absent"), 1, 1)
         ui.create_dashboard_card(f, ui.ICON_ATTENDANCE, "Attendance Summary", "Generate summarized attendance reports from raw portal data.", "Active", lambda: self.select_frame_by_name("att_summary"), 2, 0)
+        ui.create_dashboard_card(f, ui.ICON_TIME_LEAVE, "Time and Leave Master", "Manage and process time and leave records.", "Active", lambda: self.select_frame_by_name("time_leave"), 2, 1)
 
     # ---------------------------------------------------------
     # KRA Management
@@ -391,21 +411,324 @@ class App(ctk.CTk):
         self.btn_att.pack(side="right")
 
     # ---------------------------------------------------------
-    # Analyse Dashboard
+    # Time and Leave Master
     # ---------------------------------------------------------
-    def _build_analyse_dashboard_frame(self):
+    def _build_time_leave_frame(self):
         f = ctk.CTkFrame(self.main_content, fg_color="transparent")
-        self.frames["analyse_dashboard"] = f
-        f.grid_columnconfigure((0, 1), weight=1)
+        self.frames["time_leave"] = f
+        f.grid_columnconfigure(0, weight=1)
 
-        hdr = ui.create_page_header(f, "Analyse", "Quick access to analytics and dataset processing modules.")
-        hdr.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 30))
-
-        ui.create_dashboard_card(
-            f, ui.ICON_UPLOAD, "Upload Dataset for Analysis",
-            "Upload raw spreadsheets or logs to calculate distributions, null values, and summary metrics.",
-            "Active", lambda: self.select_frame_by_name("analyse_upload"), 1, 0
+        hdr = ui.create_page_header(
+            f, "Time and Leave Master",
+            "Upload single or multi-month records to reconcile Daily Performance Report with Leave and WFH applications."
         )
+        hdr.grid(row=0, column=0, sticky="ew", pady=(0, 20))
+
+        card = ui.create_card(f)
+        card.grid(row=1, column=0, sticky="nsew")
+
+        ctk.CTkLabel(
+            card, text="Data Sources (Single or Multi-Month)",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=15, weight="bold"),
+            text_color=ui.COLOR_TEXT
+        ).grid(row=0, column=0, sticky="w", padx=16, pady=(16, 12))
+
+        # 1. Daily performance report
+        ui.create_multi_upload_row(
+            card, self.tl_perf_files,
+            "1. Daily Performance Report (Supports multiple months)",
+            placeholder="Select Daily Performance Report Excel/CSV files...",
+            row=1
+        )
+
+        # 2. Leave application - Active
+        ui.create_multi_upload_row(
+            card, self.tl_leave_active_files,
+            "2. Leave Application - Active (Supports multiple months)",
+            placeholder="Select Active Leave Application files...",
+            row=2
+        )
+
+        # 3. Leave application - Inactive
+        ui.create_multi_upload_row(
+            card, self.tl_leave_inactive_files,
+            "3. Leave Application - Inactive (Supports multiple months)",
+            placeholder="Select Inactive Leave Application files...",
+            row=3
+        )
+
+        # 4. WFH applications
+        ui.create_multi_upload_row(
+            card, self.tl_wfh_files,
+            "4. WFH Applications (Supports multiple months)",
+            placeholder="Select WFH Application files...",
+            row=4
+        )
+
+        # Determinate Progress bar based on actual data volume
+        self.tl_prog = ctk.CTkProgressBar(
+            card, mode="determinate", height=6, corner_radius=3,
+            fg_color=ui.COLOR_INPUT_BG, progress_color=ui.COLOR_ACCENT
+        )
+        self.tl_prog.grid(row=5, column=0, sticky="ew", padx=16, pady=(8, 4))
+        self.tl_prog.set(0)
+        self.tl_prog.grid_remove()
+
+        # Real-time progress detail label
+        self.tl_prog_lbl = ctk.CTkLabel(
+            card, text="",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11),
+            text_color=ui.COLOR_TEXT_SEC, anchor="w", justify="left"
+        )
+        self.tl_prog_lbl.grid(row=6, column=0, sticky="w", padx=16, pady=(0, 4))
+        self.tl_prog_lbl.grid_remove()
+
+        # Action row
+        row7 = ctk.CTkFrame(card, fg_color="transparent")
+        row7.grid(row=7, column=0, sticky="ew", padx=16, pady=(8, 16))
+
+        _, self.tl_dot, self.tl_lbl = ui.create_status_badge(row7, "Ready")
+        self.tl_lbl.master.pack(side="left")
+
+        self.btn_tl = ui.create_primary_button(row7, "Process & Update Report", self.start_process_time_leave, width=170)
+        self.btn_tl.pack(side="right")
+
+    # ---------------------------------------------------------
+    # Time Series Analysis
+    # ---------------------------------------------------------
+    def _build_time_series_frame(self):
+        f = ctk.CTkScrollableFrame(self.main_content, fg_color="transparent")
+        self.frames["analyse_time_series"] = f
+        self.frames["analyse_dashboard"] = f  # backwards-compatible alias
+        f.grid_columnconfigure(0, weight=1)
+
+        # Page Header
+        hdr = ui.create_page_header(
+            f, "Time Series Analysis",
+            "Workforce compliance, exceptions, biometric swipes, and multi-level breakdown."
+        )
+        hdr.grid(row=0, column=0, sticky="ew", pady=(0, 16))
+
+        # 1. Dataset Status Header Card
+        self.ts_banner_card = ui.create_card(f)
+        self.ts_banner_card.grid(row=1, column=0, sticky="ew", pady=(0, 14))
+        self.ts_banner_card.grid_columnconfigure(0, weight=1)
+
+        b_frame = ctk.CTkFrame(self.ts_banner_card, fg_color="transparent")
+        b_frame.grid(row=0, column=0, sticky="ew", padx=16, pady=12)
+        b_frame.grid_columnconfigure(0, weight=1)
+
+        self.ts_banner_lbl = ctk.CTkLabel(
+            b_frame, text="⚠️ No dataset loaded yet. Please upload a dataset in the Upload section to begin analysis.",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=13),
+            text_color=ui.COLOR_WARNING, anchor="w"
+        )
+        self.ts_banner_lbl.grid(row=0, column=0, sticky="w")
+
+        self.btn_ts_go_upload = ui.create_secondary_button(
+            b_frame, "📂 Go to Upload Section",
+            lambda: self.select_frame_by_name("analyse_upload"), width=180
+        )
+        self.btn_ts_go_upload.grid(row=0, column=1, sticky="e", padx=(10, 0))
+
+        # 2. Filter & Actions Toolbar
+        self.card_filters = ui.create_card(f)
+        self.card_filters.grid(row=2, column=0, sticky="ew", pady=(0, 14))
+
+        f_header = ctk.CTkFrame(self.card_filters, fg_color="transparent")
+        f_header.grid(row=0, column=0, sticky="ew", padx=16, pady=(12, 6))
+        ctk.CTkLabel(
+            f_header, text="Filters & Scope",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=14, weight="bold"),
+            text_color=ui.COLOR_TEXT
+        ).pack(side="left")
+
+        self.btn_ts_export = ui.create_secondary_button(
+            f_header, "📥 Export Report to Excel", self._export_ts_excel, width=180
+        )
+        self.btn_ts_export.pack(side="right")
+
+        f_body = ctk.CTkFrame(self.card_filters, fg_color="transparent")
+        f_body.grid(row=1, column=0, sticky="ew", padx=16, pady=(0, 12))
+        f_body.grid_columnconfigure((0, 1, 2, 3), weight=1)
+
+        # BU Combobox
+        ctk.CTkLabel(f_body, text="Business Unit", font=ctk.CTkFont(size=11, weight="bold"), text_color=ui.COLOR_TEXT_DIM).grid(row=0, column=0, sticky="w", padx=4, pady=(0, 2))
+        self.ts_bu_combo = ctk.CTkComboBox(
+            f_body, variable=self.ts_bu_var, values=["All Business Units"],
+            command=self._on_ts_filter_changed, height=32,
+            fg_color=ui.COLOR_INPUT_BG, border_color=ui.COLOR_BORDER,
+            text_color=ui.COLOR_TEXT, dropdown_fg_color=ui.COLOR_CARD,
+        )
+        self.ts_bu_combo.grid(row=1, column=0, sticky="ew", padx=4)
+
+        # Department Combobox
+        ctk.CTkLabel(f_body, text="Department", font=ctk.CTkFont(size=11, weight="bold"), text_color=ui.COLOR_TEXT_DIM).grid(row=0, column=1, sticky="w", padx=4, pady=(0, 2))
+        self.ts_dept_combo = ctk.CTkComboBox(
+            f_body, variable=self.ts_dept_var, values=["All Departments"],
+            command=self._on_ts_filter_changed, height=32,
+            fg_color=ui.COLOR_INPUT_BG, border_color=ui.COLOR_BORDER,
+            text_color=ui.COLOR_TEXT, dropdown_fg_color=ui.COLOR_CARD,
+        )
+        self.ts_dept_combo.grid(row=1, column=1, sticky="ew", padx=4)
+
+        # Month Combobox
+        ctk.CTkLabel(f_body, text="Month", font=ctk.CTkFont(size=11, weight="bold"), text_color=ui.COLOR_TEXT_DIM).grid(row=0, column=2, sticky="w", padx=4, pady=(0, 2))
+        self.ts_month_combo = ctk.CTkComboBox(
+            f_body, variable=self.ts_month_var, values=["All Months"],
+            command=self._on_ts_filter_changed, height=32,
+            fg_color=ui.COLOR_INPUT_BG, border_color=ui.COLOR_BORDER,
+            text_color=ui.COLOR_TEXT, dropdown_fg_color=ui.COLOR_CARD,
+        )
+        self.ts_month_combo.grid(row=1, column=2, sticky="ew", padx=4)
+
+        # Reset button
+        btn_reset = ui.create_secondary_button(f_body, "Reset Filters", self._reset_ts_filters, width=100)
+        btn_reset.grid(row=1, column=3, sticky="ew", padx=4)
+
+        # 3. KPI Metrics Grid (8 cards, 4 per row)
+        self.ts_kpi_frame = ctk.CTkFrame(f, fg_color="transparent")
+        self.ts_kpi_frame.grid(row=3, column=0, sticky="ew", pady=(0, 14))
+        self.ts_kpi_frame.grid_columnconfigure((0, 1, 2, 3), weight=1, uniform="kpi")
+
+        # Row 0
+        c1, self.lbl_kpi_leave_val, self.lbl_kpi_leave_sub = ui.create_kpi_metric_card(self.ts_kpi_frame, "Leave Compliance Rate")
+        c1.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)
+
+        c2, self.lbl_kpi_appr_val, self.lbl_kpi_appr_sub = ui.create_kpi_metric_card(self.ts_kpi_frame, "Manager Approval Compliance")
+        c2.grid(row=0, column=1, sticky="nsew", padx=4, pady=4)
+
+        c3, self.lbl_kpi_reg_val, self.lbl_kpi_reg_sub = ui.create_kpi_metric_card(self.ts_kpi_frame, "Attendance Exception Rate")
+        c3.grid(row=0, column=2, sticky="nsew", padx=4, pady=4)
+
+        c4, self.lbl_kpi_wfh_val, self.lbl_kpi_wfh_sub = ui.create_kpi_metric_card(self.ts_kpi_frame, "WFH Exception Rate (>3d)")
+        c4.grid(row=0, column=3, sticky="nsew", padx=4, pady=4)
+
+        # Row 1
+        c5, self.lbl_kpi_rep_val, self.lbl_kpi_rep_sub = ui.create_kpi_metric_card(self.ts_kpi_frame, "Repeat Attendance Non-Compliance")
+        c5.grid(row=1, column=0, sticky="nsew", padx=4, pady=4)
+
+        c6, self.lbl_kpi_in_val, self.lbl_kpi_in_sub = ui.create_kpi_metric_card(self.ts_kpi_frame, "AVG In Time (Present/MS)")
+        c6.grid(row=1, column=1, sticky="nsew", padx=4, pady=4)
+
+        c7, self.lbl_kpi_out_val, self.lbl_kpi_out_sub = ui.create_kpi_metric_card(self.ts_kpi_frame, "AVG Out Time (Present/MS)")
+        c7.grid(row=1, column=2, sticky="nsew", padx=4, pady=4)
+
+        c8, self.lbl_kpi_hrs_val, self.lbl_kpi_hrs_sub = ui.create_kpi_metric_card(self.ts_kpi_frame, "AVG Working Hours")
+        c8.grid(row=1, column=3, sticky="nsew", padx=4, pady=4)
+
+        # 4. Multi-Level Breakdown Table Card
+        card_table = ui.create_card(f)
+        card_table.grid(row=4, column=0, sticky="ew", pady=(0, 20))
+
+        tbl_top = ctk.CTkFrame(card_table, fg_color="transparent")
+        tbl_top.grid(row=0, column=0, sticky="ew", padx=16, pady=(12, 8))
+
+        ctk.CTkLabel(
+            tbl_top, text="Multi-Level Breakdown Analysis",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=15, weight="bold"),
+            text_color=ui.COLOR_TEXT
+        ).pack(side="left", padx=(0, 16))
+
+        # Segmented Control for Levels
+        self.ts_level_seg = ctk.CTkSegmentedButton(
+            tbl_top,
+            values=["Business Unit", "Department", "Reporting Manager", "Employee"],
+            command=self._on_ts_level_changed,
+            selected_color=ui.COLOR_ACCENT,
+            selected_hover_color=ui.COLOR_ACCENT_HOVER,
+            unselected_color=ui.COLOR_INPUT_BG,
+            unselected_hover_color=ui.COLOR_BTN_SEC_HOV,
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12, weight="bold"),
+        )
+        self.ts_level_seg.set("Business Unit")
+        self.ts_level_seg.pack(side="left")
+
+        # Search box on right
+        search_box = ctk.CTkEntry(
+            tbl_top,
+            textvariable=self.ts_search_var,
+            placeholder_text="Search entity name...",
+            width=200, height=32,
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12),
+            fg_color=ui.COLOR_INPUT_BG, border_color=ui.COLOR_BORDER,
+            border_width=1, text_color=ui.COLOR_TEXT,
+        )
+        search_box.pack(side="right")
+        self.ts_search_var.trace_add("write", lambda *args: self._refresh_ts_table())
+
+        # Treeview container
+        tree_container = ctk.CTkFrame(card_table, fg_color=ui.COLOR_CARD)
+        tree_container.grid(row=1, column=0, sticky="ew", padx=16, pady=(0, 14))
+        tree_container.grid_columnconfigure(0, weight=1)
+
+        # Style Treeview
+        style = ttk.Style()
+        style.theme_use("clam")
+        style.configure(
+            "TS.Treeview",
+            background=ui.COLOR_CARD,
+            foreground=ui.COLOR_TEXT,
+            fieldbackground=ui.COLOR_CARD,
+            rowheight=28,
+            font=(ui.FONT_FAMILY, 10),
+            borderwidth=0,
+        )
+        style.configure(
+            "TS.Treeview.Heading",
+            background="#1A2340",
+            foreground="#00FF99",
+            font=(ui.FONT_FAMILY, 10, "bold"),
+            borderwidth=0,
+            relief="flat",
+        )
+        style.map(
+            "TS.Treeview",
+            background=[("selected", ui.COLOR_ACCENT)],
+            foreground=[("selected", "#FFFFFF")],
+        )
+        style.map(
+            "TS.Treeview.Heading",
+            background=[("active", "#243052")],
+        )
+
+        cols = (
+            "entity", "records", "emps", "leave_days", "leave_emp_pct",
+            "appr_days", "appr_mgr_pct", "regularized", "wfh_excess",
+            "repeat_dev", "in_time", "out_time", "work_hrs"
+        )
+        self.ts_tree = ttk.Treeview(
+            tree_container, columns=cols, show="headings",
+            style="TS.Treeview", height=10
+        )
+
+        col_configs = [
+            ("entity", "Entity Name", 160, "w"),
+            ("records", "Rows", 65, "center"),
+            ("emps", "Emps", 60, "center"),
+            ("leave_days", "Avg Leave Apply", 110, "center"),
+            ("leave_emp_pct", "Emp Leave %", 90, "center"),
+            ("appr_days", "Avg Approval", 95, "center"),
+            ("appr_mgr_pct", "Mgr Appr %", 85, "center"),
+            ("regularized", "Regularized", 85, "center"),
+            ("wfh_excess", "WFH >3 Days", 85, "center"),
+            ("repeat_dev", "Repeat Dev", 80, "center"),
+            ("in_time", "AVG In Time", 95, "center"),
+            ("out_time", "AVG Out Time", 95, "center"),
+            ("work_hrs", "AVG Work Hrs", 95, "center"),
+        ]
+
+        for col_id, col_text, col_w, col_anchor in col_configs:
+            self.ts_tree.heading(col_id, text=col_text)
+            self.ts_tree.column(col_id, width=col_w, minwidth=60, anchor=col_anchor)
+
+        v_scroll = ttk.Scrollbar(tree_container, orient="vertical", command=self.ts_tree.yview)
+        h_scroll = ttk.Scrollbar(tree_container, orient="horizontal", command=self.ts_tree.xview)
+        self.ts_tree.configure(yscrollcommand=v_scroll.set, xscrollcommand=h_scroll.set)
+
+        self.ts_tree.grid(row=0, column=0, sticky="ew")
+        v_scroll.grid(row=0, column=1, sticky="ns")
+        h_scroll.grid(row=1, column=0, sticky="ew")
 
     # ---------------------------------------------------------
     # Analyse Upload
@@ -416,19 +739,22 @@ class App(ctk.CTk):
         f.grid_columnconfigure(0, weight=1)
         f.grid_rowconfigure(2, weight=1)
 
-        hdr = ui.create_page_header(f, "Analyse Upload", "Upload Excel or CSV files to generate instant statistical reports and summaries.")
+        hdr = ui.create_page_header(
+            f, "Upload Dataset",
+            "Upload Daily Performance report or attendance logs (.xlsx, .xls, .csv) for Time Series Analysis."
+        )
         hdr.grid(row=0, column=0, sticky="ew", pady=(0, 14))
 
         actions = ctk.CTkFrame(hdr, fg_color="transparent")
         actions.grid(row=0, column=1, sticky="e")
-        ui.create_secondary_button(actions, "← Back to Dashboard", lambda: self.select_frame_by_name("analyse_dashboard"), 160).pack()
+        ui.create_secondary_button(actions, "← Time Series Analysis", lambda: self.select_frame_by_name("analyse_time_series"), 180).pack()
 
         # Upload Card
         card = ui.create_card(f)
         card.grid(row=1, column=0, sticky="nsew", pady=(0, 12))
 
         ctk.CTkLabel(
-            card, text="1. Select Dataset for Analysis",
+            card, text="1. Select Attendance / Performance Dataset",
             font=ctk.CTkFont(family=ui.FONT_FAMILY, size=15, weight="bold"),
             text_color=ui.COLOR_TEXT
         ).grid(row=0, column=0, sticky="w", padx=16, pady=(12, 2))
@@ -439,46 +765,311 @@ class App(ctk.CTk):
             text_color=ui.COLOR_TEXT_SEC
         ).grid(row=1, column=0, sticky="w", padx=16, pady=(0, 8))
 
-        ui.create_upload_row(card, self.analyse_upload_file, "Select file to analyse...", "Browse", 2)
+        ui.create_upload_row(card, self.ts_file_path, "Select performance dataset to ingest...", "Browse", 2)
 
-        self.analyse_prog = ctk.CTkProgressBar(
+        self.ts_prog = ctk.CTkProgressBar(
             card, mode="indeterminate", height=4, corner_radius=2,
             fg_color=ui.COLOR_INPUT_BG, progress_color=ui.COLOR_ACCENT
         )
-        self.analyse_prog.grid(row=3, column=0, sticky="ew", padx=16, pady=(4, 0))
-        self.analyse_prog.set(0)
-        self.analyse_prog.grid_remove()
+        self.ts_prog.grid(row=3, column=0, sticky="ew", padx=16, pady=(4, 0))
+        self.ts_prog.set(0)
+        self.ts_prog.grid_remove()
 
         row4 = ctk.CTkFrame(card, fg_color="transparent")
         row4.grid(row=4, column=0, sticky="ew", padx=16, pady=(8, 12))
 
-        _, self.analyse_dot, self.analyse_lbl = ui.create_status_badge(row4, "Ready")
-        self.analyse_lbl.master.pack(side="left")
+        _, self.ts_dot, self.ts_lbl = ui.create_status_badge(row4, "Ready")
+        self.ts_lbl.master.pack(side="left")
 
-        self.btn_analyse = ui.create_primary_button(row4, "Run Analysis", self.start_analyse)
-        self.btn_analyse.pack(side="right")
+        self.btn_ts_load = ui.create_primary_button(row4, "Load & Ingest Dataset", self.start_ts_analysis, width=170)
+        self.btn_ts_load.pack(side="right")
 
-        # Results Card
+        finbox_sample = Path("local_data/Daily Performance Report 01 Sep 2026 - 13 Sep 2026 - FinBox.xlsx")
+        if finbox_sample.exists():
+            def _load_sample():
+                self.ts_file_path.set(str(finbox_sample.resolve()))
+                self.start_ts_analysis()
+            ui.create_secondary_button(row4, "📂 Load FinBox Sample", _load_sample, width=170).pack(side="right", padx=(0, 10))
+
+        # Dataset Ingestion Summary Card
         res_card = ui.create_card(f)
         res_card.grid(row=2, column=0, sticky="nsew")
         res_card.grid_columnconfigure(0, weight=1)
         res_card.grid_rowconfigure(1, weight=1)
 
+        res_top = ctk.CTkFrame(res_card, fg_color="transparent")
+        res_top.grid(row=0, column=0, sticky="ew", padx=16, pady=(12, 6))
+
         ctk.CTkLabel(
-            res_card, text="Analysis Report & Preview",
+            res_top, text="Dataset Summary & Metadata",
             font=ctk.CTkFont(family=ui.FONT_FAMILY, size=15, weight="bold"),
             text_color=ui.COLOR_TEXT
-        ).grid(row=0, column=0, sticky="w", padx=16, pady=(12, 6))
+        ).pack(side="left")
 
-        self.analyse_result_text = ctk.CTkTextbox(
+        self.btn_ts_open_tsa = ui.create_primary_button(
+            res_top, "🚀 Open Time Series Analysis →",
+            lambda: self.select_frame_by_name("analyse_time_series"), width=230
+        )
+        self.btn_ts_open_tsa.pack(side="right")
+        self.btn_ts_open_tsa.configure(state="disabled")
+
+        self.ts_upload_summary_text = ctk.CTkTextbox(
             res_card, height=140, font=ctk.CTkFont(family="Consolas", size=12),
             fg_color=ui.COLOR_INPUT_BG, border_color=ui.COLOR_BORDER,
             border_width=1, text_color=ui.COLOR_TEXT, corner_radius=6
         )
-        self.analyse_result_text.grid(row=1, column=0, sticky="nsew", padx=16, pady=(0, 12))
-        self.analyse_result_text.insert("0.0", "Select a file and click 'Run Analysis' to view dataset summary, column statistics, and row metrics.")
-        self.analyse_result_text.configure(state="disabled")
+        self.ts_upload_summary_text.grid(row=1, column=0, sticky="nsew", padx=16, pady=(0, 12))
+        self.ts_upload_summary_text.insert("0.0", "Select an attendance or performance dataset above and click 'Load & Ingest Dataset'.\nOnce loaded, all metrics and drilldowns will be instantly populated in Time Series Analysis.")
+        self.ts_upload_summary_text.configure(state="disabled")
 
+
+
+    # =========================================================
+    # Time Series Analysis Event Handlers
+    # =========================================================
+
+    def start_ts_analysis(self):
+        file_path = self.ts_file_path.get().strip()
+        if not file_path:
+            messagebox.showerror("Error", "Please select a dataset file to analyse.")
+            return
+        if not os.path.exists(file_path):
+            messagebox.showerror("Error", f"File not found:\n{file_path}")
+            return
+
+        self.is_ts_loading = True
+        self.btn_ts_load.configure(state="disabled")
+        self.ts_prog.grid()
+        self.ts_prog.start()
+        ui.update_status(self.ts_dot, self.ts_lbl, "Loading and indexing dataset...", "processing")
+
+        threading.Thread(target=self._run_ts_load_job, args=(file_path,), daemon=True).start()
+
+    def _run_ts_load_job(self, file_path):
+        try:
+            import importlib
+            import time_series_analysis as tsa_mod
+            importlib.reload(tsa_mod)
+
+            df = tsa_mod.load_time_series_dataset(file_path)
+            self.after(0, lambda d=df: self._ts_load_success(d))
+        except Exception as e:
+            err_msg = str(e)
+            self.after(0, lambda m=err_msg: self._ts_load_error(m))
+
+    def _ts_load_success(self, df):
+        self.is_ts_loading = False
+        self.btn_ts_load.configure(state="normal")
+        self.ts_prog.stop()
+        self.ts_prog.grid_remove()
+
+        self.ts_dataset = df
+        total_rows = len(df)
+        total_emps = df["_emp_num"].nunique() if "_emp_num" in df.columns else 0
+        p_name = Path(self.ts_file_path.get()).name if self.ts_file_path.get() else "Uploaded Dataset"
+
+        ui.update_status(self.ts_dot, self.ts_lbl, f"Active: {total_rows:,} records • {total_emps:,} employees", "success")
+
+        # Enable Open Time Series Analysis button in Upload section
+        if hasattr(self, "btn_ts_open_tsa"):
+            self.btn_ts_open_tsa.configure(state="normal")
+
+        # Update Summary text in Upload section
+        if hasattr(self, "ts_upload_summary_text"):
+            self.ts_upload_summary_text.configure(state="normal")
+            self.ts_upload_summary_text.delete("0.0", "end")
+            bus = sorted([str(x) for x in df["_bu"].dropna().unique() if str(x).strip() not in ("", "nan", "None")])
+            depts = sorted([str(x) for x in df["_dept"].dropna().unique() if str(x).strip() not in ("", "nan", "None")])
+            rms = sorted([str(x) for x in df["_rm"].dropna().unique() if str(x).strip() not in ("", "nan", "None", "Unknown")])
+            months = sorted([str(x) for x in df["_month_clean"].dropna().unique() if str(x).strip() not in ("", "nan", "None")])
+            dates = [d for d in df["_date"].dropna() if d]
+            min_d = min(dates).strftime("%d-%b-%Y") if dates else "N/A"
+            max_d = max(dates).strftime("%d-%b-%Y") if dates else "N/A"
+
+            summary_info = (
+                f"✓ DATASET INGESTED SUCCESSFULLY\n"
+                f"{'=' * 60}\n"
+                f"File Name:            {p_name}\n"
+                f"Total Row Count:      {total_rows:,}\n"
+                f"Total Unique Emps:    {total_emps:,}\n"
+                f"Date Range:           {min_d} to {max_d}\n"
+                f"Business Units ({len(bus)}):   {', '.join(bus[:8])}{'...' if len(bus) > 8 else ''}\n"
+                f"Departments ({len(depts)}):      {', '.join(depts[:8])}{'...' if len(depts) > 8 else ''}\n"
+                f"Managers ({len(rms)}):         {', '.join(rms[:8])}{'...' if len(rms) > 8 else ''}\n"
+                f"Months ({len(months)}):           {', '.join(months)}\n"
+                f"{'=' * 60}\n"
+                f"Status: Ready for Time Series Analysis! Click 'Open Time Series Analysis →' above."
+            )
+            self.ts_upload_summary_text.insert("0.0", summary_info)
+            self.ts_upload_summary_text.configure(state="disabled")
+
+        # Update Time Series banner
+        if hasattr(self, "ts_banner_lbl"):
+            self.ts_banner_lbl.configure(
+                text=f"📊 Active Dataset: {p_name}  •  {total_rows:,} records  •  {total_emps:,} employees",
+                text_color=ui.COLOR_SUCCESS
+            )
+            self.btn_ts_go_upload.configure(text="📂 Change Dataset")
+
+        # Populate filters
+        bus = sorted([str(x) for x in df["_bu"].dropna().unique() if str(x).strip() not in ("", "nan", "None")])
+        self.ts_bu_combo.configure(values=["All Business Units"] + bus)
+        self.ts_bu_var.set("All Business Units")
+
+        depts = sorted([str(x) for x in df["_dept"].dropna().unique() if str(x).strip() not in ("", "nan", "None")])
+        self.ts_dept_combo.configure(values=["All Departments"] + depts)
+        self.ts_dept_var.set("All Departments")
+
+        months = sorted([str(x) for x in df["_month_clean"].dropna().unique() if str(x).strip() not in ("", "nan", "None")])
+        self.ts_month_combo.configure(values=["All Months"] + months)
+        self.ts_month_var.set("All Months")
+
+        self._refresh_ts_dashboard()
+
+    def _ts_load_error(self, err_msg):
+        self.is_ts_loading = False
+        self.btn_ts_load.configure(state="normal")
+        self.ts_prog.stop()
+        self.ts_prog.grid_remove()
+        ui.update_status(self.ts_dot, self.ts_lbl, "Failed to load dataset", "error")
+        messagebox.showerror("Dataset Loading Error", f"Could not load and process dataset:\n{err_msg}")
+
+    def _on_ts_filter_changed(self, choice=None):
+        self._refresh_ts_dashboard()
+
+    def _on_ts_level_changed(self, choice):
+        self.ts_level_var.set(choice)
+        self._refresh_ts_table()
+
+    def _reset_ts_filters(self):
+        self.ts_bu_var.set("All Business Units")
+        self.ts_dept_var.set("All Departments")
+        self.ts_month_var.set("All Months")
+        self.ts_search_var.set("")
+        self._refresh_ts_dashboard()
+
+    def _refresh_ts_dashboard(self):
+        if self.ts_dataset is None:
+            return
+
+        bu = self.ts_bu_var.get()
+        dept = self.ts_dept_var.get()
+        month = self.ts_month_var.get()
+
+        metrics = tsa.compute_time_series_metrics(
+            self.ts_dataset,
+            business_unit=bu, department=dept, month=month
+        )
+
+        # 1. Leave Compliance
+        leave_days = metrics['avg_leave_apply_days']
+        if leave_days >= 0:
+            self.lbl_kpi_leave_val.configure(text=f"{leave_days:.1f} days")
+            self.lbl_kpi_leave_sub.configure(text=f"In Advance • Emp: {metrics['applied_by_emp_pct']}% | Admin: {metrics['applied_by_admin_pct']}%")
+        else:
+            self.lbl_kpi_leave_val.configure(text=f"{abs(leave_days):.1f} days late")
+            self.lbl_kpi_leave_sub.configure(text=f"Post-Leave • Emp: {metrics['applied_by_emp_pct']}% | Admin: {metrics['applied_by_admin_pct']}%")
+
+        # 2. Manager Approval Compliance
+        self.lbl_kpi_appr_val.configure(text=f"{metrics['avg_approval_days']:.1f} days")
+        self.lbl_kpi_appr_sub.configure(text=f"Manager: {metrics['appr_mgr_pct']}%  |  Admin: {metrics['appr_admin_pct']}%")
+
+        # 3. Attendance Exceptions
+        self.lbl_kpi_reg_val.configure(text=f"{metrics['regularized_days']:,} days")
+        self.lbl_kpi_reg_sub.configure(text=f"Regularization Rate: {metrics['reg_rate_pct']}%")
+
+        # 4. WFH Exceptions (>3 Days)
+        self.lbl_kpi_wfh_val.configure(text=f"{metrics['wfh_excess_days']:,} days")
+        self.lbl_kpi_wfh_sub.configure(text=f"{metrics['wfh_violating_emp_count']} emps > 3 days ({metrics['wfh_exception_rate_pct']}%)")
+
+        # 5. Repeat Non-Compliance
+        self.lbl_kpi_rep_val.configure(text=f"{metrics['repeat_emp_count']:,} Emps ({metrics['repeat_emp_pct']}%)")
+        self.lbl_kpi_rep_sub.configure(text=f"{metrics['repeat_rm_count']} Managers with repeat deviations")
+
+        # 6. AVG In Time
+        self.lbl_kpi_in_val.configure(text=metrics['avg_in_time'])
+        self.lbl_kpi_in_sub.configure(text="Present & Missing Swipes")
+
+        # 7. AVG Out Time
+        self.lbl_kpi_out_val.configure(text=metrics['avg_out_time'])
+        self.lbl_kpi_out_sub.configure(text="Present & Missing Swipes")
+
+        # 8. AVG Working Hours
+        self.lbl_kpi_hrs_val.configure(text=metrics['avg_working_hours'])
+        self.lbl_kpi_hrs_sub.configure(text=f"{metrics['avg_working_hours_decimal']} decimal hours (P & MS)")
+
+        # Refresh table
+        self._refresh_ts_table()
+
+    def _refresh_ts_table(self):
+        if self.ts_dataset is None:
+            return
+
+        for item in self.ts_tree.get_children():
+            self.ts_tree.delete(item)
+
+        level = self.ts_level_var.get()
+        bu = self.ts_bu_var.get()
+        dept = self.ts_dept_var.get()
+        month = self.ts_month_var.get()
+
+        breakdown = tsa.compute_level_breakdown(
+            self.ts_dataset, level=level,
+            business_unit=bu, department=dept, month=month
+        )
+
+        search_q = self.ts_search_var.get().strip().lower()
+
+        for r in breakdown:
+            e_name = str(r.get("Entity Name", ""))
+            e_id = str(r.get("Entity ID", ""))
+            if search_q and (search_q not in e_name.lower() and search_q not in e_id.lower()):
+                continue
+
+            vals = (
+                e_name if e_name else e_id,
+                f"{r.get('Total Records', 0):,}",
+                f"{r.get('Unique Employees', 0):,}",
+                f"{r.get('Avg Days to Apply Leave', 0.0)}d",
+                r.get("Leave Applied % (Emp)", "0.0%"),
+                f"{r.get('Avg Approval Days', 0.0)}d",
+                r.get("Approval % (Mgr)", "0.0%"),
+                f"{r.get('Regularized Days', 0):,}",
+                f"{r.get('WFH Exception Days (>3)', 0):,}",
+                f"{r.get('Repeat Deviant Emps', 0):,}",
+                r.get("Avg In Time", "-"),
+                r.get("Avg Out Time", "-"),
+                r.get("Avg Working Hours", "-"),
+            )
+            self.ts_tree.insert("", "end", values=vals)
+
+    def _export_ts_excel(self):
+        if self.ts_dataset is None or len(self.ts_dataset) == 0:
+            messagebox.showwarning("Warning", "Please load a dataset first before exporting.")
+            return
+
+        out_path = filedialog.asksaveasfilename(
+            defaultextension=".xlsx",
+            filetypes=[("Excel files", "*.xlsx")],
+            initialfile=f"Time_Series_Analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        )
+        if not out_path:
+            return
+
+        try:
+            bu = self.ts_bu_var.get()
+            dept = self.ts_dept_var.get()
+            month = self.ts_month_var.get()
+            saved_p = tsa.export_time_series_report(
+                self.ts_dataset, out_path,
+                business_unit=bu, department=dept, month=month
+            )
+            messagebox.showinfo(
+                "Export Complete",
+                f"Time Series Analysis report successfully exported to:\n{saved_p}"
+            )
+        except Exception as e:
+            messagebox.showerror("Export Failed", f"Failed to export Excel report:\n{e}")
 
     # =========================================================
     # Event Handlers (UI updates)
@@ -669,6 +1260,89 @@ class App(ctk.CTk):
     def _att_error(self, err):
         self.btn_att.configure(state="normal")
         ui.update_status(self.att_dot, self.att_lbl, "Failed", "error")
+        messagebox.showerror("Error", err)
+
+    def start_process_time_leave(self):
+        if not self.tl_perf_files:
+            messagebox.showerror("Error", "Please select at least one Daily Performance Report file.")
+            return
+        if not (self.tl_leave_active_files or self.tl_leave_inactive_files or self.tl_wfh_files):
+            if not messagebox.askyesno("Confirm", "No Leave or WFH application files were selected. Proceed anyway?"):
+                return
+
+        out_path = filedialog.asksaveasfilename(
+            defaultextension=".xlsx",
+            filetypes=[("Excel files", "*.xlsx")],
+            initialfile=f"Daily_Performance_Report_Updated_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        )
+        if not out_path:
+            return
+
+        self.btn_tl.configure(state="disabled")
+        self.tl_prog.grid()
+        self.tl_prog.set(0)
+        self.tl_prog_lbl.grid()
+        self.tl_prog_lbl.configure(text="Initializing data reconciliation...")
+        ui.update_status(self.tl_dot, self.tl_lbl, "Starting (0%)...", "processing")
+        threading.Thread(target=self._run_time_leave_job, args=(out_path,), daemon=True).start()
+
+    def _update_tl_progress(self, pct: float, msg: str):
+        self.tl_prog.set(max(0.0, min(1.0, pct)))
+        self.tl_prog_lbl.configure(text=msg)
+        pct_int = int(round(pct * 100))
+        ui.update_status(self.tl_dot, self.tl_lbl, f"Processing ({pct_int}%)", "processing")
+
+    def _run_time_leave_job(self, out_path):
+        def _on_progress(pct: float, msg: str):
+            self.after(0, lambda p=pct, m=msg: self._update_tl_progress(p, m))
+
+        try:
+            import time_leave_master
+            import importlib
+            importlib.reload(time_leave_master)
+            stats = time_leave_master.reconcile_time_and_leave(
+                perf_files=self.tl_perf_files,
+                leave_active_files=self.tl_leave_active_files,
+                leave_inactive_files=self.tl_leave_inactive_files,
+                wfh_files=self.tl_wfh_files,
+                output_path=out_path,
+                progress_callback=_on_progress
+            )
+            self.after(0, lambda s=stats, o=out_path: self._time_leave_success(s, o))
+        except Exception as e:
+            err_msg = str(e)
+            self.after(0, lambda m=err_msg: self._time_leave_error(m))
+
+
+    def _time_leave_success(self, stats, out_path):
+        self.btn_tl.configure(state="normal")
+        self.tl_prog.set(1.0)
+        self.tl_prog_lbl.configure(text=f"Completed {stats['total_rows']:,} rows • {stats['matched_leave_count']:,} leaves, {stats['matched_wfh_count']:,} WFH matched")
+        ui.update_status(self.tl_dot, self.tl_lbl, "Success", "success")
+
+        msg = (
+            f"Daily Performance Report updated successfully!\n\n"
+            f"• Total Rows: {stats['total_rows']:,}\n"
+            f"• Matched Leave records: {stats['matched_leave_count']:,}\n"
+            f"• Matched WFH records: {stats['matched_wfh_count']:,}\n"
+        )
+        if stats.get('quantity_violation_count', 0) > 0:
+            msg += f"\n⚠️ Warning: {stats['quantity_violation_count']} date entries have total quantity > 1.0 per employee."
+        if stats.get('unmatched_applications_count', 0) > 0:
+            msg += f"\nℹ️ Unmatched Applications: {stats['unmatched_applications_count']:,} applications could not be matched."
+
+        msg += f"\n\nMain Output Saved to:\n{out_path}"
+        if stats.get('error_log_path'):
+            msg += f"\n\nError Log File Saved to:\n{stats['error_log_path']}"
+
+        messagebox.showinfo("Done", msg)
+
+
+    def _time_leave_error(self, err):
+        self.btn_tl.configure(state="normal")
+        self.tl_prog.set(0)
+        self.tl_prog_lbl.configure(text=f"Error: {err}")
+        ui.update_status(self.tl_dot, self.tl_lbl, "Failed", "error")
         messagebox.showerror("Error", err)
 
     def _run_absent_job(self):
