@@ -49,6 +49,8 @@ class App(ctk.CTk):
         # StringVars for file paths
         self.selected_input_file = ctk.StringVar()
         self.selected_gen_input_file = ctk.StringVar()
+        self.selected_okr_input_file = ctk.StringVar()
+        self.gen_mode_var = ctk.StringVar(value="Existing KRA Upload")
         self.absent_emp_file = ctk.StringVar()
         self.absent_att_file = ctk.StringVar()
         self.absent_wfh_file = ctk.StringVar()
@@ -334,27 +336,82 @@ class App(ctk.CTk):
         card = ui.create_card(f)
         card.grid(row=1, column=0, sticky="nsew")
 
-        ctk.CTkLabel(card, text="Upload Transformed File", font=ctk.CTkFont(family=ui.FONT_FAMILY, size=15, weight="bold"), text_color=ui.COLOR_TEXT).grid(row=0, column=0, sticky="w", padx=16, pady=(16, 4))
-        ui.create_upload_row(card, self.selected_gen_input_file, "Select transformed Excel...", "Browse", 1)
+        # Mode Selector
+        mode_row = ctk.CTkFrame(card, fg_color="transparent")
+        mode_row.grid(row=0, column=0, sticky="w", padx=16, pady=(16, 10))
 
-        ctk.CTkLabel(card, text="Employee Mapping Format:\nEMP ID, Name, Designation (Sheet Name)", font=ctk.CTkFont(family=ui.FONT_FAMILY, size=13, weight="bold"), text_color=ui.COLOR_TEXT, justify="left").grid(row=2, column=0, sticky="w", padx=16, pady=(12, 8))
-        self.gen_mapping_text = ctk.CTkTextbox(card, height=80, font=ctk.CTkFont(family="Consolas", size=12), fg_color=ui.COLOR_INPUT_BG, border_color=ui.COLOR_BORDER, border_width=1, text_color=ui.COLOR_TEXT)
-        self.gen_mapping_text.grid(row=3, column=0, sticky="ew", padx=16, pady=(0, 12))
+        ctk.CTkLabel(
+            mode_row, text="Generation Mode:",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=13, weight="bold"),
+            text_color=ui.COLOR_TEXT_SEC
+        ).pack(side="left", padx=(0, 12))
+
+        self.gen_mode_seg = ctk.CTkSegmentedButton(
+            mode_row,
+            values=["Existing KRA Upload", "OKR Upload"],
+            command=self._on_gen_mode_changed,
+            selected_color=ui.COLOR_ACCENT,
+            selected_hover_color=ui.COLOR_ACCENT_HOVER,
+            unselected_color=ui.COLOR_INPUT_BG,
+            unselected_hover_color=ui.COLOR_BTN_SEC_HOV,
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12, weight="bold"),
+        )
+        self.gen_mode_seg.set("Existing KRA Upload")
+        self.gen_mode_seg.pack(side="left")
+
+        # Dynamic Section Header Label
+        self.gen_upload_title_lbl = ctk.CTkLabel(
+            card, text="Upload Transformed File",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=15, weight="bold"),
+            text_color=ui.COLOR_TEXT
+        )
+        self.gen_upload_title_lbl.grid(row=1, column=0, sticky="w", padx=16, pady=(4, 4))
+
+        # Upload controls for each mode
+        self.gen_kra_upload_frame, _, _ = ui.create_upload_row(
+            card, self.selected_gen_input_file, "Select transformed Excel...", "Browse", 2
+        )
+        self.gen_okr_upload_frame, _, _ = ui.create_upload_row(
+            card, self.selected_okr_input_file, "Expected columns: OKR, Key Result Areas, Weightage", "Browse", 2
+        )
+        self.gen_okr_upload_frame.grid_remove()
+
+        ctk.CTkLabel(
+            card, text="Employee Mapping Format:\nEMP ID, Name, Designation (Sheet Name)",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=13, weight="bold"),
+            text_color=ui.COLOR_TEXT, justify="left"
+        ).grid(row=3, column=0, sticky="w", padx=16, pady=(12, 8))
+        self.gen_mapping_text = ctk.CTkTextbox(
+            card, height=80, font=ctk.CTkFont(family="Consolas", size=12),
+            fg_color=ui.COLOR_INPUT_BG, border_color=ui.COLOR_BORDER, border_width=1,
+            text_color=ui.COLOR_TEXT
+        )
+        self.gen_mapping_text.grid(row=4, column=0, sticky="ew", padx=16, pady=(0, 12))
         self.gen_mapping_text.insert("0.0", 'EMP001, John Doe, Manager\nEMP002, Jane Smith, Manager')
 
         self.gen_prog = ctk.CTkProgressBar(card, mode="indeterminate", height=4, corner_radius=2, fg_color=ui.COLOR_INPUT_BG, progress_color=ui.COLOR_ACCENT)
-        self.gen_prog.grid(row=4, column=0, sticky="ew", padx=16, pady=(4, 0))
+        self.gen_prog.grid(row=5, column=0, sticky="ew", padx=16, pady=(4, 0))
         self.gen_prog.set(0)
         self.gen_prog.grid_remove()
 
-        row5 = ctk.CTkFrame(card, fg_color="transparent")
-        row5.grid(row=5, column=0, sticky="ew", padx=16, pady=(12, 16))
+        row6 = ctk.CTkFrame(card, fg_color="transparent")
+        row6.grid(row=6, column=0, sticky="ew", padx=16, pady=(12, 16))
         
-        _, self.gen_dot, self.gen_lbl = ui.create_status_badge(row5, "Ready")
+        _, self.gen_dot, self.gen_lbl = ui.create_status_badge(row6, "Ready")
         self.gen_lbl.master.pack(side="left")
 
-        self.btn_gen = ui.create_primary_button(row5, "Generate File", self.start_generate)
+        self.btn_gen = ui.create_primary_button(row6, "Generate File", self.start_generate)
         self.btn_gen.pack(side="right")
+
+    def _on_gen_mode_changed(self, mode: str):
+        if mode == "OKR Upload":
+            self.gen_upload_title_lbl.configure(text="Upload OKR Source File")
+            self.gen_kra_upload_frame.grid_remove()
+            self.gen_okr_upload_frame.grid()
+        else:
+            self.gen_upload_title_lbl.configure(text="Upload Transformed File")
+            self.gen_okr_upload_frame.grid_remove()
+            self.gen_kra_upload_frame.grid()
 
     # ---------------------------------------------------------
     # Absent Management
@@ -1197,7 +1254,9 @@ class App(ctk.CTk):
         messagebox.showerror("Error", err)
 
     def start_generate(self):
-        if not self.selected_gen_input_file.get():
+        mode = self.gen_mode_seg.get() if hasattr(self, 'gen_mode_seg') else "Existing KRA Upload"
+        file_path = self.selected_okr_input_file.get() if mode == "OKR Upload" else self.selected_gen_input_file.get()
+        if not file_path:
             messagebox.showerror("Error", "Please select a file.")
             return
         self.is_generating = True
@@ -1371,9 +1430,14 @@ class App(ctk.CTk):
 
     def _run_generate_job(self):
         try:
-            from generate_upload import generate_upload_file
+            mode = self.gen_mode_seg.get() if hasattr(self, 'gen_mode_seg') else "Existing KRA Upload"
             
-            input_path = Path(self.selected_gen_input_file.get())
+            if mode == "OKR Upload":
+                from generate_upload import generate_okr_upload_file
+                input_path = Path(self.selected_okr_input_file.get())
+            else:
+                from generate_upload import generate_upload_file
+                input_path = Path(self.selected_gen_input_file.get())
             
             downloads = Path.home() / "Downloads"
             downloads.mkdir(parents=True, exist_ok=True)
@@ -1401,7 +1465,10 @@ class App(ctk.CTk):
                 else:
                     raise ValueError(f"Invalid format: '{line}'. Expected 'EMP ID, Name, Designation'.")
 
-            generate_upload_file(str(input_path), str(output_path), employees)
+            if mode == "OKR Upload":
+                generate_okr_upload_file(str(input_path), str(output_path), employees)
+            else:
+                generate_upload_file(str(input_path), str(output_path), employees)
 
             self.after(0, lambda: self._generate_success(output_path))
 
