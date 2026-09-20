@@ -1,7 +1,7 @@
 """
 storage
 ───────
-Transformers 2.0 Storage and Caching Package.
+Transformers 2.0 Storage, Caching & Analytical Snapshot Package.
 """
 
 from storage.cache_manager import (
@@ -9,9 +9,17 @@ from storage.cache_manager import (
     CacheManager,
     snapshot_cache,
 )
+from storage.snapshot_service import (
+    TimeSeriesSnapshotService,
+    create_snapshot,
+    snapshot_service,
+)
 
 __all__ = [
     "AnalyticalSnapshot",
     "CacheManager",
     "snapshot_cache",
+    "TimeSeriesSnapshotService",
+    "create_snapshot",
+    "snapshot_service",
 ]
