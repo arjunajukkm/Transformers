@@ -14,6 +14,7 @@ from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 
 import ui_components as ui
 import time_series_analysis as tsa
+from storage import snapshot_service
 
 ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
@@ -66,6 +67,9 @@ class App(ctk.CTk):
         self.ts_level_var = ctk.StringVar(value="Business Unit")
         self.ts_search_var = ctk.StringVar()
         self.is_ts_loading = False
+        self._latest_ts_job_id = 0
+        self._current_ts_breakdown_rows = []
+        self._search_debounce_id = None
 
         # Time and Leave Master multi-file lists
         self.tl_perf_files = []
@@ -712,7 +716,7 @@ class App(ctk.CTk):
             border_width=1, text_color=ui.COLOR_TEXT,
         )
         search_box.pack(side="right")
-        self.ts_search_var.trace_add("write", lambda *args: self._refresh_ts_table())
+        self.ts_search_var.trace_add("write", self._on_ts_search_changed)
 
         # Treeview container
         tree_container = ctk.CTkFrame(card_table, fg_color=ui.COLOR_CARD)
@@ -900,30 +904,31 @@ class App(ctk.CTk):
         self.ts_prog.start()
         ui.update_status(self.ts_dot, self.ts_lbl, "Loading and indexing dataset...", "processing")
 
-        threading.Thread(target=self._run_ts_load_job, args=(file_path,), daemon=True).start()
+        self._latest_ts_job_id += 1
+        job_id = self._latest_ts_job_id
+        threading.Thread(target=self._run_ts_load_job, args=(file_path, job_id), daemon=True).start()
 
-    def _run_ts_load_job(self, file_path):
+    def _run_ts_load_job(self, file_path, job_id):
         try:
-            import importlib
-            import time_series_analysis as tsa_mod
-            importlib.reload(tsa_mod)
-
-            df = tsa_mod.load_time_series_dataset(file_path)
-            self.after(0, lambda d=df: self._ts_load_success(d))
+            snapshot = snapshot_service.prepare_dataset(file_path)
+            self.after(0, lambda s=snapshot, p=file_path, j=job_id: self._ts_load_success(s, p, j))
         except Exception as e:
             err_msg = str(e)
-            self.after(0, lambda m=err_msg: self._ts_load_error(m))
+            self.after(0, lambda m=err_msg, j=job_id: self._ts_load_error(m, j))
 
-    def _ts_load_success(self, df):
+    def _ts_load_success(self, snapshot, file_path, job_id):
+        if job_id < self._latest_ts_job_id:
+            return  # Ignore stale completion
+
         self.is_ts_loading = False
         self.btn_ts_load.configure(state="normal")
         self.ts_prog.stop()
         self.ts_prog.grid_remove()
 
-        self.ts_dataset = df
-        total_rows = len(df)
-        total_emps = df["_emp_num"].nunique() if "_emp_num" in df.columns else 0
-        p_name = Path(self.ts_file_path.get()).name if self.ts_file_path.get() else "Uploaded Dataset"
+        self.ts_dataset = snapshot.fact_df
+        total_rows = snapshot.row_count
+        total_emps = snapshot.metadata.get("employee_count", 0)
+        p_name = Path(file_path).name
 
         ui.update_status(self.ts_dot, self.ts_lbl, f"Active: {total_rows:,} records • {total_emps:,} employees", "success")
 
@@ -935,13 +940,12 @@ class App(ctk.CTk):
         if hasattr(self, "ts_upload_summary_text"):
             self.ts_upload_summary_text.configure(state="normal")
             self.ts_upload_summary_text.delete("0.0", "end")
-            bus = sorted([str(x) for x in df["_bu"].dropna().unique() if str(x).strip() not in ("", "nan", "None")])
-            depts = sorted([str(x) for x in df["_dept"].dropna().unique() if str(x).strip() not in ("", "nan", "None")])
-            rms = sorted([str(x) for x in df["_rm"].dropna().unique() if str(x).strip() not in ("", "nan", "None", "Unknown")])
-            months = sorted([str(x) for x in df["_month_clean"].dropna().unique() if str(x).strip() not in ("", "nan", "None")])
-            dates = [d for d in df["_date"].dropna() if d]
-            min_d = min(dates).strftime("%d-%b-%Y") if dates else "N/A"
-            max_d = max(dates).strftime("%d-%b-%Y") if dates else "N/A"
+            bus = snapshot.filter_options["business_units"]
+            depts = snapshot.filter_options["departments"]
+            rms = snapshot.filter_options["managers"]
+            months = snapshot.filter_options["months"]
+            min_d = snapshot.metadata.get("min_date", "N/A")
+            max_d = snapshot.metadata.get("max_date", "N/A")
 
             summary_info = (
                 f"✓ DATASET INGESTED SUCCESSFULLY\n"
@@ -969,26 +973,36 @@ class App(ctk.CTk):
             self.btn_ts_go_upload.configure(text="📂 Change Dataset")
 
         # Populate filters
-        bus = sorted([str(x) for x in df["_bu"].dropna().unique() if str(x).strip() not in ("", "nan", "None")])
         self.ts_bu_combo.configure(values=["All Business Units"] + bus)
         self.ts_bu_var.set("All Business Units")
 
-        depts = sorted([str(x) for x in df["_dept"].dropna().unique() if str(x).strip() not in ("", "nan", "None")])
         self.ts_dept_combo.configure(values=["All Departments"] + depts)
         self.ts_dept_var.set("All Departments")
 
-        months = sorted([str(x) for x in df["_month_clean"].dropna().unique() if str(x).strip() not in ("", "nan", "None")])
         self.ts_month_combo.configure(values=["All Months"] + months)
         self.ts_month_var.set("All Months")
 
         self._refresh_ts_dashboard()
 
-    def _ts_load_error(self, err_msg):
+    def _ts_load_error(self, err_msg, job_id):
+        if job_id < self._latest_ts_job_id:
+            return  # Ignore stale error
+
         self.is_ts_loading = False
         self.btn_ts_load.configure(state="normal")
         self.ts_prog.stop()
         self.ts_prog.grid_remove()
-        ui.update_status(self.ts_dot, self.ts_lbl, "Failed to load dataset", "error")
+
+        active_snap = snapshot_service.get_active_snapshot()
+        if active_snap and active_snap.is_valid():
+            total_rows = active_snap.row_count
+            total_emps = active_snap.metadata.get("employee_count", 0)
+            ui.update_status(self.ts_dot, self.ts_lbl, f"Active: {total_rows:,} records • {total_emps:,} employees", "success")
+            if active_snap.raw_source:
+                self.ts_file_path.set(str(active_snap.raw_source))
+        else:
+            ui.update_status(self.ts_dot, self.ts_lbl, "Failed to load dataset", "error")
+
         messagebox.showerror("Dataset Loading Error", f"Could not load and process dataset:\n{err_msg}")
 
     def _on_ts_filter_changed(self, choice=None):
@@ -996,7 +1010,7 @@ class App(ctk.CTk):
 
     def _on_ts_level_changed(self, choice):
         self.ts_level_var.set(choice)
-        self._refresh_ts_table()
+        self._refresh_ts_table(reload_data=True)
 
     def _reset_ts_filters(self):
         self.ts_bu_var.set("All Business Units")
@@ -1006,15 +1020,14 @@ class App(ctk.CTk):
         self._refresh_ts_dashboard()
 
     def _refresh_ts_dashboard(self):
-        if self.ts_dataset is None:
+        if not snapshot_service.has_active_snapshot():
             return
 
         bu = self.ts_bu_var.get()
         dept = self.ts_dept_var.get()
         month = self.ts_month_var.get()
 
-        metrics = tsa.compute_time_series_metrics(
-            self.ts_dataset,
+        metrics = snapshot_service.get_dashboard_metrics(
             business_unit=bu, department=dept, month=month
         )
 
@@ -1056,28 +1069,43 @@ class App(ctk.CTk):
         self.lbl_kpi_hrs_sub.configure(text=f"{metrics['avg_working_hours_decimal']} decimal hours (P & MS)")
 
         # Refresh table
-        self._refresh_ts_table()
+        self._refresh_ts_table(reload_data=True)
 
-    def _refresh_ts_table(self):
-        if self.ts_dataset is None:
+    def _refresh_ts_table(self, reload_data=True):
+        if not snapshot_service.has_active_snapshot():
             return
-
-        for item in self.ts_tree.get_children():
-            self.ts_tree.delete(item)
 
         level = self.ts_level_var.get()
         bu = self.ts_bu_var.get()
         dept = self.ts_dept_var.get()
         month = self.ts_month_var.get()
 
-        breakdown = tsa.compute_level_breakdown(
-            self.ts_dataset, level=level,
-            business_unit=bu, department=dept, month=month
-        )
+        if reload_data or not hasattr(self, "_current_ts_breakdown_rows") or not self._current_ts_breakdown_rows:
+            self._current_ts_breakdown_rows = snapshot_service.get_breakdown(
+                level=level,
+                business_unit=bu,
+                department=dept,
+                month=month,
+            )
+
+        self._render_ts_table_rows()
+
+    def _on_ts_search_changed(self, *args):
+        if hasattr(self, "_search_debounce_id") and self._search_debounce_id:
+            try:
+                self.after_cancel(self._search_debounce_id)
+            except Exception:
+                pass
+        self._search_debounce_id = self.after(100, self._render_ts_table_rows)
+
+    def _render_ts_table_rows(self):
+        for item in self.ts_tree.get_children():
+            self.ts_tree.delete(item)
 
         search_q = self.ts_search_var.get().strip().lower()
+        rows = getattr(self, "_current_ts_breakdown_rows", [])
 
-        for r in breakdown:
+        for r in rows:
             e_name = str(r.get("Entity Name", ""))
             e_id = str(r.get("Entity ID", ""))
             if search_q and (search_q not in e_name.lower() and search_q not in e_id.lower()):
@@ -1101,7 +1129,7 @@ class App(ctk.CTk):
             self.ts_tree.insert("", "end", values=vals)
 
     def _export_ts_excel(self):
-        if self.ts_dataset is None or len(self.ts_dataset) == 0:
+        if not snapshot_service.has_active_snapshot():
             messagebox.showwarning("Warning", "Please load a dataset first before exporting.")
             return
 
@@ -1117,9 +1145,11 @@ class App(ctk.CTk):
             bu = self.ts_bu_var.get()
             dept = self.ts_dept_var.get()
             month = self.ts_month_var.get()
-            saved_p = tsa.export_time_series_report(
-                self.ts_dataset, out_path,
-                business_unit=bu, department=dept, month=month
+            saved_p = snapshot_service.export_report(
+                output_path=out_path,
+                business_unit=bu,
+                department=dept,
+                month=month,
             )
             messagebox.showinfo(
                 "Export Complete",
