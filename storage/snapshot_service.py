@@ -8,6 +8,11 @@ Provides the decoupled, UI-independent analytical service interface:
   and 4-level breakdowns -> store reusable AnalyticalSnapshot.
 - Atomic dataset replacement with failure isolation and stale-job fencing.
 - Thread-safe query and export facade without UI or web dependencies.
+
+Known Limitation & Shared DataFrame Contract:
+The canonical foundation shares the active analytical snapshot's DataFrame for memory
+efficiency. Direct raw_dataframe access follows a read-only usage contract but is not
+technically immutable. Consumers requiring modifications must use get_raw_dataframe(copy=True).
 """
 
 from datetime import date
@@ -212,6 +217,13 @@ def create_snapshot(
         "Employee": tsa.compute_level_breakdown(fact_df, level="Employee"),
     }
 
+    # 5. Build Canonical Workforce Data Foundation
+    from workforce_intelligence.data_foundation import CanonicalWorkforceData
+    workforce_foundation = CanonicalWorkforceData.from_dataframe(
+        fact_df,
+        source_file_name=raw_source,
+    )
+
     return AnalyticalSnapshot(
         dataset_id=ds_id,
         version=version,
@@ -221,6 +233,7 @@ def create_snapshot(
         breakdowns=standard_breakdowns,
         filter_options=filter_options,
         metadata=metadata,
+        workforce_foundation=workforce_foundation,
     )
 
 
@@ -339,6 +352,11 @@ class TimeSeriesSnapshotService:
         with self._job_fence_lock:
             self._latest_completed_job_id = 0
             self.cache_manager.clear()
+
+    def get_workforce_foundation(self) -> Optional[Any]:
+        """Retrieve the canonical workforce data foundation from the active snapshot."""
+        snap = self.get_active_snapshot()
+        return snap.workforce_foundation if snap else None
 
     def export_report(
         self,

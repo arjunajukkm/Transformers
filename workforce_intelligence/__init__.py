@@ -49,8 +49,22 @@ from workforce_intelligence.patterns import (
     PatternSummary,
     detect_patterns,
 )
+from workforce_intelligence.data_foundation import (
+    AttendanceRecord,
+    CanonicalWorkforceData,
+    Employee,
+    EmployeeDayFact,
+    OrganizationalStructure,
+    WorkforceRequest,
+)
 
 __all__ = [
+    "CanonicalWorkforceData",
+    "Employee",
+    "AttendanceRecord",
+    "WorkforceRequest",
+    "EmployeeDayFact",
+    "OrganizationalStructure",
     "load_workforce_data",
     "evaluate_policy",
     "build_leave_requests",

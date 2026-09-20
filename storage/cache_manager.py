@@ -90,12 +90,14 @@ class AnalyticalSnapshot:
         filter_options: Optional[Dict[str, List[str]]] = None,
         metadata: Optional[Dict[str, Any]] = None,
         max_filter_cache_size: int = 128,
+        workforce_foundation: Optional[Any] = None,
     ):
         self.dataset_id = dataset_id or key or f"dataset_v{version}_{int(time.time() * 1000)}"
         self.key = self.dataset_id  # Backward-compatibility alias
         self.version = version
         self.raw_source = raw_source
         self.fact_df = fact_df
+        self.workforce_foundation = workforce_foundation
         self.created_at = time.time()
         self.row_count = len(fact_df) if fact_df is not None else 0
 
