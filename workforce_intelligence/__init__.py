@@ -57,6 +57,21 @@ from workforce_intelligence.data_foundation import (
     OrganizationalStructure,
     WorkforceRequest,
 )
+from workforce_intelligence.kpi_engine import (
+    EmployeeMonthWFH,
+    EmployeePunchDeviation,
+    RepeatExceptionDossier,
+    compute_punch_deviations_bu,
+    compute_repeated_exceptions,
+    compute_wfh_allowance_monthly,
+    compute_workforce_intelligence_bundle,
+    hours_to_duration_str,
+    minutes_to_time_str,
+)
+from workforce_intelligence.snapshot_bridge import (
+    WorkforceIntelligenceBridge,
+    workforce_bridge,
+)
 
 __all__ = [
     "CanonicalWorkforceData",
@@ -99,4 +114,16 @@ __all__ = [
     "DQ_FLAGS",
     "MissingRequiredColumnsError",
     "ValidationError",
+    "compute_workforce_intelligence_bundle",
+    "compute_wfh_allowance_monthly",
+    "compute_punch_deviations_bu",
+    "compute_repeated_exceptions",
+    "EmployeeMonthWFH",
+    "EmployeePunchDeviation",
+    "RepeatExceptionDossier",
+    "minutes_to_time_str",
+    "hours_to_duration_str",
+    "WorkforceIntelligenceBridge",
+    "workforce_bridge",
 ]
+
