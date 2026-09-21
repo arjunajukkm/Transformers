@@ -773,18 +773,123 @@ def compute_workforce_intelligence_bundle(
     is_classified = (is_pres | is_ms | is_od | is_leave | is_wfh | is_hol | is_wo | is_ab)
     is_unclassified = ~is_classified
 
-    q_pres = float(filtered.loc[is_pres, "_clean_qty"].sum())
-    q_ms = float(filtered.loc[is_ms, "_clean_qty"].sum())
-    q_total_present = q_pres + q_ms
-    q_od = float(filtered.loc[is_od, "_clean_qty"].sum())
-    q_leave = float(filtered.loc[is_leave, "_clean_qty"].sum())
-    q_wfh = float(filtered.loc[is_wfh, "_clean_qty"].sum())
-    q_hol = float(filtered.loc[is_hol, "_clean_qty"].sum())
-    q_wo = float(filtered.loc[is_wo, "_clean_qty"].sum())
-    q_absent = float(filtered.loc[is_ab, "_clean_qty"].sum())
-    q_unclassified = float(filtered.loc[is_unclassified, "_clean_qty"].sum())
-    unclassified_records_count = int(sum(is_unclassified))
+    # Map each row to its attendance category
+    filtered["_cat"] = "UNCLASSIFIED"
+    filtered.loc[is_pres, "_cat"] = "PRESENT"
+    filtered.loc[is_ms, "_cat"] = "PRESENT"  # Missing Swipes is Present
+    filtered.loc[is_od, "_cat"] = "OD"
+    filtered.loc[is_leave, "_cat"] = "LEAVE"
+    filtered.loc[is_wfh, "_cat"] = "WFH"
+    filtered.loc[is_hol, "_cat"] = "HOLIDAY"
+    filtered.loc[is_wo, "_cat"] = "WEEK_OFF"
+    filtered.loc[is_ab, "_cat"] = "ABSENT"
 
+    q_pres = 0.0
+    q_od = 0.0
+    q_leave = 0.0
+    q_wfh = 0.0
+    q_hol = 0.0
+    q_wo = 0.0
+    q_absent = 0.0
+    q_unclassified = 0.0
+    unclassified_records_count = 0
+    conflicting_days_count = 0
+    conflicting_record_ids: List[str] = []
+
+    def _add_qty(cat: str, qty: float):
+        nonlocal q_pres, q_od, q_leave, q_wfh, q_hol, q_wo, q_absent, q_unclassified, unclassified_records_count
+        if cat == "PRESENT":
+            q_pres += qty
+        elif cat == "OD":
+            q_od += qty
+        elif cat == "LEAVE":
+            q_leave += qty
+        elif cat == "WFH":
+            q_wfh += qty
+        elif cat == "HOLIDAY":
+            q_hol += qty
+        elif cat == "WEEK_OFF":
+            q_wo += qty
+        elif cat == "ABSENT":
+            q_absent += qty
+        else:
+            q_unclassified += qty
+            unclassified_records_count += 1
+
+    def _is_regularization_row(row) -> bool:
+        att = str(row.get("_att_type", "") or row.get("Attendance Type", "") or "").lower()
+        st = str(row.get("_status", "") or row.get("Status", "") or "").lower()
+        return "regulariz" in att or bool(re.search(r'\(r\)|ar|pr', st))
+
+    def _is_approved_row(row) -> bool:
+        appr = str(row.get("Approval Status", "") or row.get("_approval_status", "") or "").strip().lower()
+        return appr == "approved"
+
+    def _resolve_row_category(row) -> str:
+        cat = row.get("_cat", "UNCLASSIFIED")
+        if cat == "UNCLASSIFIED" and _is_regularization_row(row):
+            return "PRESENT"
+        return cat
+
+    # Group by distinct (Employee, Date) to prevent multi-counting single calendar days
+    if "_date" in filtered.columns and "_emp_num" in filtered.columns:
+        date_groups = filtered.groupby(["_emp_num", "_date"], sort=False)
+        for (emp_key, d_key), grp in date_groups:
+            n_rows = len(grp)
+            grp_qty = float(grp["_clean_qty"].sum())
+
+            if n_rows == 1:
+                # 1. Single record: standard day equivalent (capped at 1.0)
+                row0 = grp.iloc[0]
+                q = min(1.0, float(row0["_clean_qty"]))
+                cat0 = _resolve_row_category(row0) if _is_approved_row(row0) else row0["_cat"]
+                _add_qty(cat0, q)
+
+            elif grp_qty <= 1.0001:
+                # 2. Legitimate fractional splits on same date (e.g., 0.5 Present + 0.5 Leave = 1.0)
+                for _, row in grp.iterrows():
+                    q = float(row["_clean_qty"])
+                    cat_row = _resolve_row_category(row) if _is_approved_row(row) else row["_cat"]
+                    _add_qty(cat_row, q)
+
+            else:
+                # 3. Overlapping records on same date (total quantity > 1.0):
+                # An employee can have at most 1.0 attendance-day equivalent on a single date.
+                # Check for explicit approved transactions
+                appr_series = grp["Approval Status"] if "Approval Status" in grp.columns else (
+                    grp["_approval_status"] if "_approval_status" in grp.columns else None
+                )
+                approved_rows = grp[appr_series.astype(str).str.strip().str.lower() == "approved"] if appr_series is not None else grp.iloc[0:0]
+                appr_qty = float(approved_rows["_clean_qty"].sum()) if len(approved_rows) > 0 else 0.0
+
+                if 0.9999 <= appr_qty <= 1.0001:
+                    # Approved transactions cleanly resolve the day to exactly 1.0 day equivalent
+                    # Each approved event retains its actual attendance meaning (Leave, WFH, OD, Present)
+                    for _, appr_row in approved_rows.iterrows():
+                        q_appr = float(appr_row["_clean_qty"])
+                        cat_appr = _resolve_row_category(appr_row)
+                        _add_qty(cat_appr, q_appr)
+                else:
+                    # Contradictory / unresolved records: flag as conflicting employee-day
+                    # Strictly capped at 1.0 day equivalent to prevent denominator inflation
+                    q_unclassified += 1.0
+                    unclassified_records_count += 1
+                    conflicting_days_count += 1
+                    if "record_id" in grp.columns:
+                        conflicting_record_ids.extend(grp["record_id"].astype(str).tolist())
+    else:
+        # Fallback if no date column exists
+        q_pres = float(filtered.loc[is_pres | is_ms, "_clean_qty"].sum())
+        q_od = float(filtered.loc[is_od, "_clean_qty"].sum())
+        q_leave = float(filtered.loc[is_leave, "_clean_qty"].sum())
+        q_wfh = float(filtered.loc[is_wfh, "_clean_qty"].sum())
+        q_hol = float(filtered.loc[is_hol, "_clean_qty"].sum())
+        q_wo = float(filtered.loc[is_wo, "_clean_qty"].sum())
+        q_absent = float(filtered.loc[is_ab, "_clean_qty"].sum())
+        q_unclassified = float(filtered.loc[is_unclassified, "_clean_qty"].sum())
+        unclassified_records_count = int(sum(is_unclassified))
+
+    q_total_present = q_pres
     q_classified_denom = q_total_present + q_od + q_leave + q_wfh + q_hol + q_wo + q_absent
     total_quantity_recorded = q_classified_denom + q_unclassified
     attendance_composition_denom = total_quantity_recorded if total_quantity_recorded > 0 else float(recorded_employee_days)
@@ -1068,6 +1173,8 @@ def compute_workforce_intelligence_bundle(
         "kpi_unclassified_days": round(q_unclassified, 1),
         "kpi_unclassified_pct": pct_unclassified,
         "unclassified_record_ids": filtered.loc[is_unclassified, "record_id"].astype(str).tolist() if "record_id" in filtered.columns else [],
+        "conflicting_employee_days_count": conflicting_days_count,
+        "conflicting_record_ids": conflicting_record_ids,
         "kpi_9_attendance_exceptions_days": excp_days_count,
         "kpi_9_attendance_exceptions_rate_pct": excp_rate_pct,
         "kpi_9_attendance_exceptions_affected_emps": excp_affected_emps,
@@ -1204,6 +1311,8 @@ def _empty_bundle(threshold: int = 3, allowance: float = 3.0) -> Dict[str, Any]:
         "kpi_unclassified_days": 0.0,
         "kpi_unclassified_pct": 0.0,
         "unclassified_record_ids": [],
+        "conflicting_employee_days_count": 0,
+        "conflicting_record_ids": [],
         "kpi_9_attendance_exceptions_days": 0,
         "kpi_9_attendance_exceptions_rate_pct": 0.0,
         "kpi_9_attendance_exceptions_affected_emps": 0,

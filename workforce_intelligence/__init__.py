@@ -73,6 +73,7 @@ from workforce_intelligence.snapshot_bridge import (
     workforce_bridge,
 )
 from workforce_intelligence.dashboard_shell import (
+    ExecutiveKPICard,
     VIEW_CONFIGS,
     VIEW_KEYS,
     WorkforceDashboardView,
@@ -131,8 +132,10 @@ __all__ = [
     "WorkforceIntelligenceBridge",
     "workforce_bridge",
     "WorkforceDashboardView",
+    "ExecutiveKPICard",
     "VIEW_KEYS",
     "VIEW_CONFIGS",
 ]
+
 
 
