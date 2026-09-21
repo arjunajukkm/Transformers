@@ -166,8 +166,9 @@ class App(ctk.CTk):
         self.analyse_sub_menu_frame.grid(row=5, column=0, sticky="ew")
         self.analyse_sub_menu_frame.grid_columnconfigure(0, weight=1)
 
-        # Sub-items: Time Series Analysis, Upload
+        # Sub-items: Workforce Intelligence, Time Series Analysis, Upload
         analyse_sub_items = [
+            ("workforce_intelligence", "Workforce Intelligence", ui.ICON_ANALYSE),
             ("analyse_time_series", "Time Series Analysis", ui.ICON_DASHBOARD),
             ("analyse_upload", "Upload", ui.ICON_UPLOAD),
         ]
@@ -198,6 +199,7 @@ class App(ctk.CTk):
         self._build_time_leave_frame()
         self._build_time_series_frame()
         self._build_analyse_upload_frame()
+        self._build_workforce_intelligence_frame()
 
     def _on_transform_parent_clicked(self):
         """When the Transform header is clicked, ensure menu is open and show overview."""
@@ -247,7 +249,7 @@ class App(ctk.CTk):
         is_analyse_parent = False
 
         transform_children = ("dashboard", "transform", "generate", "absent", "att_summary", "time_leave")
-        analyse_children = ("analyse_time_series", "analyse_dashboard", "analyse_upload")
+        analyse_children = ("workforce_intelligence", "analyse_time_series", "analyse_dashboard", "analyse_upload")
 
         # Auto-expand menu if navigating to a child module
         if name in transform_children and not self.transform_menu_expanded:
@@ -271,6 +273,8 @@ class App(ctk.CTk):
         # Show selected
         if name in self.frames:
             self.frames[name].grid(row=0, column=0, sticky="nsew")
+            if name == "workforce_intelligence" and hasattr(self, "workforce_dashboard_view"):
+                self.workforce_dashboard_view.sync_snapshot_state()
 
     # ---------------------------------------------------------
     # Transform Hub / Overview
@@ -555,6 +559,14 @@ class App(ctk.CTk):
         self.btn_tl.pack(side="right")
 
     # ---------------------------------------------------------
+    # Workforce Intelligence Dashboard
+    # ---------------------------------------------------------
+    def _build_workforce_intelligence_frame(self):
+        from workforce_intelligence.dashboard_shell import WorkforceDashboardView
+        self.workforce_dashboard_view = WorkforceDashboardView(self.main_content, app=self)
+        self.frames["workforce_intelligence"] = self.workforce_dashboard_view
+
+    # ---------------------------------------------------------
     # Time Series Analysis
     # ---------------------------------------------------------
     def _build_time_series_frame(self):
@@ -808,7 +820,8 @@ class App(ctk.CTk):
 
         actions = ctk.CTkFrame(hdr, fg_color="transparent")
         actions.grid(row=0, column=1, sticky="e")
-        ui.create_secondary_button(actions, "← Time Series Analysis", lambda: self.select_frame_by_name("analyse_time_series"), 180).pack()
+        ui.create_secondary_button(actions, "← Workforce Intelligence", lambda: self.select_frame_by_name("workforce_intelligence"), 180).pack(side="left", padx=(0, 10))
+        ui.create_secondary_button(actions, "← Time Series Analysis", lambda: self.select_frame_by_name("analyse_time_series"), 180).pack(side="left")
 
         # Upload Card
         card = ui.create_card(f)
@@ -931,6 +944,10 @@ class App(ctk.CTk):
         p_name = Path(file_path).name
 
         ui.update_status(self.ts_dot, self.ts_lbl, f"Active: {total_rows:,} records • {total_emps:,} employees", "success")
+
+        # Update Workforce Intelligence Dashboard header metadata
+        if hasattr(self, "workforce_dashboard_view"):
+            self.workforce_dashboard_view.sync_snapshot_state(snapshot)
 
         # Enable Open Time Series Analysis button in Upload section
         if hasattr(self, "btn_ts_open_tsa"):

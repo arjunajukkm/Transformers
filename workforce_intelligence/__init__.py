@@ -72,6 +72,11 @@ from workforce_intelligence.snapshot_bridge import (
     WorkforceIntelligenceBridge,
     workforce_bridge,
 )
+from workforce_intelligence.dashboard_shell import (
+    VIEW_CONFIGS,
+    VIEW_KEYS,
+    WorkforceDashboardView,
+)
 
 __all__ = [
     "CanonicalWorkforceData",
@@ -125,5 +130,9 @@ __all__ = [
     "hours_to_duration_str",
     "WorkforceIntelligenceBridge",
     "workforce_bridge",
+    "WorkforceDashboardView",
+    "VIEW_KEYS",
+    "VIEW_CONFIGS",
 ]
+
 
