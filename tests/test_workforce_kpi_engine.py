@@ -432,7 +432,8 @@ def test_02_half_day_attendance_composition():
 # ─────────────────────────────────────────────────────────────────────────────
 
 def test_03_attendance_exceptions_overlapping_present():
-    # Missing Swipe record is both physical attendance (Present) and an Attendance Exception
+    # Missing Swipe record is physical attendance (Present), but under Step 25 confirmed rules,
+    # Missing Swipes is NOT an Attendance Exception (ONLY Attendance Type == 'Regularized' qualifies)
     df = pd.DataFrame([
         {
             "Employee Number": "E001",
@@ -447,9 +448,9 @@ def test_03_attendance_exceptions_overlapping_present():
     bundle = compute_workforce_intelligence_bundle(df)
     # Physical present includes the missing swipe day
     assert bundle["kpi_3_present_days"] == 1.0
-    # Also flagged in attendance exceptions
-    assert bundle["kpi_9_attendance_exceptions_days"] == 1
-    assert bundle["kpi_9_attendance_exceptions_affected_emps"] == 1
+    # Missing Swipes alone does NOT qualify as Attendance Exception
+    assert bundle["kpi_9_attendance_exceptions_days"] == 0
+    assert bundle["kpi_9_attendance_exceptions_affected_emps"] == 0
     # Attendance composition denominator does not double-count
     assert bundle["attendance_composition_denominator"] == 1.0
     assert bundle["recorded_employee_days"] == 1
@@ -930,16 +931,18 @@ def test_19_duration_band_reconciliation():
 # ─────────────────────────────────────────────────────────────────────────────
 
 def test_20_adjustable_repeated_exception_threshold():
-    # E001 has 3 exception days: Nov 2 (MS), Nov 3 (AB), Nov 4 (MS + Reg on same day)
-    # Same day with multiple exception types counts as 1 qualifying exception day!
+    # E001 has 3 qualifying regularized exception days: Nov 1 (Reg), Nov 2 (Reg), Nov 4 (Reg x 2 on same day)
+    # Multiple regularized records on same day count as 1 qualifying exception day!
+    # Missing Swipes (Nov 3) does NOT qualify.
     df = pd.DataFrame([
-        {"Employee Number": "E001", "Date": "2026-11-02", "Attendance Type": "Missing Swipes", "Status": "MS"},
-        {"Employee Number": "E001", "Date": "2026-11-03", "Attendance Type": "Absent", "Status": "AB"},
-        # Nov 4: 2 rows on same day
-        {"Employee Number": "E001", "Date": "2026-11-04", "Attendance Type": "Missing Swipes", "Status": "MS"},
+        {"Employee Number": "E001", "Date": "2026-11-01", "Attendance Type": "Regularized", "Status": "A(R)"},
+        {"Employee Number": "E001", "Date": "2026-11-02", "Attendance Type": "Regularized", "Status": "A(R)"},
+        {"Employee Number": "E001", "Date": "2026-11-03", "Attendance Type": "Missing Swipes", "Status": "MS"},
+        # Nov 4: 2 Regularized rows on same day
+        {"Employee Number": "E001", "Date": "2026-11-04", "Attendance Type": "Regularized", "Status": "A(R)"},
         {"Employee Number": "E001", "Date": "2026-11-04", "Attendance Type": "Regularized", "Status": "P(R)"},
     ])
-    # Threshold = 3 -> Meets threshold (qualifying days = 3)
+    # Threshold = 3 -> Meets threshold (qualifying days = 3: Nov 1, Nov 2, Nov 4)
     res_t3 = compute_repeated_exceptions(df, threshold=3)
     assert res_t3["total_repeat_employees"] == 1
     dossier = res_t3["dossiers"][0]
@@ -947,6 +950,7 @@ def test_20_adjustable_repeated_exception_threshold():
     assert dossier["meets_threshold"] is True
     # Multiple records on Nov 4 were collapsed into 1 exception day
     assert len(dossier["exception_dates"]) == 3
+    assert set(dossier["exception_dates"]) == {"2026-11-01", "2026-11-02", "2026-11-04"}
 
     # Threshold = 4 -> Does NOT meet threshold
     res_t4 = compute_repeated_exceptions(df, threshold=4)
@@ -986,18 +990,17 @@ def test_21_filtered_scope_numerators_and_denominators(base_workforce_df):
 
 def test_22_source_record_traceability():
     df = pd.DataFrame([
-        {"Employee Number": "E001", "Date": "2026-11-02", "Attendance Type": "Missing Swipes", "Status": "MS"},
-        {"Employee Number": "E001", "Date": "2026-11-03", "Attendance Type": "Absent", "Status": "AB"},
-        {"Employee Number": "E001", "Date": "2026-11-04", "Attendance Type": "Missing Swipes", "Status": "MS"},
+        {"Employee Number": "E001", "Date": "2026-11-02", "Attendance Type": "Regularized", "Status": "A(R)", "Approval Status": "Approved"},
+        {"Employee Number": "E001", "Date": "2026-11-03", "Attendance Type": "Regularized", "Status": "A(R)", "Approval Status": "Pending"},
+        {"Employee Number": "E001", "Date": "2026-11-04", "Attendance Type": "Regularized", "Status": "A(R)", "Approval Status": "Rejected"},
     ])
     res = compute_repeated_exceptions(df, threshold=3)
     dossier = res["dossiers"][0]
     # Traceability fields populated
     assert len(dossier["source_record_ids"]) == 3
     assert len(dossier["exception_dates"]) == 3
-    assert len(dossier["exception_types"]) == 2
-    assert "Missing Swipe" in dossier["exception_types"]
-    assert "Absent" in dossier["exception_types"]
+    assert len(dossier["exception_types"]) == 1
+    assert "Regularization" in dossier["exception_types"]
     assert "2026-11-02" in dossier["exception_dates"]
 
 

@@ -40,7 +40,12 @@ from workforce_intelligence.dashboard_shell import (
     WorkforceDashboardView,
     _fmt_days,
 )
-from workforce_intelligence.kpi_engine import compute_workforce_intelligence_bundle
+import time_series_analysis as tsa
+from workforce_intelligence.kpi_engine import (
+    compute_workforce_intelligence_bundle,
+    compute_repeated_exceptions,
+    ensure_clean_dataframe,
+)
 from workforce_intelligence.snapshot_bridge import workforce_bridge
 
 
@@ -111,7 +116,7 @@ def synthetic_snapshot_a() -> AnalyticalSnapshot:
             "In Time": "NA",
             "Out Time": "NA",
         },
-        # Emp 3: Charlie (Missing Swipe exception)
+        # Emp 3: Charlie (Regularized exception)
         {
             "record_id": "REC_005",
             "Employee Number": "E003",
@@ -120,11 +125,12 @@ def synthetic_snapshot_a() -> AnalyticalSnapshot:
             "Department": "Logistics",
             "Reporting Manager": "Eve Mgr",
             "Date": "2026-09-01",
-            "Attendance Type": "Missing Swipes",
-            "Status": "MS",
+            "Attendance Type": "Regularized",
+            "Status": "P(R)",
             "Quantity": 1.0,
             "In Time": "09:30",
-            "Out Time": "NA",
+            "Out Time": "18:00",
+            "Approval Status": "Approved",
         },
     ]
     df = pd.DataFrame(rows)
@@ -277,9 +283,9 @@ def test_kpi_values_originate_from_actual_bundle(desktop_app, synthetic_snapshot
     assert b["kpi_absent_days"] == 0.0
     assert wf_view.kpi_cards["kpi_absent"].lbl_val.cget("text") == "0 days"
 
-    # Exceptions: 1 day (Charlie Missing Swipes) -> Singular '1 day'
+    # Exceptions: 1 day (Charlie Regularized) -> Singular '1 exception day'
     assert b["kpi_9_attendance_exceptions_days"] == 1
-    assert wf_view.kpi_cards["kpi_9_attendance_exceptions"].lbl_val.cget("text") == "1 day"
+    assert wf_view.kpi_cards["kpi_9_attendance_exceptions"].lbl_val.cget("text") == "1 exception day"
 
 
 # =========================================================================
@@ -1263,14 +1269,199 @@ def test_week_off_never_overlaps_with_attendance_exceptions():
     rows = [
         {"record_id": "REC_WO_01", "Employee Number": "E301", "Date": "2026-09-06", "Attendance Type": "Week Off", "Status": "WO", "Quantity": 1.0},
         {"record_id": "REC_WO_02", "Employee Number": "E302", "Date": "2026-09-06", "Attendance Type": "Week Off", "Status": "WOW", "Quantity": 1.0},
-        {"record_id": "REC_EX_01", "Employee Number": "E303", "Date": "2026-09-07", "Attendance Type": "Missing Swipes", "Status": "P(MS)", "Quantity": 1.0},
+        {"record_id": "REC_MS_01", "Employee Number": "E303", "Date": "2026-09-07", "Attendance Type": "Missing Swipes", "Status": "P(MS)", "Quantity": 1.0},
+        {"record_id": "REC_EX_01", "Employee Number": "E304", "Date": "2026-09-07", "Attendance Type": "Regularized", "Status": "A(R)", "Quantity": 1.0},
     ]
     df = pd.DataFrame(rows)
     bundle = compute_workforce_intelligence_bundle(df)
 
     assert bundle["kpi_8_week_off_days"] == 2.0
+    # Missing Swipes (E303) does NOT qualify as an exception; ONLY Regularized (E304) qualifies
     assert bundle["kpi_9_attendance_exceptions_days"] == 1
     assert bundle["kpi_9_attendance_exceptions_affected_emps"] == 1
+
+
+# =========================================================================
+# 35. Attendance Type = Regularized exact matching qualification
+# =========================================================================
+def test_attendance_exceptions_exact_regularized_matching():
+    """Verify only exact normalized Attendance Type == 'Regularized' qualifies."""
+    rows = [
+        # Qualifies: exact case
+        {"record_id": "R1", "Employee Number": "E401", "Date": "2026-09-01", "Attendance Type": "Regularized", "Status": "A(R)"},
+        # Qualifies: surrounding whitespace and lowercase
+        {"record_id": "R2", "Employee Number": "E402", "Date": "2026-09-01", "Attendance Type": "  regularized  ", "Status": "P(R)"},
+        # Qualifies: UPPERCASE
+        {"record_id": "R3", "Employee Number": "E403", "Date": "2026-09-01", "Attendance Type": "REGULARIZED", "Status": "A(R)"},
+        # Disqualified: Missing Swipes
+        {"record_id": "R4", "Employee Number": "E404", "Date": "2026-09-01", "Attendance Type": "Missing Swipes", "Status": "P(MS)"},
+        # Disqualified: Absent
+        {"record_id": "R5", "Employee Number": "E405", "Date": "2026-09-01", "Attendance Type": "Absent", "Status": "A"},
+        # Disqualified: Week Off
+        {"record_id": "R6", "Employee Number": "E406", "Date": "2026-09-01", "Attendance Type": "Week Off", "Status": "WO"},
+        # Disqualified: Holiday
+        {"record_id": "R7", "Employee Number": "E407", "Date": "2026-09-01", "Attendance Type": "Holiday", "Status": "H"},
+        # Disqualified: Status is A(R) but Attendance Type is Absent
+        {"record_id": "R8", "Employee Number": "E408", "Date": "2026-09-01", "Attendance Type": "Absent", "Status": "A(R)"},
+    ]
+    df = pd.DataFrame(rows)
+    bundle = compute_workforce_intelligence_bundle(df)
+
+    assert bundle["kpi_9_attendance_exceptions_days"] == 3
+    assert bundle["kpi_9_attendance_exceptions_affected_emps"] == 3
+    assert bundle["attendance_exceptions_qualifying_records_count"] == 3
+
+
+# =========================================================================
+# 36. Regularized approval status breakdown and distinguishability
+# =========================================================================
+def test_regularized_approval_status_breakdown_distinguishability():
+    """Verify Approved, Pending, Rejected, and Unknown regularizations all qualify and remain distinguishable."""
+    rows = [
+        {"record_id": "R1", "Employee Number": "E501", "Date": "2026-09-01", "Attendance Type": "Regularized", "Status": "A(R)", "Approval Status": "Approved"},
+        {"record_id": "R2", "Employee Number": "E502", "Date": "2026-09-01", "Attendance Type": "Regularized", "Status": "A(R)", "Approval Status": "Pending"},
+        {"record_id": "R3", "Employee Number": "E503", "Date": "2026-09-01", "Attendance Type": "Regularized", "Status": "A(R)", "Approval Status": "Rejected"},
+        {"record_id": "R4", "Employee Number": "E504", "Date": "2026-09-01", "Attendance Type": "Regularized", "Status": "A(R)", "Approval Status": None},
+    ]
+    df = pd.DataFrame(rows)
+    bundle = compute_workforce_intelligence_bundle(df)
+
+    # All 4 count as exceptions regardless of approval status
+    assert bundle["kpi_9_attendance_exceptions_days"] == 4
+    assert bundle["kpi_9_attendance_exceptions_affected_emps"] == 4
+    assert bundle["attendance_exceptions_qualifying_records_count"] == 4
+
+    # Approval breakdown distinguishes all states cleanly
+    ab = bundle["attendance_exceptions_approval_breakdown"]
+    assert ab["approved"] == 1
+    assert ab["pending"] == 1
+    assert ab["rejected"] == 1
+    assert ab["unknown"] == 1
+
+    # Traceability records preserved
+    recs = bundle["attendance_exceptions_records"]
+    assert len(recs) == 4
+    statuses = {r["employee_id"]: r["approval_status"] for r in recs}
+    assert statuses["E501"] == "Approved"
+    assert statuses["E502"] == "Pending"
+    assert statuses["E503"] == "Rejected"
+    assert statuses["E504"] == "Unknown"
+
+
+# =========================================================================
+# 37. Multiple Regularized records on same employee-date are deduplicated
+# =========================================================================
+def test_multiple_regularized_records_same_date_deduplication():
+    """Verify multiple regularized records on one employee-date count as one exception day."""
+    rows = [
+        {"record_id": "R1", "Employee Number": "E601", "Date": "2026-09-02", "Attendance Type": "Regularized", "Status": "A(R)", "Approval Status": "Approved"},
+        {"record_id": "R2", "Employee Number": "E601", "Date": "2026-09-02", "Attendance Type": "Regularized", "Status": "P(R)", "Approval Status": "Pending"},
+        {"record_id": "R3", "Employee Number": "E601", "Date": "2026-09-03", "Attendance Type": "Regularized", "Status": "A(R)", "Approval Status": "Approved"},
+    ]
+    df = pd.DataFrame(rows)
+    bundle = compute_workforce_intelligence_bundle(df)
+
+    # E601 has 3 records across 2 distinct dates -> 2 exception days
+    assert bundle["kpi_9_attendance_exceptions_days"] == 2
+    assert bundle["kpi_9_attendance_exceptions_affected_emps"] == 1
+    # Underlying source records count is 3
+    assert bundle["attendance_exceptions_qualifying_records_count"] == 3
+
+
+# =========================================================================
+# 38. Exception rate uses distinct recorded employee-day denominator
+# =========================================================================
+def test_exception_rate_uses_distinct_recorded_employee_days_denominator():
+    """Verify exception rate denominator is distinct recorded employee-days, not composition denominator."""
+    rows = [
+        # 9 distinct employee-days
+        {"record_id": f"R{i}", "Employee Number": f"E70{i}", "Date": "2026-09-01", "Attendance Type": "Present", "Status": "P", "Quantity": 1.0}
+        for i in range(1, 10)
+    ]
+    # 1 regularized employee-day
+    rows.append(
+        {"record_id": "R10", "Employee Number": "E710", "Date": "2026-09-01", "Attendance Type": "Regularized", "Status": "A(R)", "Quantity": 1.0}
+    )
+    df = pd.DataFrame(rows)
+    bundle = compute_workforce_intelligence_bundle(df)
+
+    assert bundle["kpi_2_attendance_days"] == 10
+    assert bundle["kpi_9_attendance_exceptions_days"] == 1
+    # Rate: 1 / 10 = 10.0%
+    assert bundle["kpi_9_attendance_exceptions_rate_pct"] == 10.0
+
+
+# =========================================================================
+# 39. Repeated exception threshold uses Regularized-only definition
+# =========================================================================
+def test_repeated_exception_threshold_uses_regularized_only():
+    """Verify compute_repeated_exceptions only counts distinct Regularized days."""
+    rows = [
+        {"Employee Number": "E801", "Date": "2026-09-01", "Attendance Type": "Regularized", "Status": "A(R)"},
+        {"Employee Number": "E801", "Date": "2026-09-02", "Attendance Type": "Regularized", "Status": "A(R)"},
+        # Missing Swipe and Absent on other dates do not count
+        {"Employee Number": "E801", "Date": "2026-09-03", "Attendance Type": "Missing Swipes", "Status": "MS"},
+        {"Employee Number": "E801", "Date": "2026-09-04", "Attendance Type": "Absent", "Status": "A"},
+    ]
+    df = pd.DataFrame(rows)
+
+    # Threshold = 2 -> Meets threshold (qualifying days = 2)
+    res_t2 = compute_repeated_exceptions(df, threshold=2)
+    assert res_t2["total_repeat_employees"] == 1
+    assert res_t2["dossiers"][0]["qualifying_exception_days"] == 2
+
+    # Threshold = 3 -> Does NOT meet threshold (since MS and Absent don't count)
+    res_t3 = compute_repeated_exceptions(df, threshold=3)
+    assert res_t3["total_repeat_employees"] == 0
+    assert res_t3["dossiers"][0]["meets_threshold"] is False
+
+
+# =========================================================================
+# 40. Existing attendance composition and Absent KPI remain unchanged
+# =========================================================================
+def test_attendance_composition_and_absent_kpi_remain_unchanged():
+    """Verify Present, OD, Leave, WFH, Holiday, Week Off, and Absent KPIs are unchanged."""
+    rows = [
+        {"Employee Number": "E901", "Date": "2026-09-01", "Attendance Type": "Present", "Status": "P", "Quantity": 1.0},
+        {"Employee Number": "E902", "Date": "2026-09-01", "Attendance Type": "On Duty", "Status": "OD", "Quantity": 1.0},
+        {"Employee Number": "E903", "Date": "2026-09-01", "Attendance Type": "Leave", "Status": "CL", "Quantity": 1.0},
+        {"Employee Number": "E904", "Date": "2026-09-01", "Attendance Type": "Work From Home", "Status": "WFH", "Quantity": 1.0},
+        {"Employee Number": "E905", "Date": "2026-09-01", "Attendance Type": "Holiday", "Status": "H", "Quantity": 1.0},
+        {"Employee Number": "E906", "Date": "2026-09-01", "Attendance Type": "Week Off", "Status": "WO", "Quantity": 1.0},
+        {"Employee Number": "E907", "Date": "2026-09-01", "Attendance Type": "Absent", "Status": "A", "Quantity": 1.0},
+        {"Employee Number": "E908", "Date": "2026-09-01", "Attendance Type": "Regularized", "Status": "A(R)", "Quantity": 1.0},
+    ]
+    df = pd.DataFrame(rows)
+    bundle = compute_workforce_intelligence_bundle(df)
+
+    assert bundle["kpi_3_present_days"] == 1.0
+    assert bundle["kpi_4_od_days"] == 1.0
+    assert bundle["kpi_5_leave_days"] == 1.0
+    assert bundle["kpi_6_wfh_days"] == 1.0
+    assert bundle["kpi_7_holiday_days"] == 1.0
+    assert bundle["kpi_8_week_off_days"] == 1.0
+    assert bundle["kpi_absent_days"] == 1.0
+    assert bundle["kpi_9_attendance_exceptions_days"] == 1
+    assert bundle["attendance_composition_denominator"] == 8.0
+
+
+# =========================================================================
+# 41. Time Series Analysis backward compatibility preserved
+# =========================================================================
+def test_time_series_analysis_backward_compatibility():
+    """Verify legacy time series analysis metrics remain intact."""
+    rows = [
+        {"Employee Number": "E001", "Date": "2026-09-01", "Attendance Type": "Present", "Status": "P", "Quantity": 1.0},
+        {"Employee Number": "E001", "Date": "2026-09-02", "Attendance Type": "Regularized", "Status": "A(R)", "Quantity": 1.0},
+    ]
+    df = pd.DataFrame(rows)
+    bundle = compute_workforce_intelligence_bundle(df)
+    clean_df = ensure_clean_dataframe(df)
+    legacy_metrics = tsa.compute_time_series_metrics(clean_df)
+
+    for k in legacy_metrics.keys():
+        assert k in bundle
+
 
 
 

@@ -724,7 +724,7 @@ class WorkforceDashboardView(ctk.CTkFrame):
             ("kpi_7_holiday", "7. HOLIDAY", "#F59E0B", "days", "Recognized organization holidays"),
             ("kpi_8_week_off", "8. WEEK OFF", "#94A3B8", "days", "Scheduled weekly rest days"),
             ("kpi_absent", "9. ABSENT", "#EF4444", "days", "Recorded employee absence days"),
-            ("kpi_9_attendance_exceptions", "10. ATTENDANCE EXCEPTIONS", "#F43F5E", "days", "Overlapping exception overlay"),
+            ("kpi_9_attendance_exceptions", "10. ATTENDANCE EXCEPTIONS", "#F43F5E", "days", "Regularized attendance exceptions"),
         ]
 
         for col, (cid, title, color, unit, tip) in enumerate(card_configs_r2):
@@ -963,12 +963,12 @@ class WorkforceDashboardView(ctk.CTkFrame):
         excp_days = bundle.get("kpi_9_attendance_exceptions_days", 0)
         excp_rate = bundle.get("kpi_9_attendance_exceptions_rate_pct", 0.0)
         affected_emps = bundle.get("kpi_9_attendance_exceptions_affected_emps", 0)
-        excp_unit = "day" if excp_days == 1 else "days"
-        emp_unit = "affected emp" if affected_emps == 1 else "affected emps"
+        excp_day_unit = "exception day" if excp_days == 1 else "exception days"
+        emp_unit = "affected employee" if affected_emps == 1 else "affected employees"
         self.kpi_cards["kpi_9_attendance_exceptions"].update_values(
-            primary=f"{excp_days:,} {excp_unit}",
-            secondary=f"{excp_rate:.1f}% exception rate",
-            note=f"{affected_emps:,} {emp_unit} • Non-additive overlay",
+            primary=f"{excp_days:,} {excp_day_unit}",
+            secondary=f"{excp_rate:.1f}% of recorded employee-days",
+            note=f"{affected_emps:,} {emp_unit}",
         )
 
         # Dynamic Data Quality Status Indicator

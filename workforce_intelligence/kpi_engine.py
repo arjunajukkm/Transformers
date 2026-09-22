@@ -553,6 +553,23 @@ class RepeatExceptionDossier:
     source_record_ids: List[str] = field(default_factory=list)
 
 
+def _is_regularized_series(df: pd.DataFrame) -> pd.Series:
+    """
+    Return boolean Series matching ONLY rows where Attendance Type is 'Regularized'.
+    Performs exact normalized matching allowing case and surrounding whitespace differences.
+    Does NOT infer regularization from Status alone or loose substring matching.
+    """
+    if df is None or len(df) == 0:
+        return pd.Series(dtype=bool)
+
+    matched = pd.Series(False, index=df.index)
+    for col in ["_att_type", "Attendance Type", "attendance_type"]:
+        if col in df.columns:
+            s_clean = df[col].astype(str).str.strip().str.lower()
+            matched = matched | (s_clean == "regularized")
+    return matched
+
+
 def compute_repeated_exceptions(
     df: pd.DataFrame,
     threshold: int = 3,
@@ -561,7 +578,8 @@ def compute_repeated_exceptions(
     Compute repeated attendance non-compliance with a configurable threshold parameter.
     Initial default threshold: 3 qualifying employee-day occurrences.
 
-    Rule: Multiple exception flags on the same employee-day count as ONE qualifying exception day.
+    Rule: Count distinct employee-days with Attendance Type = Regularized.
+    Multiple Regularized records on the same employee-day count as ONE qualifying exception day.
     """
     if df is None or len(df) == 0:
         return {
@@ -574,21 +592,8 @@ def compute_repeated_exceptions(
 
     work_df = ensure_clean_dataframe(df)
 
-    is_reg = (
-        work_df["_att_type"].str.contains("regulariz", case=False, na=False) |
-        work_df["_status"].str.contains(r'\(r\)|ar|pr', case=False, regex=True, na=False)
-    )
-    is_ms = (
-        work_df["_att_type"].str.contains("missing swipes", case=False, na=False) |
-        work_df["_status"].str.lower().isin(["ms", "p(ms)"])
-    )
-    is_ab = (
-        work_df["_att_type"].str.contains("absent", case=False, na=False) |
-        work_df["_status"].str.lower().isin(["ab", "absent", "a"])
-    )
-
-    is_excp = is_reg | is_ms | is_ab
-    excp_df = work_df[is_excp].copy()
+    is_reg = _is_regularized_series(work_df)
+    excp_df = work_df[is_reg].copy()
 
     unique_employees = len(set(work_df["_emp_num"].unique()) - {"", "nan"})
     if unique_employees == 0:
@@ -620,24 +625,15 @@ def compute_repeated_exceptions(
             rec_ids: List[str] = []
         else:
             qualifying_dates = set(e_rows["_date"].dropna())
-            excp_types_seen = set()
-            for _, r in e_rows.iterrows():
-                st = str(r.get("_status", "")).lower()
-                at = str(r.get("_att_type", "")).lower()
-                if "reg" in at or re.search(r'\(r\)|ar|pr', st):
-                    excp_types_seen.add("Regularization")
-                if "missing" in at or st in ("ms", "p(ms)"):
-                    excp_types_seen.add("Missing Swipe")
-                if "absent" in at or st in ("ab", "absent", "a"):
-                    excp_types_seen.add("Absent")
+            excp_types_seen = {"Regularization"}
+            date_strs = [d.isoformat() if isinstance(d, (date, datetime)) else str(d) for d in sorted(qualifying_dates, key=lambda x: str(x))]
+            if "record_id" in e_rows.columns:
+                rec_ids = [str(x) for x in e_rows["record_id"].tolist()]
+            elif "Record ID" in e_rows.columns:
+                rec_ids = [str(x) for x in e_rows["Record ID"].tolist()]
+            else:
+                rec_ids = [f"{emp_str}_{d}" for d in date_strs]
         date_strs = [d.isoformat() if isinstance(d, (date, datetime)) else str(d) for d in sorted(qualifying_dates, key=lambda x: str(x))]
-        if "record_id" in e_rows.columns:
-            rec_ids = [str(x) for x in e_rows["record_id"].tolist()]
-        elif "Record ID" in e_rows.columns:
-            rec_ids = [str(x) for x in e_rows["Record ID"].tolist()]
-        else:
-            rec_ids = [f"{emp_str}_{d}" for d in date_strs]
-
         q_count = len(qualifying_dates)
         meets = q_count >= threshold
         if meets:
@@ -903,14 +899,79 @@ def compute_workforce_intelligence_bundle(
     pct_absent = round((q_absent / attendance_composition_denom) * 100.0, 1) if attendance_composition_denom > 0 else 0.0
     pct_unclassified = round((q_unclassified / attendance_composition_denom) * 100.0, 1) if attendance_composition_denom > 0 else 0.0
 
-    is_reg = (
-        filtered["_att_type"].str.contains("regulariz", case=False, na=False) |
-        filtered["_status"].str.contains(r'\(r\)|ar|pr', case=False, regex=True, na=False)
-    )
-    is_exception_row = is_ms | is_reg | is_ab
-    excp_days_count = len(filtered[is_exception_row].drop_duplicates(subset=["_emp_num", "_date"])) if "_date" in filtered.columns else int(sum(is_exception_row))
+    # ─────────────────────────────────────────────────────────────────────────
+    # Attendance Exceptions: ONLY Attendance Type == 'Regularized'
+    # ─────────────────────────────────────────────────────────────────────────
+    is_reg = _is_regularized_series(filtered)
+    reg_df = filtered[is_reg].copy()
+    total_reg_recs = len(reg_df)
+
+    if "_date" in reg_df.columns and "_emp_num" in reg_df.columns:
+        excp_days_count = len(reg_df.drop_duplicates(subset=["_emp_num", "_date"]))
+    elif "_date" in reg_df.columns:
+        excp_days_count = len(reg_df.drop_duplicates(subset=["_date"]))
+    else:
+        excp_days_count = total_reg_recs
+
     excp_rate_pct = round((excp_days_count / recorded_employee_days) * 100.0, 1) if recorded_employee_days > 0 else 0.0
-    excp_affected_emps = len(set(filtered.loc[is_exception_row, "_emp_num"].unique()) - {"", "nan"})
+
+    if "_emp_num" in reg_df.columns:
+        excp_affected_emps = len(set(reg_df["_emp_num"].unique()) - {"", "nan"})
+    elif "Employee Number" in reg_df.columns:
+        excp_affected_emps = len(set(reg_df["Employee Number"].dropna().unique()) - {"", "nan"})
+    else:
+        excp_affected_emps = 0
+
+    # Approval Status breakdown for Regularized records
+    appr_series = None
+    for col_cand in ["Approval Status", "_approval_status", "approval_status"]:
+        if col_cand in reg_df.columns:
+            appr_series = reg_df[col_cand]
+            break
+
+    cnt_appr = 0
+    cnt_pend = 0
+    cnt_rej = 0
+    cnt_unk = 0
+
+    if appr_series is not None and len(reg_df) > 0:
+        for val in appr_series:
+            v_str = str(val).strip().lower() if pd.notna(val) else ""
+            if v_str == "approved":
+                cnt_appr += 1
+            elif v_str == "pending":
+                cnt_pend += 1
+            elif v_str in ("rejected", "reject"):
+                cnt_rej += 1
+            else:
+                cnt_unk += 1
+    else:
+        cnt_unk = total_reg_recs
+
+    reg_approval_breakdown = {
+        "approved": cnt_appr,
+        "pending": cnt_pend,
+        "rejected": cnt_rej,
+        "unknown": cnt_unk,
+    }
+
+    reg_traceability_records: List[Dict[str, Any]] = []
+    for _, r in reg_df.iterrows():
+        e_id = str(r.get("_emp_num", r.get("Employee Number", ""))).strip()
+        d_val = r.get("_date", r.get("Date", None))
+        d_str = d_val.isoformat() if isinstance(d_val, (date, datetime)) else (str(d_val) if pd.notna(d_val) else "")
+        at_val = str(r.get("_att_type", r.get("Attendance Type", ""))).strip()
+        ap_val = str(r.get("Approval Status", r.get("_approval_status", "Unknown"))).strip()
+        if not ap_val or ap_val.lower() in ("nan", "none"):
+            ap_val = "Unknown"
+        rid = str(r.get("record_id", r.get("Record ID", f"{e_id}_{d_str}"))).strip()
+        reg_traceability_records.append({
+            "employee_id": e_id,
+            "date": d_str,
+            "attendance_type": at_val,
+            "approval_status": ap_val,
+            "record_id": rid,
+        })
 
     # ─────────────────────────────────────────────────────────────────────────
     # Section 2: Leave Intelligence
@@ -1178,6 +1239,9 @@ def compute_workforce_intelligence_bundle(
         "kpi_9_attendance_exceptions_days": excp_days_count,
         "kpi_9_attendance_exceptions_rate_pct": excp_rate_pct,
         "kpi_9_attendance_exceptions_affected_emps": excp_affected_emps,
+        "attendance_exceptions_qualifying_records_count": total_reg_recs,
+        "attendance_exceptions_approval_breakdown": reg_approval_breakdown,
+        "attendance_exceptions_records": reg_traceability_records,
 
         # Section 2: Leave Intelligence
         "total_leave_days": round(q_leave, 1),
@@ -1316,6 +1380,9 @@ def _empty_bundle(threshold: int = 3, allowance: float = 3.0) -> Dict[str, Any]:
         "kpi_9_attendance_exceptions_days": 0,
         "kpi_9_attendance_exceptions_rate_pct": 0.0,
         "kpi_9_attendance_exceptions_affected_emps": 0,
+        "attendance_exceptions_qualifying_records_count": 0,
+        "attendance_exceptions_approval_breakdown": {"approved": 0, "pending": 0, "rejected": 0, "unknown": 0},
+        "attendance_exceptions_records": [],
         "total_leave_days": 0.0,
         "employees_taking_leave": 0,
         "leave_penetration_pct": 0.0,
