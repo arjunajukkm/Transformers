@@ -792,6 +792,46 @@ def compute_workforce_intelligence_bundle(
     conflicting_days_count = 0
     conflicting_record_ids: List[str] = []
 
+    daily_att_dict: Dict[Any, Dict[str, Any]] = {}
+    bu_dict: Dict[str, Dict[str, Any]] = {}
+
+    def _get_eff_bu(raw_bu_val: Any, raw_dept_val: Any) -> str:
+        b_str = str(raw_bu_val).strip() if pd.notna(raw_bu_val) else ""
+        if not b_str or b_str.lower() in ("nan", "none", ""):
+            return "Unknown / Unassigned"
+        if b_str.lower() == "lending":
+            d_str = str(raw_dept_val).strip() if pd.notna(raw_dept_val) else ""
+            if d_str and d_str.lower() not in ("nan", "none", ""):
+                return d_str
+        return b_str
+
+    def _ensure_bu(bu_name: str) -> Dict[str, Any]:
+        if bu_name not in bu_dict:
+            bu_dict[bu_name] = {
+                "observed_emps": set(),
+                "recorded_days": 0,
+                "present": 0.0,
+                "od": 0.0,
+                "leave": 0.0,
+                "wfh": 0.0,
+                "hol": 0.0,
+                "wo": 0.0,
+                "absent": 0.0,
+                "unclassified": 0.0,
+                "reg_days": 0,
+            }
+        return bu_dict[bu_name]
+
+    def _ensure_daily(d_val: Any) -> Dict[str, Any]:
+        if d_val not in daily_att_dict:
+            daily_att_dict[d_val] = {
+                "present": 0.0,
+                "wfh": 0.0,
+                "leave": 0.0,
+                "recorded_days": 0,
+            }
+        return daily_att_dict[d_val]
+
     def _add_qty(cat: str, qty: float):
         nonlocal q_pres, q_od, q_leave, q_wfh, q_hol, q_wo, q_absent, q_unclassified, unclassified_records_count
         if cat == "PRESENT":
@@ -812,6 +852,34 @@ def compute_workforce_intelligence_bundle(
             q_unclassified += qty
             unclassified_records_count += 1
 
+    def _record_event(d_val: Any, bu_name: str, cat: str, qty: float):
+        _add_qty(cat, qty)
+        if d_val is not None:
+            d_rec = _ensure_daily(d_val)
+            if cat == "PRESENT":
+                d_rec["present"] += qty
+            elif cat == "WFH":
+                d_rec["wfh"] += qty
+            elif cat == "LEAVE":
+                d_rec["leave"] += qty
+        bu_rec = _ensure_bu(bu_name)
+        if cat == "PRESENT":
+            bu_rec["present"] += qty
+        elif cat == "OD":
+            bu_rec["od"] += qty
+        elif cat == "LEAVE":
+            bu_rec["leave"] += qty
+        elif cat == "WFH":
+            bu_rec["wfh"] += qty
+        elif cat == "HOLIDAY":
+            bu_rec["hol"] += qty
+        elif cat == "WEEK_OFF":
+            bu_rec["wo"] += qty
+        elif cat == "ABSENT":
+            bu_rec["absent"] += qty
+        else:
+            bu_rec["unclassified"] += qty
+
     def _is_regularization_row(row) -> bool:
         att = str(row.get("_att_type", "") or row.get("Attendance Type", "") or "").lower()
         st = str(row.get("_status", "") or row.get("Status", "") or "").lower()
@@ -831,6 +899,21 @@ def compute_workforce_intelligence_bundle(
     if "_date" in filtered.columns and "_emp_num" in filtered.columns:
         date_groups = filtered.groupby(["_emp_num", "_date"], sort=False)
         for (emp_key, d_key), grp in date_groups:
+            eff_bu = _get_eff_bu(
+                grp.iloc[0].get("_bu", "") if "_bu" in grp.columns else grp.iloc[0].get("Business Unit", ""),
+                grp.iloc[0].get("_dept", "") if "_dept" in grp.columns else grp.iloc[0].get("Department", ""),
+            )
+            d_rec = _ensure_daily(d_key)
+            d_rec["recorded_days"] += 1
+            bu_rec = _ensure_bu(eff_bu)
+            bu_rec["observed_emps"].add(emp_key)
+            bu_rec["recorded_days"] += 1
+
+            # Check if this employee-date has at least one Regularized record
+            has_reg = bool(_is_regularized_series(grp).any())
+            if has_reg:
+                bu_rec["reg_days"] += 1
+
             n_rows = len(grp)
             grp_qty = float(grp["_clean_qty"].sum())
 
@@ -839,14 +922,14 @@ def compute_workforce_intelligence_bundle(
                 row0 = grp.iloc[0]
                 q = min(1.0, float(row0["_clean_qty"]))
                 cat0 = _resolve_row_category(row0) if _is_approved_row(row0) else row0["_cat"]
-                _add_qty(cat0, q)
+                _record_event(d_key, eff_bu, cat0, q)
 
             elif grp_qty <= 1.0001:
                 # 2. Legitimate fractional splits on same date (e.g., 0.5 Present + 0.5 Leave = 1.0)
                 for _, row in grp.iterrows():
                     q = float(row["_clean_qty"])
                     cat_row = _resolve_row_category(row) if _is_approved_row(row) else row["_cat"]
-                    _add_qty(cat_row, q)
+                    _record_event(d_key, eff_bu, cat_row, q)
 
             else:
                 # 3. Overlapping records on same date (total quantity > 1.0):
@@ -864,12 +947,11 @@ def compute_workforce_intelligence_bundle(
                     for _, appr_row in approved_rows.iterrows():
                         q_appr = float(appr_row["_clean_qty"])
                         cat_appr = _resolve_row_category(appr_row)
-                        _add_qty(cat_appr, q_appr)
+                        _record_event(d_key, eff_bu, cat_appr, q_appr)
                 else:
                     # Contradictory / unresolved records: flag as conflicting employee-day
                     # Strictly capped at 1.0 day equivalent to prevent denominator inflation
-                    q_unclassified += 1.0
-                    unclassified_records_count += 1
+                    _record_event(d_key, eff_bu, "UNCLASSIFIED", 1.0)
                     conflicting_days_count += 1
                     if "record_id" in grp.columns:
                         conflicting_record_ids.extend(grp["record_id"].astype(str).tolist())
@@ -884,6 +966,37 @@ def compute_workforce_intelligence_bundle(
         q_absent = float(filtered.loc[is_ab, "_clean_qty"].sum())
         q_unclassified = float(filtered.loc[is_unclassified, "_clean_qty"].sum())
         unclassified_records_count = int(sum(is_unclassified))
+
+        for _, row in filtered.iterrows():
+            e_num = str(row.get("_emp_num", row.get("Employee Number", ""))).strip()
+            eff_bu = _get_eff_bu(
+                row.get("_bu", row.get("Business Unit", "")),
+                row.get("_dept", row.get("Department", "")),
+            )
+            bu_rec = _ensure_bu(eff_bu)
+            if e_num:
+                bu_rec["observed_emps"].add(e_num)
+            bu_rec["recorded_days"] += 1
+            cat_r = row.get("_cat", "UNCLASSIFIED")
+            q_r = float(row.get("_clean_qty", 1.0))
+            if cat_r == "PRESENT":
+                bu_rec["present"] += q_r
+            elif cat_r == "OD":
+                bu_rec["od"] += q_r
+            elif cat_r == "LEAVE":
+                bu_rec["leave"] += q_r
+            elif cat_r == "WFH":
+                bu_rec["wfh"] += q_r
+            elif cat_r == "HOLIDAY":
+                bu_rec["hol"] += q_r
+            elif cat_r == "WEEK_OFF":
+                bu_rec["wo"] += q_r
+            elif cat_r == "ABSENT":
+                bu_rec["absent"] += q_r
+            else:
+                bu_rec["unclassified"] += q_r
+            if _is_regularized_series(pd.DataFrame([row])).any():
+                bu_rec["reg_days"] += 1
 
     q_total_present = q_pres
     q_classified_denom = q_total_present + q_od + q_leave + q_wfh + q_hol + q_wo + q_absent
@@ -972,6 +1085,195 @@ def compute_workforce_intelligence_bundle(
             "approval_status": ap_val,
             "record_id": rid,
         })
+
+    # ── Executive Overview Visualizations Data Bundles ──
+    # 1. Attendance Composition (all 8 categories, quantity-weighted)
+    attendance_composition = [
+        {
+            "category": "Present",
+            "label": "Present",
+            "days": round(q_total_present, 1),
+            "pct": pct_pres,
+            "color": "#10B981",
+            "description": "Physical attendance days",
+            "is_exception": False,
+        },
+        {
+            "category": "On Duty",
+            "label": "On Duty",
+            "days": round(q_od, 1),
+            "pct": pct_od,
+            "color": "#0EA5E9",
+            "description": "Official duty assignments",
+            "is_exception": False,
+        },
+        {
+            "category": "Leave",
+            "label": "Leave",
+            "days": round(q_leave, 1),
+            "pct": pct_leave,
+            "color": "#8B5CF6",
+            "description": "Quantity-weighted leave days",
+            "is_exception": False,
+        },
+        {
+            "category": "WFH",
+            "label": "WFH",
+            "days": round(q_wfh, 1),
+            "pct": pct_wfh,
+            "color": "#6366F1",
+            "description": "Work from home days",
+            "is_exception": False,
+        },
+        {
+            "category": "Holiday",
+            "label": "Holiday",
+            "days": round(q_hol, 1),
+            "pct": pct_hol,
+            "color": "#F59E0B",
+            "description": "Recognized organization holidays",
+            "is_exception": False,
+        },
+        {
+            "category": "Week Off",
+            "label": "Week Off",
+            "days": round(q_wo, 1),
+            "pct": pct_wo,
+            "color": "#94A3B8",
+            "description": "Scheduled weekly rest days",
+            "is_exception": False,
+        },
+        {
+            "category": "Absent",
+            "label": "Absent",
+            "days": round(q_absent, 1),
+            "pct": pct_absent,
+            "color": "#EF4444",
+            "description": "Recorded employee absence days",
+            "is_exception": False,
+        },
+        {
+            "category": "Unclassified / Unresolved",
+            "label": "Unclassified / Unresolved",
+            "days": round(q_unclassified, 1),
+            "pct": pct_unclassified,
+            "color": "#F97316",
+            "description": "Unclassified records or unresolved conflicts",
+            "is_exception": False,
+        },
+    ]
+
+    # 2. Daily Attendance Trend Data (chronological order of observed dates)
+    def _sort_date_key(d):
+        if isinstance(d, datetime):
+            return d.date()
+        if isinstance(d, date):
+            return d
+        try:
+            parsed = tsa.parse_date_value(str(d))
+            if parsed:
+                return parsed
+        except Exception:
+            pass
+        return date.min
+
+    sorted_dates = sorted(daily_att_dict.keys(), key=_sort_date_key)
+    daily_attendance_trend = []
+    for d_val in sorted_dates:
+        d_item = daily_att_dict[d_val]
+        d_str = d_val.strftime("%b %d") if isinstance(d_val, (date, datetime)) else str(d_val)
+        d_iso = d_val.isoformat() if isinstance(d_val, (date, datetime)) else str(d_val)
+        daily_attendance_trend.append({
+            "date": d_val,
+            "date_str": d_str,
+            "date_iso": d_iso,
+            "present_days": round(d_item["present"], 1),
+            "wfh_days": round(d_item["wfh"], 1),
+            "leave_days": round(d_item["leave"], 1),
+            "recorded_days": d_item["recorded_days"],
+        })
+
+    # 3. Business Unit Attendance Comparison Data
+    sorted_bus = sorted(bu_dict.keys(), key=lambda x: str(x).lower())
+    bu_attendance_comparison = []
+    for bu_name in sorted_bus:
+        b = bu_dict[bu_name]
+        rec_days = b["recorded_days"]
+        hc = len(b["observed_emps"])
+        pres_d = round(b["present"], 1)
+        od_d = round(b["od"], 1)
+        lv_d = round(b["leave"], 1)
+        wfh_d = round(b["wfh"], 1)
+        hol_d = round(b["hol"], 1)
+        wo_d = round(b["wo"], 1)
+        ab_d = round(b["absent"], 1)
+        unclass_d = round(b["unclassified"], 1)
+        excp_d = b["reg_days"]
+
+        bu_denom = pres_d + od_d + lv_d + wfh_d + hol_d + wo_d + ab_d + unclass_d
+        if bu_denom <= 0:
+            bu_denom = float(rec_days)
+
+        pres_pct = round((pres_d / bu_denom) * 100.0, 1) if bu_denom > 0 else 0.0
+        od_pct = round((od_d / bu_denom) * 100.0, 1) if bu_denom > 0 else 0.0
+        lv_pct = round((lv_d / bu_denom) * 100.0, 1) if bu_denom > 0 else 0.0
+        wfh_pct = round((wfh_d / bu_denom) * 100.0, 1) if bu_denom > 0 else 0.0
+        hol_pct = round((hol_d / bu_denom) * 100.0, 1) if bu_denom > 0 else 0.0
+        wo_pct = round((wo_d / bu_denom) * 100.0, 1) if bu_denom > 0 else 0.0
+        ab_pct = round((ab_d / bu_denom) * 100.0, 1) if bu_denom > 0 else 0.0
+        unclass_pct = round((unclass_d / bu_denom) * 100.0, 1) if bu_denom > 0 else 0.0
+
+        excp_rate = round((excp_d / rec_days) * 100.0, 1) if rec_days > 0 else 0.0
+
+        bu_attendance_comparison.append({
+            "business_unit": bu_name,
+            "observed_headcount": hc,
+            "recorded_employee_days": rec_days,
+            "present_days": pres_d,
+            "present_pct": pres_pct,
+            "leave_days": lv_d,
+            "leave_pct": lv_pct,
+            "wfh_days": wfh_d,
+            "wfh_pct": wfh_pct,
+            "od_days": od_d,
+            "od_pct": od_pct,
+            "holiday_days": hol_d,
+            "holiday_pct": hol_pct,
+            "week_off_days": wo_d,
+            "week_off_pct": wo_pct,
+            "absent_days": ab_d,
+            "absent_pct": ab_pct,
+            "unclassified_days": unclass_d,
+            "unclass_pct": unclass_pct,
+            "exception_days": excp_d,
+            "exception_rate_pct": excp_rate,
+            "composition_denominator": round(bu_denom, 1),
+        })
+
+    bu_comparison_total = {
+        "business_unit": "Total (Organization-Wide)",
+        "observed_headcount": unique_employees,
+        "recorded_employee_days": recorded_employee_days,
+        "present_days": round(q_total_present, 1),
+        "present_pct": pct_pres,
+        "leave_days": round(q_leave, 1),
+        "leave_pct": pct_leave,
+        "wfh_days": round(q_wfh, 1),
+        "wfh_pct": pct_wfh,
+        "od_days": round(q_od, 1),
+        "od_pct": pct_od,
+        "holiday_days": round(q_hol, 1),
+        "holiday_pct": pct_hol,
+        "week_off_days": round(q_wo, 1),
+        "week_off_pct": pct_wo,
+        "absent_days": round(q_absent, 1),
+        "absent_pct": pct_absent,
+        "unclassified_days": round(q_unclassified, 1),
+        "unclass_pct": pct_unclassified,
+        "exception_days": excp_days_count,
+        "exception_rate_pct": excp_rate_pct,
+        "composition_denominator": round(attendance_composition_denom, 1),
+    }
 
     # ─────────────────────────────────────────────────────────────────────────
     # Section 2: Leave Intelligence
@@ -1242,6 +1544,10 @@ def compute_workforce_intelligence_bundle(
         "attendance_exceptions_qualifying_records_count": total_reg_recs,
         "attendance_exceptions_approval_breakdown": reg_approval_breakdown,
         "attendance_exceptions_records": reg_traceability_records,
+        "attendance_composition": attendance_composition,
+        "daily_attendance_trend": daily_attendance_trend,
+        "bu_attendance_comparison": bu_attendance_comparison,
+        "bu_comparison_total": bu_comparison_total,
 
         # Section 2: Leave Intelligence
         "total_leave_days": round(q_leave, 1),
@@ -1383,6 +1689,42 @@ def _empty_bundle(threshold: int = 3, allowance: float = 3.0) -> Dict[str, Any]:
         "attendance_exceptions_qualifying_records_count": 0,
         "attendance_exceptions_approval_breakdown": {"approved": 0, "pending": 0, "rejected": 0, "unknown": 0},
         "attendance_exceptions_records": [],
+        "attendance_composition": [
+            {"category": "Present", "label": "Present", "days": 0.0, "pct": 0.0, "color": "#10B981", "description": "Physical attendance days", "is_exception": False},
+            {"category": "On Duty", "label": "On Duty", "days": 0.0, "pct": 0.0, "color": "#0EA5E9", "description": "Official duty assignments", "is_exception": False},
+            {"category": "Leave", "label": "Leave", "days": 0.0, "pct": 0.0, "color": "#8B5CF6", "description": "Quantity-weighted leave days", "is_exception": False},
+            {"category": "WFH", "label": "WFH", "days": 0.0, "pct": 0.0, "color": "#6366F1", "description": "Work from home days", "is_exception": False},
+            {"category": "Holiday", "label": "Holiday", "days": 0.0, "pct": 0.0, "color": "#F59E0B", "description": "Recognized organization holidays", "is_exception": False},
+            {"category": "Week Off", "label": "Week Off", "days": 0.0, "pct": 0.0, "color": "#94A3B8", "description": "Scheduled weekly rest days", "is_exception": False},
+            {"category": "Absent", "label": "Absent", "days": 0.0, "pct": 0.0, "color": "#EF4444", "description": "Recorded employee absence days", "is_exception": False},
+            {"category": "Unclassified / Unresolved", "label": "Unclassified / Unresolved", "days": 0.0, "pct": 0.0, "color": "#F97316", "description": "Unclassified records or unresolved conflicts", "is_exception": False},
+        ],
+        "daily_attendance_trend": [],
+        "bu_attendance_comparison": [],
+        "bu_comparison_total": {
+            "business_unit": "Total (Organization-Wide)",
+            "observed_headcount": 0,
+            "recorded_employee_days": 0,
+            "present_days": 0.0,
+            "present_pct": 0.0,
+            "leave_days": 0.0,
+            "leave_pct": 0.0,
+            "wfh_days": 0.0,
+            "wfh_pct": 0.0,
+            "od_days": 0.0,
+            "od_pct": 0.0,
+            "holiday_days": 0.0,
+            "holiday_pct": 0.0,
+            "week_off_days": 0.0,
+            "week_off_pct": 0.0,
+            "absent_days": 0.0,
+            "absent_pct": 0.0,
+            "unclassified_days": 0.0,
+            "unclass_pct": 0.0,
+            "exception_days": 0,
+            "exception_rate_pct": 0.0,
+            "composition_denominator": 0.0,
+        },
         "total_leave_days": 0.0,
         "employees_taking_leave": 0,
         "leave_penetration_pct": 0.0,

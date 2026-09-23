@@ -529,3 +529,70 @@ def create_kpi_metric_card(parent, title: str, accent_color: str = COLOR_ACCENT)
 
     return card, lbl_val, lbl_sub
 
+
+def create_tooltip(widget, text: str, delay_ms: int = 300):
+    """
+    Attach an accessible hover tooltip to any Tkinter / CustomTkinter widget.
+    Shows after delay_ms and hides on leave or click.
+    """
+    import tkinter as tk
+    tooltip_window = None
+    timer_id = None
+
+    def show_tip():
+        nonlocal tooltip_window
+        if tooltip_window or not widget.winfo_exists():
+            return
+        try:
+            x = widget.winfo_rootx() + widget.winfo_width() + 6
+            y = widget.winfo_rooty() + max(0, (widget.winfo_height() - 24) // 2)
+            tip = tk.Toplevel(widget)
+            tip.wm_overrideredirect(True)
+            tip.wm_geometry(f"+{x}+{y}")
+            tip.attributes("-topmost", True)
+            lbl = tk.Label(
+                tip,
+                text=text,
+                justify="left",
+                background="#1E293B",
+                foreground="#F8FAFC",
+                relief="solid",
+                borderwidth=1,
+                font=(FONT_FAMILY, 9),
+                padx=8,
+                pady=4,
+            )
+            lbl.pack()
+            tooltip_window = tip
+        except Exception:
+            tooltip_window = None
+
+    def on_enter(event=None):
+        nonlocal timer_id
+        cancel_timer()
+        timer_id = widget.after(delay_ms, show_tip)
+
+    def cancel_timer():
+        nonlocal timer_id
+        if timer_id:
+            try:
+                widget.after_cancel(timer_id)
+            except Exception:
+                pass
+            timer_id = None
+
+    def on_leave(event=None):
+        nonlocal tooltip_window
+        cancel_timer()
+        if tooltip_window:
+            try:
+                tooltip_window.destroy()
+            except Exception:
+                pass
+            tooltip_window = None
+
+    widget.bind("<Enter>", on_enter, add="+")
+    widget.bind("<Leave>", on_leave, add="+")
+    widget.bind("<ButtonPress>", on_leave, add="+")
+    return on_leave
+

@@ -83,9 +83,11 @@ class App(ctk.CTk):
         self.is_analysing = False
         
         # Navigation state
-        self.transform_menu_expanded = True
-        self.analyse_menu_expanded = True
-        self.menu_expanded = True
+        self.transform_menu_expanded = False
+        self.analyse_menu_expanded = False
+        self.menu_expanded = False
+        self.sidebar_collapsed = False
+        self.current_active_frame = "dashboard"
         self.nav_parent_btn = None
         self.nav_chevron = None
         self.analyse_parent_btn = None
@@ -98,6 +100,7 @@ class App(ctk.CTk):
 
     def _setup_window(self):
         self.grid_rowconfigure(0, weight=1)
+        self.grid_columnconfigure(0, weight=0)
         self.grid_columnconfigure(1, weight=1)
         self.configure(fg_color=ui.COLOR_BG)
 
@@ -105,20 +108,42 @@ class App(ctk.CTk):
         # Sidebar
         self.sidebar = ctk.CTkFrame(self, width=280, corner_radius=0, fg_color=ui.COLOR_SIDEBAR)
         self.sidebar.grid(row=0, column=0, sticky="nsew")
+        self.sidebar.grid_propagate(False)
         self.sidebar.grid_rowconfigure(10, weight=1)
+        self.sidebar.grid_columnconfigure(0, weight=1)
 
-        # Logo
-        lbl_logo = ctk.CTkLabel(
-            self.sidebar, text="Transformers",
-            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=26, weight="bold"),
-            text_color=ui.COLOR_ACCENT
+        # Header with Logo & Collapse Toggle Bar (Row 0)
+        self.sidebar_header = ctk.CTkFrame(self.sidebar, fg_color="transparent")
+        self.sidebar_header.grid(row=0, column=0, sticky="ew", padx=14, pady=(24, 20))
+        self.sidebar_header.grid_columnconfigure(0, weight=1)
+        self.sidebar_header.grid_columnconfigure(1, weight=0)
+
+        self.lbl_logo = ctk.CTkLabel(
+            self.sidebar_header, text="Transformers",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=24, weight="bold"),
+            text_color=ui.COLOR_ACCENT, anchor="w",
         )
-        lbl_logo.grid(row=0, column=0, padx=24, pady=(32, 32), sticky="w")
-        
-        sep = ctk.CTkFrame(self.sidebar, height=1, fg_color=ui.COLOR_SIDEBAR_SEP)
-        sep.grid(row=1, column=0, sticky="ew", padx=20, pady=(0, 20))
+        self.lbl_logo.grid(row=0, column=0, sticky="w", padx=(6, 0))
 
-        # ── Collapsible Transform Navigation Group ──────────────
+        self.lbl_logo_compact = ctk.CTkLabel(
+            self.sidebar_header, text="⚡",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=22, weight="bold"),
+            text_color=ui.COLOR_ACCENT, anchor="center",
+        )
+
+        self.btn_sidebar_toggle = ctk.CTkButton(
+            self.sidebar_header, text="◀", width=28, height=28, corner_radius=6,
+            fg_color=ui.COLOR_CARD, hover_color=ui.COLOR_NAV_HOVER,
+            text_color=ui.COLOR_TEXT_SEC, font=ctk.CTkFont(size=12, weight="bold"),
+            command=self.toggle_sidebar,
+        )
+        self.btn_sidebar_toggle.grid(row=0, column=1, sticky="e")
+        ui.create_tooltip(self.btn_sidebar_toggle, "Collapse Sidebar (expand workspace)")
+
+        sep = ctk.CTkFrame(self.sidebar, height=1, fg_color=ui.COLOR_SIDEBAR_SEP)
+        sep.grid(row=1, column=0, sticky="ew", padx=14, pady=(0, 16))
+
+        # ── Collapsible Transform Navigation Group (Closed by Default) ────────
         self.nav_parent_frame, self.nav_parent_btn, self.nav_chevron = ui.create_collapsible_nav_item(
             self.sidebar,
             text="Transform",
@@ -127,10 +152,10 @@ class App(ctk.CTk):
             on_toggle=lambda: self.toggle_transform_menu(),
             row=2,
         )
+        self.nav_chevron.configure(text="▸")
 
-        # Sub-menu container for child modules
+        # Sub-menu container for child modules (Starts Closed)
         self.sub_menu_frame = ctk.CTkFrame(self.sidebar, fg_color="transparent")
-        self.sub_menu_frame.grid(row=3, column=0, sticky="ew")
         self.sub_menu_frame.grid_columnconfigure(0, weight=1)
 
         # Sub-items: KRA Management, Absent Management, Attendance Summary, Time and Leave Master
@@ -151,7 +176,7 @@ class App(ctk.CTk):
             )
             self.sub_nav_btns[name] = btn
 
-        # ── Collapsible Analyse Navigation Group ──────────────
+        # ── Collapsible Analyse Navigation Group (Closed by Default) ──────────
         self.analyse_parent_frame, self.analyse_parent_btn, self.analyse_chevron = ui.create_collapsible_nav_item(
             self.sidebar,
             text="Analyse",
@@ -160,10 +185,10 @@ class App(ctk.CTk):
             on_toggle=lambda: self.toggle_analyse_menu(),
             row=4,
         )
+        self.analyse_chevron.configure(text="▸")
 
-        # Sub-menu container for Analyse child modules
+        # Sub-menu container for Analyse child modules (Starts Closed)
         self.analyse_sub_menu_frame = ctk.CTkFrame(self.sidebar, fg_color="transparent")
-        self.analyse_sub_menu_frame.grid(row=5, column=0, sticky="ew")
         self.analyse_sub_menu_frame.grid_columnconfigure(0, weight=1)
 
         # Sub-items: Workforce Intelligence, Time Series Analysis, Upload
@@ -183,9 +208,9 @@ class App(ctk.CTk):
             )
             self.sub_nav_btns[name] = btn
 
-        # Main Content
+        # Main Content (Takes all remaining width)
         self.main_content = ctk.CTkFrame(self, fg_color="transparent", corner_radius=0)
-        self.main_content.grid(row=0, column=1, sticky="nsew", padx=40, pady=40)
+        self.main_content.grid(row=0, column=1, sticky="nsew", padx=30, pady=30)
         self.main_content.grid_rowconfigure(0, weight=1)
         self.main_content.grid_columnconfigure(0, weight=1)
 
@@ -201,10 +226,82 @@ class App(ctk.CTk):
         self._build_analyse_upload_frame()
         self._build_workforce_intelligence_frame()
 
+    def toggle_sidebar(self, force_state=None):
+        """Toggle sidebar between expanded (280px) and collapsed icon-rail (60px)."""
+        if force_state is not None:
+            self.sidebar_collapsed = force_state
+        else:
+            self.sidebar_collapsed = not self.sidebar_collapsed
+
+        if self.sidebar_collapsed:
+            # 1. Collapse sidebar container to 60px
+            self.sidebar.configure(width=60)
+            self.sidebar.grid_propagate(False)
+
+            # 2. Compact header
+            self.lbl_logo.grid_remove()
+            self.lbl_logo_compact.grid(row=0, column=0, sticky="nsew", padx=0)
+            self.btn_sidebar_toggle.grid(row=0, column=1, sticky="e", padx=(0, 4))
+            self.btn_sidebar_toggle.configure(text="▶", width=22, height=22)
+            ui.create_tooltip(self.btn_sidebar_toggle, "Expand Sidebar")
+
+            # 3. Hide chevrons and child submenus
+            self.nav_chevron.grid_remove()
+            self.analyse_chevron.grid_remove()
+            self.sub_menu_frame.grid_remove()
+            self.analyse_sub_menu_frame.grid_remove()
+
+            # 4. Icon-only parent buttons
+            self.nav_parent_frame.grid_configure(padx=6)
+            self.analyse_parent_frame.grid_configure(padx=6)
+            self.nav_parent_btn.configure(text=ui.ICON_HOME, anchor="center")
+            self.analyse_parent_btn.configure(text=ui.ICON_ANALYSE, anchor="center")
+            ui.create_tooltip(self.nav_parent_btn, "Transform (click to expand)")
+            ui.create_tooltip(self.analyse_parent_btn, "Analyse (click to expand)")
+        else:
+            # 1. Expand sidebar container to 280px
+            self.sidebar.configure(width=280)
+            self.sidebar.grid_propagate(False)
+
+            # 2. Expanded header
+            self.lbl_logo_compact.grid_remove()
+            self.lbl_logo.grid(row=0, column=0, sticky="w", padx=(6, 0))
+            self.btn_sidebar_toggle.grid(row=0, column=1, sticky="e", padx=0)
+            self.btn_sidebar_toggle.configure(text="◀", width=28, height=28)
+            ui.create_tooltip(self.btn_sidebar_toggle, "Collapse Sidebar (expand workspace)")
+
+            # 3. Restore parent buttons
+            self.nav_parent_frame.grid_configure(padx=14)
+            self.analyse_parent_frame.grid_configure(padx=14)
+            self.nav_parent_btn.configure(text=f"  {ui.ICON_HOME}   Transform", anchor="w")
+            self.analyse_parent_btn.configure(text=f"  {ui.ICON_ANALYSE}   Analyse", anchor="w")
+            self.nav_chevron.grid()
+            self.analyse_chevron.grid()
+
+            # 4. Restore submenus to their previous expansion states
+            if self.transform_menu_expanded:
+                self.sub_menu_frame.grid(row=3, column=0, sticky="ew")
+                self.nav_chevron.configure(text="▾")
+            else:
+                self.sub_menu_frame.grid_remove()
+                self.nav_chevron.configure(text="▸")
+
+            if self.analyse_menu_expanded:
+                self.analyse_sub_menu_frame.grid(row=5, column=0, sticky="ew")
+                self.analyse_chevron.configure(text="▾")
+            else:
+                self.analyse_sub_menu_frame.grid_remove()
+                self.analyse_chevron.configure(text="▸")
+
+        self.update_idletasks()
+
     def _on_transform_parent_clicked(self):
-        """When the Transform header is clicked, ensure menu is open and show overview."""
-        if not self.transform_menu_expanded:
+        """When Transform parent is clicked, toggle submenu and show overview."""
+        if self.sidebar_collapsed:
+            self.toggle_sidebar(force_state=False)
             self.toggle_transform_menu(force_state=True)
+        else:
+            self.toggle_transform_menu()
         self.select_frame_by_name("dashboard")
 
     def toggle_transform_menu(self, force_state=None):
@@ -215,18 +312,29 @@ class App(ctk.CTk):
             self.transform_menu_expanded = not self.transform_menu_expanded
         self.menu_expanded = self.transform_menu_expanded
 
-        if self.transform_menu_expanded:
-            self.sub_menu_frame.grid(row=3, column=0, sticky="ew")
-            self.nav_chevron.configure(text="▾")
-        else:
-            self.sub_menu_frame.grid_remove()
-            self.nav_chevron.configure(text="▸")
+        if not self.sidebar_collapsed:
+            if self.transform_menu_expanded:
+                self.sub_menu_frame.grid(row=3, column=0, sticky="ew")
+                self.nav_chevron.configure(text="▾")
+            else:
+                self.sub_menu_frame.grid_remove()
+                self.nav_chevron.configure(text="▸")
+        # Update active indicator on parent if needed
+        self._refresh_nav_active_states()
 
     def _on_analyse_parent_clicked(self):
-        """When the Analyse header is clicked, ensure menu is open and show Time Series Analysis."""
-        if not self.analyse_menu_expanded:
+        """When Analyse parent is clicked, toggle submenu and show active/default frame."""
+        if self.sidebar_collapsed:
+            self.toggle_sidebar(force_state=False)
             self.toggle_analyse_menu(force_state=True)
-        self.select_frame_by_name("analyse_time_series")
+        else:
+            self.toggle_analyse_menu()
+
+        cur = getattr(self, "current_active_frame", None)
+        if cur not in ("workforce_intelligence", "analyse_time_series", "analyse_upload"):
+            self.select_frame_by_name("workforce_intelligence")
+        else:
+            self.select_frame_by_name(cur)
 
     def toggle_analyse_menu(self, force_state=None):
         """Toggle the collapsible Analyse sub-menu between expanded and collapsed states."""
@@ -235,36 +343,40 @@ class App(ctk.CTk):
         else:
             self.analyse_menu_expanded = not self.analyse_menu_expanded
 
-        if self.analyse_menu_expanded:
-            self.analyse_sub_menu_frame.grid(row=5, column=0, sticky="ew")
-            self.analyse_chevron.configure(text="▾")
-        else:
-            self.analyse_sub_menu_frame.grid_remove()
-            self.analyse_chevron.configure(text="▸")
+        if not self.sidebar_collapsed:
+            if self.analyse_menu_expanded:
+                self.analyse_sub_menu_frame.grid(row=5, column=0, sticky="ew")
+                self.analyse_chevron.configure(text="▾")
+            else:
+                self.analyse_sub_menu_frame.grid_remove()
+                self.analyse_chevron.configure(text="▸")
+        # Update active indicator on parent if needed
+        self._refresh_nav_active_states()
+
+    def _refresh_nav_active_states(self):
+        """Update parent and child navigation highlight based on current screen and submenu states."""
+        name = getattr(self, "current_active_frame", "dashboard")
+        transform_children = ("dashboard", "transform", "generate", "absent", "att_summary", "time_leave")
+        analyse_children = ("workforce_intelligence", "analyse_time_series", "analyse_dashboard", "analyse_upload")
+
+        is_transform_parent = (name == "dashboard") or (name in transform_children and not self.transform_menu_expanded)
+        is_analyse_parent = (name in analyse_children and not self.analyse_menu_expanded)
+
+        ui.set_nav_active(self.nav_parent_btn, is_transform_parent)
+        ui.set_nav_active(self.analyse_parent_btn, is_analyse_parent)
+
+        for n, btn in self.sub_nav_btns.items():
+            is_active = (n == name) or (name == "generate" and n == "transform")
+            ui.set_sub_nav_active(btn, is_active)
 
     def select_frame_by_name(self, name: str):
         if name == "analyse_dashboard":
             name = "analyse_time_series"
-        is_transform_parent = (name == "dashboard")
-        is_analyse_parent = False
+        self.current_active_frame = name
 
-        transform_children = ("dashboard", "transform", "generate", "absent", "att_summary", "time_leave")
-        analyse_children = ("workforce_intelligence", "analyse_time_series", "analyse_dashboard", "analyse_upload")
-
-        # Auto-expand menu if navigating to a child module
-        if name in transform_children and not self.transform_menu_expanded:
-            self.toggle_transform_menu(force_state=True)
-        elif name in analyse_children and not self.analyse_menu_expanded:
-            self.toggle_analyse_menu(force_state=True)
-
-        # Update Parent button highlight
-        ui.set_nav_active(self.nav_parent_btn, is_transform_parent)
-        ui.set_nav_active(self.analyse_parent_btn, is_analyse_parent)
-
-        # Update Sub-nav buttons highlight
-        for n, btn in self.sub_nav_btns.items():
-            is_active = (n == name) or (name == "generate" and n == "transform")
-            ui.set_sub_nav_active(btn, is_active)
+        # Do NOT auto-expand menus on screen selection!
+        # Just update parent and child highlight based on whether the submenu is expanded or collapsed
+        self._refresh_nav_active_states()
 
         # Hide all frames
         for f in self.frames.values():
@@ -275,6 +387,7 @@ class App(ctk.CTk):
             self.frames[name].grid(row=0, column=0, sticky="nsew")
             if name == "workforce_intelligence" and hasattr(self, "workforce_dashboard_view"):
                 self.workforce_dashboard_view.sync_snapshot_state()
+
 
     # ---------------------------------------------------------
     # Transform Hub / Overview

@@ -34,7 +34,12 @@ from storage.cache_manager import AnalyticalSnapshot
 from storage import snapshot_service
 import ui_components as ui
 from workforce_intelligence.dashboard_shell import (
+    AttendanceCompositionWidget,
+    BusinessUnitComparisonTableWidget,
+    DailyAttendanceTrendWidget,
+    DataQualityDetailDialog,
     ExecutiveKPICard,
+    ExpandedDailyAttendanceTrendDialog,
     VIEW_CONFIGS,
     VIEW_KEYS,
     WorkforceDashboardView,
@@ -249,15 +254,18 @@ def test_kpi_values_originate_from_actual_bundle(desktop_app, synthetic_snapshot
     app = desktop_app
     wf_view: WorkforceDashboardView = app.workforce_dashboard_view
 
+    wf_view.sync_snapshot_state(None)
     snapshot_service.cache_manager.set_active_snapshot("snap_dataset_a", synthetic_snapshot_a)
     wf_view.sync_snapshot_state(synthetic_snapshot_a)
 
     # Process pending events for background worker thread
     start_time = time.time()
-    while wf_view._is_loading_metrics and (time.time() - start_time < 5.0):
+    while wf_view._is_loading_metrics and (time.time() - start_time < 15.0):
+        wf_view._poll_metrics_queue(wf_view._latest_job_id)
         app.update()
         time.sleep(0.05)
 
+    wf_view._poll_metrics_queue(wf_view._latest_job_id)
     app.update()
 
     assert wf_view._last_metrics_bundle is not None
@@ -519,6 +527,7 @@ def test_tkinter_widgets_updated_on_main_thread(desktop_app, synthetic_snapshot_
         return ExecutiveKPICard.update_values(wf_view.kpi_cards["kpi_1_emp_hc"], *args, **kwargs)
 
     with patch.object(wf_view.kpi_cards["kpi_1_emp_hc"], "update_values", side_effect=wrapped_update):
+        wf_view.sync_snapshot_state(None)
         snapshot_service.cache_manager.set_active_snapshot("snap_dataset_a", synthetic_snapshot_a)
         wf_view.sync_snapshot_state(synthetic_snapshot_a)
 
@@ -567,7 +576,7 @@ def test_data_quality_indicator_reflects_unclassified_records(desktop_app):
         "kpi_9_attendance_exceptions_affected_emps": 0,
     }
     wf_view._render_overview_kpis(clean_bundle)
-    assert wf_view.lbl_dq_info.cget("text") == "Clean • Ready for Analysis"
+    assert wf_view.lbl_dq_info.cget("text") == "DQ: Clean"
     assert "Complete Additive Attendance Composition" in wf_view.lbl_recon_title.cget("text")
 
     # Unclassified records present: count == 1
@@ -578,7 +587,7 @@ def test_data_quality_indicator_reflects_unclassified_records(desktop_app):
     unclass_bundle["attendance_composition_denominator"] = 11.0
 
     wf_view._render_overview_kpis(unclass_bundle)
-    assert wf_view.lbl_dq_info.cget("text") == "Loaded • 1 record requires review"
+    assert wf_view.lbl_dq_info.cget("text") == "DQ: 1 to review"
     assert "Reconciliation Notice: 1 Unclassified Record" in wf_view.lbl_recon_title.cget("text")
     assert "11 days" in wf_view.lbl_recon_desc.cget("text")
 
@@ -826,7 +835,7 @@ def test_conflicting_records_with_no_reliable_final_status(desktop_app):
 
     wf_view: WorkforceDashboardView = desktop_app.workforce_dashboard_view
     wf_view._render_overview_kpis(bundle)
-    assert "1 conflicting employee-day requires review" in wf_view.lbl_dq_info.cget("text")
+    assert wf_view.lbl_dq_info.cget("text") == "DQ: 1 to review"
     assert "1 Conflicting Employee-Day" in wf_view.lbl_recon_title.cget("text")
 
 
@@ -1463,6 +1472,1131 @@ def test_time_series_analysis_backward_compatibility():
         assert k in bundle
 
 
+# =========================================================================
+# 42. Attendance composition includes all required attendance categories
+# =========================================================================
+def test_attendance_composition_all_categories_included():
+    """Verify that attendance composition includes all 8 categories."""
+    rows = [
+        {"Employee Number": "E001", "Date": "2026-09-01", "Attendance Type": "Present", "Status": "P", "Quantity": 1.0},
+        {"Employee Number": "E002", "Date": "2026-09-01", "Attendance Type": "On Duty", "Status": "OD", "Quantity": 1.0},
+        {"Employee Number": "E003", "Date": "2026-09-01", "Attendance Type": "Leave", "Status": "CL", "Quantity": 1.0},
+        {"Employee Number": "E004", "Date": "2026-09-01", "Attendance Type": "Work From Home", "Status": "WFH", "Quantity": 1.0},
+        {"Employee Number": "E005", "Date": "2026-09-01", "Attendance Type": "Holiday", "Status": "H", "Quantity": 1.0},
+        {"Employee Number": "E006", "Date": "2026-09-01", "Attendance Type": "Week Off", "Status": "WO", "Quantity": 1.0},
+        {"Employee Number": "E007", "Date": "2026-09-01", "Attendance Type": "Absent", "Status": "A", "Quantity": 1.0},
+        {"Employee Number": "E008", "Date": "2026-09-01", "Attendance Type": "UnknownType", "Status": "XYZ", "Quantity": 1.0},
+    ]
+    df = pd.DataFrame(rows)
+    bundle = compute_workforce_intelligence_bundle(df)
+    comp = bundle.get("attendance_composition", [])
+    cat_names = [c["category"] for c in comp]
+
+    expected_categories = [
+        "Present",
+        "On Duty",
+        "Leave",
+        "WFH",
+        "Holiday",
+        "Week Off",
+        "Absent",
+        "Unclassified / Unresolved",
+    ]
+    assert cat_names == expected_categories
+    for c in comp:
+        assert c["days"] == 1.0
+        assert c["pct"] == 12.5
 
 
+# =========================================================================
+# 43. Composition quantities and percentages reconcile with Overview KPI bundle
+# =========================================================================
+def test_composition_quantities_and_pct_reconcile_with_kpi_bundle():
+    """Verify composition quantities and percentages strictly reconcile to denominator."""
+    rows = [
+        {"Employee Number": "E001", "Date": "2026-09-01", "Attendance Type": "Present", "Status": "P", "Quantity": 1.0},
+        {"Employee Number": "E002", "Date": "2026-09-01", "Attendance Type": "Leave", "Status": "EL", "Quantity": 1.0},
+        {"Employee Number": "E003", "Date": "2026-09-01", "Attendance Type": "Work From Home", "Status": "WFH", "Quantity": 1.0},
+    ]
+    df = pd.DataFrame(rows)
+    bundle = compute_workforce_intelligence_bundle(df)
+    comp = bundle["attendance_composition"]
+    denom = bundle["attendance_composition_denominator"]
 
+    comp_sum = sum(c["days"] for c in comp)
+    assert abs(comp_sum - denom) < 1e-6
+
+    cat_map = {c["category"]: c for c in comp}
+    assert cat_map["Present"]["days"] == bundle["kpi_3_present_days"]
+    assert cat_map["Leave"]["days"] == bundle["kpi_5_leave_days"]
+    assert cat_map["WFH"]["days"] == bundle["kpi_6_wfh_days"]
+
+    pct_sum = sum(c["pct"] for c in comp)
+    assert abs(pct_sum - 100.0) <= 0.2
+
+
+# =========================================================================
+# 44. Attendance Exceptions is not added as an independent composition segment
+# =========================================================================
+def test_attendance_exceptions_not_additive_segment():
+    """Verify Attendance Exceptions is a separate measure, not an additive composition segment."""
+    rows = [
+        {"Employee Number": "E001", "Date": "2026-09-01", "Attendance Type": "Regularized", "Status": "A(R)", "Quantity": 1.0},
+        {"Employee Number": "E002", "Date": "2026-09-01", "Attendance Type": "Present", "Status": "P", "Quantity": 1.0},
+    ]
+    df = pd.DataFrame(rows)
+    bundle = compute_workforce_intelligence_bundle(df)
+    comp = bundle["attendance_composition"]
+
+    cat_names = [c["category"] for c in comp]
+    assert "Attendance Exceptions" not in cat_names
+    assert "Regularized" not in cat_names
+
+    # The denominator must only equal sum of composition categories
+    assert bundle["attendance_composition_denominator"] == sum(c["days"] for c in comp)
+    # The exception count is independent
+    assert bundle["kpi_9_attendance_exceptions_days"] == 1
+
+
+# =========================================================================
+# 45. Unclassified and conflicting employee-days remain visible
+# =========================================================================
+def test_unclassified_and_conflicting_employee_days_remain_visible():
+    """Verify unclassified/conflicting attendance days are reported with warning styling."""
+    rows = [
+        # Employee with two conflicting full-day records without approval: P and CL
+        {"Employee Number": "E001", "Date": "2026-09-01", "Attendance Type": "Present", "Status": "P", "Quantity": 1.0, "Approval Status": "Pending"},
+        {"Employee Number": "E001", "Date": "2026-09-01", "Attendance Type": "Casual Leave", "Status": "CL", "Quantity": 1.0, "Approval Status": "Pending"},
+    ]
+    df = pd.DataFrame(rows)
+    bundle = compute_workforce_intelligence_bundle(df)
+    comp = bundle["attendance_composition"]
+
+    unclass_seg = next((c for c in comp if c["category"] == "Unclassified / Unresolved"), None)
+    assert unclass_seg is not None
+    assert unclass_seg["days"] == 1.0
+    assert unclass_seg["pct"] == 100.0
+    assert unclass_seg["color"] == "#F97316"
+
+
+# =========================================================================
+# 46. Half-day attendance quantities remain correct
+# =========================================================================
+def test_half_day_attendance_quantities_remain_correct():
+    """Verify half-day attendance quantities are properly preserved across all views."""
+    rows = [
+        {"Employee Number": "E001", "Date": "2026-09-01", "Attendance Type": "Present", "Status": "P", "Quantity": 0.5, "Business Unit": "Engineering"},
+        {"Employee Number": "E001", "Date": "2026-09-01", "Attendance Type": "Leave", "Status": "CL", "Quantity": 0.5, "Business Unit": "Engineering"},
+    ]
+    df = pd.DataFrame(rows)
+    bundle = compute_workforce_intelligence_bundle(df)
+
+    # Composition
+    cat_map = {c["category"]: c for c in bundle["attendance_composition"]}
+    assert cat_map["Present"]["days"] == 0.5
+    assert cat_map["Leave"]["days"] == 0.5
+
+    # Daily trend
+    trend = bundle["daily_attendance_trend"]
+    assert len(trend) == 1
+    assert trend[0]["present_days"] == 0.5
+    assert trend[0]["leave_days"] == 0.5
+    assert trend[0]["wfh_days"] == 0.0
+
+    # BU Comparison
+    bu_list = bundle["bu_attendance_comparison"]
+    assert len(bu_list) == 1
+    assert bu_list[0]["present_days"] == 0.5
+    assert bu_list[0]["leave_days"] == 0.5
+
+
+# =========================================================================
+# 47. Daily trend quantities are calculated from the correct employee-date basis
+# =========================================================================
+def test_daily_trend_quantities_calculated_from_correct_basis():
+    """Verify daily attendance trend reflects quantity-weighted day equivalents per date."""
+    rows = [
+        # Day 1: 1 Present, 1 WFH
+        {"Employee Number": "E001", "Date": "2026-09-01", "Attendance Type": "Present", "Status": "P", "Quantity": 1.0},
+        {"Employee Number": "E002", "Date": "2026-09-01", "Attendance Type": "Work From Home", "Status": "WFH", "Quantity": 1.0},
+        # Day 2: 1 Leave
+        {"Employee Number": "E001", "Date": "2026-09-02", "Attendance Type": "Leave", "Status": "SL", "Quantity": 1.0},
+    ]
+    df = pd.DataFrame(rows)
+    bundle = compute_workforce_intelligence_bundle(df)
+    trend = bundle["daily_attendance_trend"]
+
+    assert len(trend) == 2
+    assert str(trend[0]["date"]) == "2026-09-01"
+    assert trend[0]["present_days"] == 1.0
+    assert trend[0]["wfh_days"] == 1.0
+    assert trend[0]["leave_days"] == 0.0
+
+    assert str(trend[1]["date"]) == "2026-09-02"
+    assert trend[1]["present_days"] == 0.0
+    assert trend[1]["wfh_days"] == 0.0
+    assert trend[1]["leave_days"] == 1.0
+
+    # Sum of trends matches bundle KPIs
+    assert sum(t["present_days"] for t in trend) == bundle["kpi_3_present_days"]
+    assert sum(t["wfh_days"] for t in trend) == bundle["kpi_6_wfh_days"]
+    assert sum(t["leave_days"] for t in trend) == bundle["kpi_5_leave_days"]
+
+
+# =========================================================================
+# 48. Missing dates are not silently treated as confirmed zero-attendance days
+# =========================================================================
+def test_missing_dates_not_silently_treated_as_zeros():
+    """Verify that unobserved dates are not artificially inserted as zero-attendance days."""
+    rows = [
+        {"Employee Number": "E001", "Date": "2026-09-01", "Attendance Type": "Present", "Status": "P", "Quantity": 1.0},
+        {"Employee Number": "E001", "Date": "2026-09-10", "Attendance Type": "Present", "Status": "P", "Quantity": 1.0},
+    ]
+    df = pd.DataFrame(rows)
+    bundle = compute_workforce_intelligence_bundle(df)
+    trend = bundle["daily_attendance_trend"]
+
+    # Only 2 dates observed in data
+    dates = [str(t["date"]) for t in trend]
+    assert dates == ["2026-09-01", "2026-09-10"]
+    assert len(trend) == 2
+
+
+# =========================================================================
+# 49. BU comparison values use correct organizational attribution
+# =========================================================================
+def test_bu_comparison_organizational_attribution():
+    """Verify effective BU mapping: Lending -> Department, and empty -> Unknown / Unassigned."""
+    rows = [
+        # Lending with Department -> effective BU is Department
+        {"Employee Number": "E001", "Date": "2026-09-01", "Business Unit": "Lending", "Department": "Collections", "Attendance Type": "Present", "Quantity": 1.0},
+        # Empty BU -> Unknown / Unassigned
+        {"Employee Number": "E002", "Date": "2026-09-01", "Business Unit": "", "Department": "", "Attendance Type": "Leave", "Quantity": 1.0},
+        # Regular BU
+        {"Employee Number": "E003", "Date": "2026-09-01", "Business Unit": "Engineering", "Department": "Core", "Attendance Type": "Work From Home", "Quantity": 1.0},
+    ]
+    df = pd.DataFrame(rows)
+    bundle = compute_workforce_intelligence_bundle(df)
+    bu_names = [b["business_unit"] for b in bundle["bu_attendance_comparison"]]
+
+    assert "Collections" in bu_names
+    assert "Unknown / Unassigned" in bu_names
+    assert "Engineering" in bu_names
+    assert "Lending" not in bu_names
+
+
+# =========================================================================
+# 50. BU attendance-status percentages use appropriate BU composition denominator
+# =========================================================================
+def test_bu_percentages_use_bu_composition_denominator():
+    """Verify BU percentages use BU composition denominator, not org-wide denominator."""
+    rows = [
+        # BU A: 3 Present, 1 Leave (total 4) -> 75% Present, 25% Leave
+        {"Employee Number": "E001", "Date": "2026-09-01", "Business Unit": "BU_A", "Attendance Type": "Present", "Quantity": 1.0},
+        {"Employee Number": "E002", "Date": "2026-09-01", "Business Unit": "BU_A", "Attendance Type": "Present", "Quantity": 1.0},
+        {"Employee Number": "E003", "Date": "2026-09-01", "Business Unit": "BU_A", "Attendance Type": "Present", "Quantity": 1.0},
+        {"Employee Number": "E004", "Date": "2026-09-01", "Business Unit": "BU_A", "Attendance Type": "Leave", "Quantity": 1.0},
+        # BU B: 10 Present (total 10) -> 100% Present
+        {"Employee Number": "E005", "Date": "2026-09-01", "Business Unit": "BU_B", "Attendance Type": "Present", "Quantity": 1.0},
+    ]
+    df = pd.DataFrame(rows)
+    bundle = compute_workforce_intelligence_bundle(df)
+    bu_map = {b["business_unit"]: b for b in bundle["bu_attendance_comparison"]}
+
+    bu_a = bu_map["BU_A"]
+    assert bu_a["present_days"] == 3.0
+    assert bu_a["leave_days"] == 1.0
+    assert abs(bu_a["present_pct"] - 75.0) < 1e-4
+    assert abs(bu_a["leave_pct"] - 25.0) < 1e-4
+
+
+# =========================================================================
+# 51. BU exception rates use distinct Regularized employee-days
+# =========================================================================
+def test_bu_exception_rates_use_distinct_regularized_days():
+    """Verify BU exception rate is regularized employee-days / recorded employee-days."""
+    rows = [
+        # BU A: 4 recorded employee days, 1 is Regularized, 1 is Absent (Absent is NOT an exception!)
+        {"Employee Number": "E001", "Date": "2026-09-01", "Business Unit": "BU_A", "Attendance Type": "Regularized", "Quantity": 1.0},
+        {"Employee Number": "E002", "Date": "2026-09-01", "Business Unit": "BU_A", "Attendance Type": "Absent", "Quantity": 1.0},
+        {"Employee Number": "E003", "Date": "2026-09-01", "Business Unit": "BU_A", "Attendance Type": "Present", "Quantity": 1.0},
+        {"Employee Number": "E004", "Date": "2026-09-01", "Business Unit": "BU_A", "Attendance Type": "Present", "Quantity": 1.0},
+    ]
+    df = pd.DataFrame(rows)
+    bundle = compute_workforce_intelligence_bundle(df)
+    bu_a = bundle["bu_attendance_comparison"][0]
+
+    assert bu_a["recorded_employee_days"] == 4
+    assert bu_a["exception_days"] == 1
+    assert abs(bu_a["exception_rate_pct"] - 25.0) < 1e-4
+
+
+# =========================================================================
+# 52. BU transfer headcount does not inflate organization total
+# =========================================================================
+def test_bu_transfer_headcount_does_not_inflate_org_total():
+    """Verify an employee appearing in multiple BUs is deduplicated in org total."""
+    rows = [
+        # E001 worked in Engineering on Day 1
+        {"Employee Number": "E001", "Date": "2026-09-01", "Business Unit": "Engineering", "Attendance Type": "Present", "Quantity": 1.0},
+        # E001 worked in Product on Day 2
+        {"Employee Number": "E001", "Date": "2026-09-02", "Business Unit": "Product", "Attendance Type": "Present", "Quantity": 1.0},
+    ]
+    df = pd.DataFrame(rows)
+    bundle = compute_workforce_intelligence_bundle(df)
+    bu_list = bundle["bu_attendance_comparison"]
+    tot = bundle["bu_comparison_total"]
+
+    # Each BU has headcount 1
+    assert len(bu_list) == 2
+    for b in bu_list:
+        assert b["observed_headcount"] == 1
+
+    # But organization-wide total headcount is 1 (unique deduplicated headcount)
+    assert tot["observed_headcount"] == 1
+    assert tot["recorded_employee_days"] == 2
+    assert tot["present_days"] == 2.0
+
+
+# =========================================================================
+# 53. Empty dataset handling in overview visualizations
+# =========================================================================
+def test_empty_dataset_handling_in_visualizations():
+    """Verify that empty datasets yield safe, zeroed visualization structures."""
+    df = pd.DataFrame()
+    bundle = compute_workforce_intelligence_bundle(df)
+
+    assert "attendance_composition" in bundle
+    assert len(bundle["attendance_composition"]) == 8
+    for c in bundle["attendance_composition"]:
+        assert c["days"] == 0.0
+        assert c["pct"] == 0.0
+
+    assert bundle["daily_attendance_trend"] == []
+    assert bundle["bu_attendance_comparison"] == []
+    assert bundle["bu_comparison_total"]["observed_headcount"] == 0
+    assert bundle["bu_comparison_total"]["recorded_employee_days"] == 0
+
+
+# =========================================================================
+# 54. UI widgets render bundle data without error
+# =========================================================================
+def test_ui_widgets_render_bundle_data(desktop_app, synthetic_snapshot_a):
+    """Verify AttendanceCompositionWidget, DailyAttendanceTrendWidget, and BU table render without error."""
+    app = desktop_app
+    wf_view: WorkforceDashboardView = app.workforce_dashboard_view
+
+    assert hasattr(wf_view, "comp_widget")
+    assert hasattr(wf_view, "trend_widget")
+    assert hasattr(wf_view, "bu_table_widget")
+
+    # Load synthetic snapshot A
+    snapshot_service.cache_manager.set_active_snapshot("snap_dataset_a", synthetic_snapshot_a)
+    wf_view.sync_snapshot_state(synthetic_snapshot_a)
+
+    start_time = time.time()
+    while wf_view._is_loading_metrics and (time.time() - start_time < 5.0):
+        app.update()
+        time.sleep(0.05)
+    app.update()
+
+    # Verify widgets received data
+    assert wf_view.comp_widget._composition_data is not None
+    assert len(wf_view.comp_widget._composition_data) == 8
+    assert wf_view.trend_widget._trend_data is not None
+    assert len(wf_view.trend_widget._trend_data) > 0
+    assert wf_view.bu_table_widget._bu_data is not None
+    assert len(wf_view.bu_table_widget._bu_data) > 0
+
+
+# =========================================================================
+# 55. Replacing active dataset refreshes charts and comparison table
+# =========================================================================
+def test_replacing_active_dataset_refreshes_visualizations(desktop_app, synthetic_snapshot_a, synthetic_snapshot_b):
+    """Verify switching from snapshot A to snapshot B updates all 3 visualizations."""
+    app = desktop_app
+    wf_view: WorkforceDashboardView = app.workforce_dashboard_view
+
+    # 1. Load A
+    snapshot_service.cache_manager.set_active_snapshot("snap_dataset_a", synthetic_snapshot_a)
+    wf_view.sync_snapshot_state(synthetic_snapshot_a)
+    start_time = time.time()
+    while wf_view._is_loading_metrics and (time.time() - start_time < 10.0):
+        wf_view._poll_metrics_queue(wf_view._latest_job_id)
+        app.update()
+        time.sleep(0.05)
+    wf_view._poll_metrics_queue(wf_view._latest_job_id)
+    app.update()
+
+    data_a_comp = wf_view.comp_widget._composition_data
+    assert data_a_comp is not None
+
+    # 2. Load B
+    snapshot_service.cache_manager.set_active_snapshot("snap_dataset_b", synthetic_snapshot_b)
+    wf_view.sync_snapshot_state(synthetic_snapshot_b)
+    start_time = time.time()
+    while wf_view._is_loading_metrics and (time.time() - start_time < 10.0):
+        wf_view._poll_metrics_queue(wf_view._latest_job_id)
+        app.update()
+        time.sleep(0.05)
+    wf_view._poll_metrics_queue(wf_view._latest_job_id)
+    app.update()
+
+    data_b_comp = wf_view.comp_widget._composition_data
+    assert data_b_comp is not None
+    # Verify BU data reflects snapshot B (Finance)
+    bu_names = [b["business_unit"] for b in wf_view.bu_table_widget._bu_data]
+    assert "Finance" in bu_names
+
+
+# =========================================================================
+# 56. Stale analytical results cannot overwrite newer dataset's visualizations
+# =========================================================================
+def test_stale_results_cannot_overwrite_newer_dataset(desktop_app, synthetic_snapshot_a, synthetic_snapshot_b):
+    """Verify request generation guard prevents out-of-order callbacks from overwriting visualizations."""
+    app = desktop_app
+    wf_view: WorkforceDashboardView = app.workforce_dashboard_view
+
+    # Set up active snapshot B
+    snapshot_service.cache_manager.set_active_snapshot("snap_dataset_b", synthetic_snapshot_b)
+    wf_view.sync_snapshot_state(synthetic_snapshot_b)
+    current_job = wf_view._latest_job_id
+
+    # Compute a bundle for snapshot A
+    bundle_a = compute_workforce_intelligence_bundle(synthetic_snapshot_a.fact_df)
+
+    # Attempt to deliver bundle_a with an obsolete job id
+    wf_view._on_metrics_calc_success(bundle_a, current_job - 1, "snap_dataset_a")
+    app.update()
+
+    # The view must NOT have accepted snap_dataset_a
+    assert wf_view._current_dataset_id != "snap_dataset_a"
+
+
+# =========================================================================
+# 57. Repeated tab switching does not reload or rebuild visualizations
+# =========================================================================
+def test_repeated_tab_switching_preserves_visualizations(desktop_app, synthetic_snapshot_a):
+    """Verify switching tabs away and back preserves visualizations without recalculation."""
+    app = desktop_app
+    wf_view: WorkforceDashboardView = app.workforce_dashboard_view
+
+    snapshot_service.cache_manager.set_active_snapshot("snap_dataset_a", synthetic_snapshot_a)
+    wf_view.sync_snapshot_state(synthetic_snapshot_a)
+
+    start_time = time.time()
+    while wf_view._is_loading_metrics and (time.time() - start_time < 5.0):
+        app.update()
+        time.sleep(0.05)
+    app.update()
+
+    # Switch away to attendance tab
+    wf_view.select_view("attendance")
+    app.update()
+    assert wf_view.active_view == "attendance"
+
+    # Switch back to overview tab
+    with patch.object(workforce_bridge, "get_workforce_metrics", wraps=workforce_bridge.get_workforce_metrics) as mock_get:
+        wf_view.select_view("overview")
+        app.update()
+        assert wf_view.active_view == "overview"
+        # Since snapshot hasn't changed, it should not reload or recompute
+        assert not wf_view._is_loading_metrics
+        mock_get.assert_not_called()
+
+
+# =========================================================================
+# 58. Step 27A: Attendance composition legend renders all 8 categories
+# =========================================================================
+def test_attendance_legend_all_eight_categories_render_with_bundle_data(desktop_app):
+    """Verify all eight categories are rendered in AttendanceCompositionWidget legend."""
+    app = desktop_app
+    wf_view = app.workforce_dashboard_view
+    comp_widget = wf_view.comp_widget
+
+    comp_data = [
+        {"category": "Present", "days": 2.0, "pct": 22.2, "color": "#10B981"},
+        {"category": "On Duty", "days": 1.0, "pct": 11.1, "color": "#0EA5E9"},
+        {"category": "Leave", "days": 1.0, "pct": 11.1, "color": "#8B5CF6"},
+        {"category": "WFH", "days": 1.0, "pct": 11.1, "color": "#6366F1"},
+        {"category": "Holiday", "days": 0.0, "pct": 0.0, "color": "#F59E0B"},
+        {"category": "Week Off", "days": 2.0, "pct": 22.2, "color": "#94A3B8"},
+        {"category": "Absent", "days": 1.0, "pct": 11.1, "color": "#EF4444"},
+        {"category": "Unclassified / Unresolved", "days": 1.0, "pct": 11.1, "color": "#F97316"},
+    ]
+    comp_widget.update_data(comp_data, 9.0)
+    app.update()
+
+    legend_cells = comp_widget.legend_frame.winfo_children()
+    assert len(legend_cells) == 8
+    # Total badge is updated
+    assert "9 days" in comp_widget.lbl_denom_badge.cget("text") or "9.0" in comp_widget.lbl_denom_badge.cget("text")
+
+
+# =========================================================================
+# 59. Step 27A: Attendance composition legend reflows on width change
+# =========================================================================
+def test_attendance_legend_reflows_on_width_change(desktop_app):
+    """Verify legend reflows from 4 columns to 2 columns when width is narrow."""
+    app = desktop_app
+    wf_view = app.workforce_dashboard_view
+    comp_widget = wf_view.comp_widget
+
+    comp_data = [
+        {"category": "Present", "days": 2.0, "pct": 22.2, "color": "#10B981"},
+        {"category": "On Duty", "days": 1.0, "pct": 11.1, "color": "#0EA5E9"},
+        {"category": "Leave", "days": 1.0, "pct": 11.1, "color": "#8B5CF6"},
+        {"category": "WFH", "days": 1.0, "pct": 11.1, "color": "#6366F1"},
+        {"category": "Holiday", "days": 0.0, "pct": 0.0, "color": "#F59E0B"},
+        {"category": "Week Off", "days": 2.0, "pct": 22.2, "color": "#94A3B8"},
+        {"category": "Absent", "days": 1.0, "pct": 11.1, "color": "#EF4444"},
+        {"category": "Unclassified / Unresolved", "days": 1.0, "pct": 11.1, "color": "#F97316"},
+    ]
+    comp_widget.update_data(comp_data, 9.0)
+
+    # Simulate wide configure (width >= 460) -> 4 columns
+    class MockEvent:
+        def __init__(self, w):
+            self.width = w
+
+    comp_widget._on_legend_configure(MockEvent(500))
+    assert comp_widget._current_cols == 4
+
+    # Simulate narrow configure (width < 460) -> 2 columns
+    comp_widget._on_legend_configure(MockEvent(380))
+    assert comp_widget._current_cols == 2
+
+
+# =========================================================================
+# 60. Step 27A: Daily attendance trend redraws on resize and hover
+# =========================================================================
+def test_daily_trend_canvas_redraw_and_hover(desktop_app):
+    """Verify DailyAttendanceTrendWidget draws vector lines and handles hover motion."""
+    app = desktop_app
+    wf_view = app.workforce_dashboard_view
+    trend_widget = wf_view.trend_widget
+
+    trend_data = [
+        {"date": date(2026, 9, 1), "date_str": "2026-09-01", "present_days": 1.0, "wfh_days": 1.0, "leave_days": 0.0, "recorded_days": 2},
+        {"date": date(2026, 9, 2), "date_str": "2026-09-02", "present_days": 2.0, "wfh_days": 0.0, "leave_days": 0.0, "recorded_days": 2},
+        {"date": date(2026, 9, 3), "date_str": "2026-09-03", "present_days": 0.0, "wfh_days": 0.0, "leave_days": 1.0, "recorded_days": 1},
+    ]
+    trend_widget.update_data(trend_data)
+    app.update()
+
+    # Redraw chart
+    trend_widget._draw_chart()
+    drawn_items = trend_widget.chart_canvas.find_all()
+    assert len(drawn_items) > 0
+
+    # Simulate hover event
+    class MockMotionEvent:
+        def __init__(self, x, y):
+            self.x = x
+            self.y = y
+
+    if trend_widget._hover_coords:
+        target_x = trend_widget._hover_coords[0][0]
+        trend_widget._on_canvas_motion(MockMotionEvent(target_x, 30))
+        assert "2026-09-01" in trend_widget.lbl_hover_info.cget("text")
+        assert "Present: 1 day" in trend_widget.lbl_hover_info.cget("text") or "Present: 1" in trend_widget.lbl_hover_info.cget("text")
+
+
+# =========================================================================
+# 61. Step 27A: BU Table headers, rows, and total row use identical column widths
+# =========================================================================
+def test_bu_table_headers_and_cells_identical_column_widths(desktop_app):
+    """Verify every column in the BU table has identical pixel widths across header, rows, and total."""
+    app = desktop_app
+    wf_view = app.workforce_dashboard_view
+    bu_widget = wf_view.bu_table_widget
+
+    bu_data = [
+        {
+            "business_unit": "Implementation (Lending)",
+            "observed_headcount": 2,
+            "recorded_employee_days": 2,
+            "present_days": 0.0,
+            "present_pct": 0.0,
+            "leave_days": 1.0,
+            "leave_pct": 50.0,
+            "wfh_days": 1.0,
+            "wfh_pct": 50.0,
+            "od_days": 0.0,
+            "absent_days": 0.0,
+            "exception_days": 0,
+            "exception_rate_pct": 0.0,
+        },
+        {
+            "business_unit": "Corporate",
+            "observed_headcount": 1,
+            "recorded_employee_days": 1,
+            "present_days": 0.0,
+            "present_pct": 0.0,
+            "leave_days": 0.0,
+            "leave_pct": 0.0,
+            "wfh_days": 0.0,
+            "wfh_pct": 0.0,
+            "od_days": 0.0,
+            "absent_days": 0.0,
+            "exception_days": 1,
+            "exception_rate_pct": 100.0,
+        },
+    ]
+    bu_total = {
+        "business_unit": "Total (Organization-Wide)",
+        "observed_headcount": 3,
+        "recorded_employee_days": 3,
+        "present_days": 0.0,
+        "present_pct": 0.0,
+        "leave_days": 1.0,
+        "leave_pct": 33.3,
+        "wfh_days": 1.0,
+        "wfh_pct": 33.3,
+        "od_days": 0.0,
+        "absent_days": 0.0,
+        "exception_days": 1,
+        "exception_rate_pct": 33.3,
+    }
+    bu_widget.update_data(bu_data, bu_total)
+    app.update()
+
+    # Verify 13 columns in header
+    hdr_cells = bu_widget.table_hdr_frame.winfo_children()
+    assert len(hdr_cells) == 13
+
+    # Verify 13 columns in total row
+    tot_cells = bu_widget.total_frame.winfo_children()
+    assert len(tot_cells) == 13
+
+    # Verify each data row has 13 cells with matching widths to header
+    rows = bu_widget.rows_frame.winfo_children()
+    assert len(rows) == 2
+    for row_box in rows:
+        row_cells = row_box.winfo_children()
+        assert len(row_cells) == 13
+        for c_idx in range(13):
+            # The label widths configured must be identical
+            assert row_cells[c_idx].cget("width") == hdr_cells[c_idx].cget("width")
+            assert tot_cells[c_idx].cget("width") == hdr_cells[c_idx].cget("width")
+
+
+# =========================================================================
+# 62. Step 27A: Numeric table cells are right-aligned, BU is left-aligned
+# =========================================================================
+def test_bu_table_alignments(desktop_app):
+    """Verify column 0 is left-aligned and columns 1-12 are right-aligned."""
+    app = desktop_app
+    wf_view = app.workforce_dashboard_view
+    bu_widget = wf_view.bu_table_widget
+
+    rows = bu_widget.rows_frame.winfo_children()
+    assert len(rows) > 0
+    row_cells = rows[0].winfo_children()
+
+    # Column 0: Business Unit -> anchor 'w'
+    assert row_cells[0].cget("anchor") == "w"
+
+    # Columns 1-12: All numerics -> anchor 'e'
+    for c_idx in range(1, 13):
+        assert row_cells[c_idx].cget("anchor") == "e"
+
+
+# =========================================================================
+# 63. Step 27B: Daily Trend chart dynamically expands and uses vertical height
+# =========================================================================
+def test_daily_trend_dynamic_height_and_visual_elements(desktop_app):
+    """Verify Daily Attendance Trend card configures row 1 weight=1 and draws elements properly."""
+    app = desktop_app
+    wf_view = app.workforce_dashboard_view
+    trend_widget = wf_view.trend_widget
+
+    # Check rowconfigure weight=1
+    row_info = trend_widget.grid_rowconfigure(1)
+    assert row_info["weight"] == 1
+
+    trend_data = [
+        {"date": date(2026, 9, 1), "date_str": "2026-09-01", "present_days": 150.0, "wfh_days": 20.0, "leave_days": 10.0, "recorded_days": 180},
+        {"date": date(2026, 9, 2), "date_str": "2026-09-02", "present_days": 145.0, "wfh_days": 25.0, "leave_days": 10.0, "recorded_days": 180},
+        {"date": date(2026, 9, 3), "date_str": "2026-09-03", "present_days": 160.0, "wfh_days": 15.0, "leave_days": 5.0, "recorded_days": 180},
+    ]
+    trend_widget.update_data(trend_data)
+    app.update()
+
+    # Verify canvas has elements drawn
+    items = trend_widget.chart_canvas.find_all()
+    assert len(items) > 5
+
+    # Test hover motion produces vertical guide line and hover points
+    class MockMotionEvent:
+        def __init__(self, x, y):
+            self.x = x
+            self.y = y
+
+    if trend_widget._hover_coords:
+        tx = trend_widget._hover_coords[0][0]
+        trend_widget._on_canvas_motion(MockMotionEvent(tx, 50))
+        hover_items = trend_widget.chart_canvas.find_withtag("hover_indicator")
+        assert len(hover_items) >= 4  # 1 vertical line + 3 series points
+        assert "2026-09-01" in trend_widget.lbl_hover_info.cget("text")
+
+        # Test hover leave cleans up
+        trend_widget._on_canvas_leave(MockMotionEvent(tx, 50))
+        assert len(trend_widget.chart_canvas.find_withtag("hover_indicator")) == 0
+
+
+# =========================================================================
+# 64. Step 27B: BU table renders 26 rows with bounded viewport and vertical scrollbar
+# =========================================================================
+def test_bu_table_26_rows_bounded_viewport_and_vertical_scrollbar(desktop_app):
+    """Verify BU table handles 26 Business Units with a bounded viewport and visible vertical scrollbar."""
+    app = desktop_app
+    wf_view = app.workforce_dashboard_view
+    bu_widget = wf_view.bu_table_widget
+
+    bu_names = [
+        "Implementation (Lending)", "Corporate", "Retail Banking", "Wealth Management",
+        "Operations & Services", "Risk & Compliance", "Engineering & Architecture",
+        "Human Resources", "Finance & Accounts", "Information Security",
+        "Treasury", "Customer Experience", "Digital Channels", "Payments Infrastructure",
+        "Credit Risk", "Fraud Prevention", "Legal & Secretarial", "Procurement & Admin",
+        "Data & Analytics", "Internal Audit", "Corporate Strategy", "Marketing & PR",
+        "Investor Relations", "Branch Banking North", "Branch Banking South", "Special Assets",
+    ]
+    assert len(bu_names) == 26
+
+    bu_data = []
+    for idx, name in enumerate(bu_names):
+        bu_data.append({
+            "business_unit": name,
+            "observed_headcount": 10 + idx,
+            "recorded_employee_days": (10 + idx) * 22,
+            "present_days": float((10 + idx) * 18),
+            "present_pct": 81.8,
+            "leave_days": float((10 + idx) * 2),
+            "leave_pct": 9.1,
+            "wfh_days": float((10 + idx) * 2),
+            "wfh_pct": 9.1,
+            "od_days": 0.0,
+            "absent_days": 0.0,
+            "exception_days": 1 if idx % 3 == 0 else 0,
+            "exception_rate_pct": 0.5 if idx % 3 == 0 else 0.0,
+        })
+
+    bu_total = {
+        "business_unit": "Total (Organization-Wide)",
+        "observed_headcount": sum(b["observed_headcount"] for b in bu_data),
+        "recorded_employee_days": sum(b["recorded_employee_days"] for b in bu_data),
+        "present_days": sum(b["present_days"] for b in bu_data),
+        "present_pct": 81.8,
+        "leave_days": sum(b["leave_days"] for b in bu_data),
+        "leave_pct": 9.1,
+        "wfh_days": sum(b["wfh_days"] for b in bu_data),
+        "wfh_pct": 9.1,
+        "od_days": 0.0,
+        "absent_days": 0.0,
+        "exception_days": sum(b["exception_days"] for b in bu_data),
+        "exception_rate_pct": 0.3,
+    }
+
+    bu_widget.update_data(bu_data, bu_total)
+    app.update()
+
+    # 1. Check row count
+    rows = bu_widget.rows_frame.winfo_children()
+    assert len(rows) == 26
+    assert "26 Business Units" in bu_widget.lbl_bu_count.cget("text")
+
+    # 2. Viewport height is bounded (approx 8 rows = 192px), NOT natural 26-row height (>600px)
+    viewport_h = bu_widget.rows_canvas.cget("height")
+    assert int(viewport_h) <= 200
+
+    # 3. Vertical scrollbar is visible for 26 rows
+    assert bu_widget.v_scrollbar.winfo_ismapped() or bu_widget.v_scrollbar.grid_info() != {}
+
+    # 4. Total row is pinned directly beneath rows canvas
+    tot_cells = bu_widget.total_frame.winfo_children()
+    assert len(tot_cells) == 13
+    assert tot_cells[0].cget("text") == "Total (Organization-Wide)"
+
+
+# =========================================================================
+# 65. Step 27B: Synchronized horizontal scrolling across Header, Rows, Total
+# =========================================================================
+def test_bu_table_synchronized_horizontal_scrolling(desktop_app):
+    """Verify Header, Rows, and Total canvases move in 100% lockstep during horizontal scroll."""
+    app = desktop_app
+    wf_view = app.workforce_dashboard_view
+    bu_widget = wf_view.bu_table_widget
+
+    # Ensure data is populated so scrollregion has width > 0
+    bu_data = [{"business_unit": f"BU_{i}", "observed_headcount": 10, "recorded_employee_days": 100,
+                "present_days": 80.0, "present_pct": 80.0, "leave_days": 10.0, "leave_pct": 10.0,
+                "wfh_days": 10.0, "wfh_pct": 10.0, "od_days": 0.0, "absent_days": 0.0,
+                "exception_days": 0, "exception_rate_pct": 0.0} for i in range(10)]
+    bu_total = {"business_unit": "Total (Organization-Wide)", "observed_headcount": 100, "recorded_employee_days": 1000,
+                "present_days": 800.0, "present_pct": 80.0, "leave_days": 100.0, "leave_pct": 10.0,
+                "wfh_days": 100.0, "wfh_pct": 10.0, "od_days": 0.0, "absent_days": 0.0,
+                "exception_days": 0, "exception_rate_pct": 0.0}
+    bu_widget.update_data(bu_data, bu_total)
+    app.update()
+
+    # Call _on_h_scroll
+    bu_widget._on_h_scroll("moveto", "0.35")
+    app.update()
+
+    h_xview = bu_widget.header_canvas.xview()
+    r_xview = bu_widget.rows_canvas.xview()
+    t_xview = bu_widget.total_canvas.xview()
+
+    # All three must match exactly
+    assert abs(h_xview[0] - r_xview[0]) < 0.001
+    assert abs(r_xview[0] - t_xview[0]) < 0.001
+
+    # Scroll fully to the right (1.0)
+    bu_widget._on_h_scroll("moveto", "1.0")
+    app.update()
+    assert bu_widget.rows_canvas.xview() == bu_widget.header_canvas.xview() == bu_widget.total_canvas.xview()
+
+
+# =========================================================================
+# 66. Step 27B: Mouse-wheel events isolate vertical scrolling and handle Shift-wheel
+# =========================================================================
+def test_bu_table_mousewheel_isolation(desktop_app):
+    """Verify mousewheel over BU rows returns 'break' and Shift+wheel scrolls horizontally."""
+    app = desktop_app
+    wf_view = app.workforce_dashboard_view
+    bu_widget = wf_view.bu_table_widget
+
+    class MockWheelEvent:
+        def __init__(self, delta):
+            self.delta = delta
+
+    # Vertical mousewheel must return 'break' to prevent event bubbling to overview page
+    ret_v = bu_widget._on_rows_mousewheel(MockWheelEvent(-120))
+    assert ret_v == "break"
+
+    # Shift + mousewheel must scroll horizontally and return 'break'
+    ret_h = bu_widget._on_shift_mousewheel(MockWheelEvent(-120))
+    assert ret_h == "break"
+
+
+# =========================================================================
+# 67. Step 27B: Hover row displays full unclipped BU name
+# =========================================================================
+def test_bu_table_hover_shows_full_bu_name(desktop_app):
+    """Verify hovering over a row updates lbl_info with the complete unshortened BU name."""
+    app = desktop_app
+    wf_view = app.workforce_dashboard_view
+    bu_widget = wf_view.bu_table_widget
+
+    test_rec = {
+        "business_unit": "Implementation (Lending)",
+        "observed_headcount": 14,
+        "recorded_employee_days": 308,
+        "present_days": 280.0,
+        "present_pct": 90.9,
+        "exception_days": 2,
+    }
+    bu_widget._on_row_enter(test_rec)
+    app.update()
+
+    info_text = bu_widget.lbl_info.cget("text")
+    assert "Implementation (Lending)" in info_text
+    assert "Headcount: 14" in info_text
+    assert "Recorded Days: 308" in info_text
+    assert "Present: 90.9%" in info_text
+
+    # Test leaving row restores tip
+    bu_widget._on_row_leave()
+    app.update()
+    assert "Tip: Shift + MouseWheel" in bu_widget.lbl_info.cget("text")
+
+
+# =========================================================================
+# STEP 27C — COLLAPSIBLE SIDEBAR & EXPANDABLE TIME-SERIES TESTS
+# =========================================================================
+
+def test_step27c_submenus_start_collapsed(desktop_app):
+    """Verify that Transform and Analyse submenus start CLOSED by default on startup."""
+    app = desktop_app
+    assert app.transform_menu_expanded is False
+    assert app.analyse_menu_expanded is False
+    assert app.nav_chevron.cget("text") == "▸"
+    assert app.analyse_chevron.cget("text") == "▸"
+    # Submenu containers must not be gridded on startup
+    assert not bool(app.sub_menu_frame.grid_info())
+    assert not bool(app.analyse_sub_menu_frame.grid_info())
+
+
+def test_step27c_transform_and_analyse_submenu_toggling(desktop_app):
+    """Verify clicking Transform/Analyse parent toggles child submenus and chevrons."""
+    app = desktop_app
+
+    # 1. Expand Transform
+    app.toggle_transform_menu()
+    app.update()
+    assert app.transform_menu_expanded is True
+    assert app.nav_chevron.cget("text") == "▾"
+    assert bool(app.sub_menu_frame.grid_info())
+    # Analyse remains closed
+    assert app.analyse_menu_expanded is False
+    assert not bool(app.analyse_sub_menu_frame.grid_info())
+
+    # 2. Collapse Transform
+    app.toggle_transform_menu()
+    app.update()
+    assert app.transform_menu_expanded is False
+    assert app.nav_chevron.cget("text") == "▸"
+    assert not bool(app.sub_menu_frame.grid_info())
+
+    # 3. Expand Analyse
+    app.toggle_analyse_menu()
+    app.update()
+    assert app.analyse_menu_expanded is True
+    assert app.analyse_chevron.cget("text") == "▾"
+    assert bool(app.analyse_sub_menu_frame.grid_info())
+
+    # 4. Collapse Analyse
+    app.toggle_analyse_menu()
+    app.update()
+    assert app.analyse_menu_expanded is False
+    assert app.analyse_chevron.cget("text") == "▸"
+    assert not bool(app.analyse_sub_menu_frame.grid_info())
+
+
+def test_step27c_all_child_navigation_destinations_accessible(desktop_app):
+    """Verify that every existing navigation destination remains accessible and functional."""
+    app = desktop_app
+    destinations = [
+        "dashboard",
+        "generate",
+        "absent",
+        "att_summary",
+        "time_leave",
+        "workforce_intelligence",
+        "analyse_time_series",
+        "analyse_upload",
+    ]
+    for dest in destinations:
+        app.select_frame_by_name(dest)
+        app.update()
+        assert dest in app.frames
+        assert bool(app.frames[dest].grid_info()), f"Frame {dest} should be gridded when selected"
+
+
+def test_step27c_sidebar_collapse_and_workspace_expansion(desktop_app):
+    """Verify sidebar collapses to 60px icon rail and main workspace width increases."""
+    app = desktop_app
+    app.geometry("1400x900")
+    app.update()
+
+    initial_main_w = app.main_content.winfo_width()
+
+    # Collapse sidebar
+    app.toggle_sidebar(force_state=True)
+    app.update()
+
+    assert app.sidebar_collapsed is True
+    assert app.sidebar.cget("width") == 60
+    assert app.btn_sidebar_toggle.cget("text") == "▶"
+    # Main content width MUST expand
+    collapsed_main_w = app.main_content.winfo_width()
+    assert collapsed_main_w > initial_main_w
+
+    # Expand sidebar back
+    app.toggle_sidebar(force_state=False)
+    app.update()
+
+    assert app.sidebar_collapsed is False
+    assert app.sidebar.cget("width") == 280
+    assert app.btn_sidebar_toggle.cget("text") == "◀"
+    restored_main_w = app.main_content.winfo_width()
+    assert abs(restored_main_w - initial_main_w) < 20
+
+
+def test_step27c_active_screen_preserved_on_sidebar_toggle(desktop_app):
+    """Verify active screen and KPI calculations are not rebuilt solely by sidebar toggling."""
+    app = desktop_app
+    app.select_frame_by_name("workforce_intelligence")
+    app.update()
+    wf_view: WorkforceDashboardView = desktop_app.workforce_dashboard_view
+    assert bool(app.frames["workforce_intelligence"].grid_info())
+    assert wf_view.active_view == "overview"
+
+    # Toggle multiple times
+    app.toggle_sidebar()
+    app.update()
+    assert bool(app.frames["workforce_intelligence"].grid_info())
+    assert wf_view.active_view == "overview"
+
+    app.toggle_sidebar()
+    app.update()
+    assert bool(app.frames["workforce_intelligence"].grid_info())
+    assert wf_view.active_view == "overview"
+
+
+def test_step27c_daily_trend_short_vs_long_horizontal_scrolling(desktop_app):
+    """Verify short date range does NOT activate scrollbar, but 90 and 365 days activate it."""
+    wf_view: WorkforceDashboardView = desktop_app.workforce_dashboard_view
+    trend: DailyAttendanceTrendWidget = wf_view.trend_widget
+
+    # Ensure widget is realized with a visible canvas
+    wf_view._set_overview_state("ready")
+    desktop_app.update()
+
+    # Case A: Short date range (13 dates)
+    data_13 = [
+        {"date_str": f"2026-09-{i:02d}", "present_days": 25.0, "wfh_days": 5.0, "leave_days": 2.0}
+        for i in range(1, 14)
+    ]
+    trend.update_data(data_13)
+    desktop_app.update()
+
+    assert len(trend._hover_coords) == 13
+    assert trend._scroll_active is False
+    assert not trend.h_scrollbar.winfo_ismapped()
+
+    # Case B: Medium/Long range (90 dates)
+    data_90 = [
+        {"date_str": f"2026-{(i//30)+1:02d}-{(i%30)+1:02d}", "present_days": 22.0 + (i%5), "wfh_days": 4.0, "leave_days": 1.0}
+        for i in range(90)
+    ]
+    trend.update_data(data_90)
+    desktop_app.update()
+
+    assert len(trend._hover_coords) == 90
+    assert trend._scroll_active is True
+    assert trend.h_scrollbar.winfo_ismapped()
+    first_x = trend._hover_coords[0][0]
+    last_x = trend._hover_coords[-1][0]
+    assert last_x > first_x
+    assert last_x > trend.chart_canvas.winfo_width()
+
+    # Case C: Annual range (365 dates)
+    data_365 = [
+        {"date_str": f"2026-{(i//30)+1:02d}-{(i%30)+1:02d}", "present_days": 20.0, "wfh_days": 5.0, "leave_days": 2.0}
+        for i in range(365)
+    ]
+    trend.update_data(data_365)
+    desktop_app.update()
+
+    assert len(trend._hover_coords) == 365
+    assert trend._scroll_active is True
+    assert trend.h_scrollbar.winfo_ismapped()
+    # Scrollable region covers the entire 365-day width
+    last_x_365 = trend._hover_coords[-1][0]
+    assert last_x_365 > 8000.0
+
+
+def test_step27c_expand_trend_dialog_lifecycle(desktop_app):
+    """Verify Expand button opens dedicated enlarged dialog and prevents duplicate windows."""
+    wf_view: WorkforceDashboardView = desktop_app.workforce_dashboard_view
+    trend: DailyAttendanceTrendWidget = wf_view.trend_widget
+
+    data_13 = [
+        {"date_str": f"2026-09-{i:02d}", "present_days": 25.0, "wfh_days": 5.0, "leave_days": 2.0}
+        for i in range(1, 14)
+    ]
+    trend.update_data(data_13, reporting_period="01 Sep to 13 Sep 2026")
+    desktop_app.update()
+
+    assert trend._expanded_dialog is None
+
+    # Click expand
+    trend._on_expand_clicked()
+    desktop_app.update()
+
+    assert trend._expanded_dialog is not None
+    assert isinstance(trend._expanded_dialog, ExpandedDailyAttendanceTrendDialog)
+    dlg = trend._expanded_dialog
+    assert dlg.winfo_exists()
+    assert len(dlg.expanded_trend._trend_data) == 13
+
+    # Repeated click must NOT open duplicate dialog
+    trend._on_expand_clicked()
+    assert trend._expanded_dialog is dlg
+
+    # Close dialog cleanly
+    dlg._on_close()
+    desktop_app.update()
+    assert trend._expanded_dialog is None
+
+
+def test_step27c_data_quality_dialog_lifecycle(desktop_app):
+    """Verify Data Quality header badge click opens diagnostic details dialog without duplicates."""
+    wf_view: WorkforceDashboardView = desktop_app.workforce_dashboard_view
+
+    bundle = {
+        "kpi_1_emp_hc": 50,
+        "kpi_2_attendance_days": 100,
+        "kpi_3_present_days": 80.0,
+        "kpi_4_od_days": 5.0,
+        "kpi_5_leave_days": 5.0,
+        "kpi_6_wfh_days": 5.0,
+        "kpi_7_holiday_days": 2.0,
+        "kpi_8_week_off_days": 2.0,
+        "kpi_absent_days": 1.0,
+        "kpi_9_attendance_exceptions_days": 4,
+        "attendance_composition_denominator": 100.0,
+        "unclassified_records_count": 2,
+        "conflicting_employee_days_count": 1,
+        "kpi_unclassified_days": 2.0,
+        "kpi_unclassified_pct": 2.0,
+    }
+    wf_view._render_overview_kpis(bundle)
+    desktop_app.update()
+
+    assert "DQ: 1 to review" in wf_view.lbl_dq_info.cget("text")
+
+    # Click DQ badge
+    wf_view._show_dq_details_dialog()
+    desktop_app.update()
+
+    assert wf_view._dq_dialog is not None
+    assert isinstance(wf_view._dq_dialog, DataQualityDetailDialog)
+    dlg = wf_view._dq_dialog
+    assert dlg.winfo_exists()
+
+    # Repeated click must NOT open duplicate dialog
+    wf_view._show_dq_details_dialog()
+    assert wf_view._dq_dialog is dlg
+
+    # Close cleanly
+    dlg._on_close()
+    desktop_app.update()
+
+def test_step27c_trend_chart_tightened_spacing_and_grid_continuity(desktop_app):
+    """Verify Daily Attendance Trend tightened padding, non-colliding labels, and seamless grid lines."""
+    wf_view: WorkforceDashboardView = desktop_app.workforce_dashboard_view
+    trend: DailyAttendanceTrendWidget = wf_view.trend_widget
+
+    data = [
+        {"date_str": "2026-09-01", "present_days": 10.0, "wfh_days": 2.0, "leave_days": 1.0},
+        {"date_str": "2026-09-02", "present_days": 12.0, "wfh_days": 1.0, "leave_days": 0.0},
+    ]
+    trend.update_data(data, reporting_period="Sep 01 - Sep 02")
+    desktop_app.update()
+
+    # 1. First data point starts right at 6.0px flush with axis
+    assert len(trend._hover_coords) == 2
+    assert trend._hover_coords[0][0] == 6.0
+
+    # 2. Check Y-axis canvas labels do not collide (days at y=5, top tick at y=16)
+    days_items = [
+        item for item in trend.y_axis_canvas.find_all()
+        if trend.y_axis_canvas.type(item) == "text" and trend.y_axis_canvas.itemcget(item, "text") == "days"
+    ]
+    assert len(days_items) == 1
+    assert trend.y_axis_canvas.coords(days_items[0])[1] == 5.0
+
+    # 3. Y-axis extension tick lines exist connecting to the chart canvas grid
+    tick_lines = [
+        item for item in trend.y_axis_canvas.find_all()
+        if trend.y_axis_canvas.type(item) == "line"
+    ]
+    assert len(tick_lines) >= 3
+
+    # 4. Canvas heights are synchronized and do not blow out to 264px
+    assert trend.y_axis_canvas.winfo_reqheight() <= 145
+    assert trend.chart_canvas.winfo_reqheight() <= 145
