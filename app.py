@@ -86,13 +86,18 @@ class App(ctk.CTk):
         self.transform_menu_expanded = False
         self.analyse_menu_expanded = False
         self.menu_expanded = False
-        self.sidebar_collapsed = False
+        self.sidebar_collapsed = True
         self.current_active_frame = "dashboard"
         self.nav_parent_btn = None
         self.nav_chevron = None
         self.analyse_parent_btn = None
         self.analyse_chevron = None
         self.sub_nav_btns = {}
+        self.floating_nav_popup = None
+        self.floating_nav_group = None
+        self._nav_hover_timer = None
+        self._nav_leave_timer = None
+        self._nav_outside_bind_id = None
 
         self._setup_window()
         self._build_layout()
@@ -105,67 +110,77 @@ class App(ctk.CTk):
         self.configure(fg_color=ui.COLOR_BG)
 
     def _build_layout(self):
-        # Sidebar
-        self.sidebar = ctk.CTkFrame(self, width=280, corner_radius=0, fg_color=ui.COLOR_SIDEBAR)
+        # Permanently Compact Navigation Rail (approx 64px)
+        self.sidebar = ctk.CTkFrame(self, width=64, corner_radius=0, fg_color=ui.COLOR_SIDEBAR)
         self.sidebar.grid(row=0, column=0, sticky="nsew")
         self.sidebar.grid_propagate(False)
         self.sidebar.grid_rowconfigure(10, weight=1)
         self.sidebar.grid_columnconfigure(0, weight=1)
 
-        # Header with Logo & Collapse Toggle Bar (Row 0)
+        # Header with Compact Brand Mark (Row 0)
         self.sidebar_header = ctk.CTkFrame(self.sidebar, fg_color="transparent")
-        self.sidebar_header.grid(row=0, column=0, sticky="ew", padx=14, pady=(24, 20))
+        self.sidebar_header.grid(row=0, column=0, sticky="ew", padx=6, pady=(18, 14))
         self.sidebar_header.grid_columnconfigure(0, weight=1)
-        self.sidebar_header.grid_columnconfigure(1, weight=0)
-
-        self.lbl_logo = ctk.CTkLabel(
-            self.sidebar_header, text="Transformers",
-            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=24, weight="bold"),
-            text_color=ui.COLOR_ACCENT, anchor="w",
-        )
-        self.lbl_logo.grid(row=0, column=0, sticky="w", padx=(6, 0))
 
         self.lbl_logo_compact = ctk.CTkLabel(
-            self.sidebar_header, text="⚡",
-            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=22, weight="bold"),
-            text_color=ui.COLOR_ACCENT, anchor="center",
+            self.sidebar_header,
+            text="⚡",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=24, weight="bold"),
+            text_color=ui.COLOR_ACCENT,
+            anchor="center",
         )
+        self.lbl_logo_compact.grid(row=0, column=0, sticky="nsew")
 
+        # Compatibility attributes (kept ungridded)
+        self.lbl_logo = ctk.CTkLabel(
+            self.sidebar_header,
+            text="Transformers",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=24, weight="bold"),
+            text_color=ui.COLOR_ACCENT,
+        )
         self.btn_sidebar_toggle = ctk.CTkButton(
-            self.sidebar_header, text="◀", width=28, height=28, corner_radius=6,
-            fg_color=ui.COLOR_CARD, hover_color=ui.COLOR_NAV_HOVER,
-            text_color=ui.COLOR_TEXT_SEC, font=ctk.CTkFont(size=12, weight="bold"),
+            self.sidebar_header,
+            text="◀",
+            width=28,
+            height=28,
+            corner_radius=6,
             command=self.toggle_sidebar,
         )
-        self.btn_sidebar_toggle.grid(row=0, column=1, sticky="e")
-        ui.create_tooltip(self.btn_sidebar_toggle, "Collapse Sidebar (expand workspace)")
 
         sep = ctk.CTkFrame(self.sidebar, height=1, fg_color=ui.COLOR_SIDEBAR_SEP)
-        sep.grid(row=1, column=0, sticky="ew", padx=14, pady=(0, 16))
+        sep.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 14))
 
-        # ── Collapsible Transform Navigation Group (Closed by Default) ────────
-        self.nav_parent_frame, self.nav_parent_btn, self.nav_chevron = ui.create_collapsible_nav_item(
+        # ── Compact Transform Navigation Rail Button (Row 2) ───────────────────
+        self.nav_parent_frame = self.sidebar
+        self.nav_chevron = ctk.CTkLabel(self.sidebar, text="▸")
+        self.nav_parent_btn = ctk.CTkButton(
             self.sidebar,
-            text="Transform",
-            icon=ui.ICON_HOME,
-            on_select=lambda: self._on_transform_parent_clicked(),
-            on_toggle=lambda: self.toggle_transform_menu(),
-            row=2,
+            text=ui.ICON_HOME,
+            width=46,
+            height=42,
+            corner_radius=8,
+            anchor="center",
+            fg_color=ui.COLOR_NAV_ACTIVE,
+            hover_color=ui.COLOR_NAV_HOVER,
+            text_color=ui.COLOR_TEXT,
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=18),
+            command=self._on_transform_parent_clicked,
         )
-        self.nav_chevron.configure(text="▸")
+        self.nav_parent_btn.grid(row=2, column=0, padx=6, pady=4)
+        ui.create_tooltip(self.nav_parent_btn, "Transform")
 
-        # Sub-menu container for child modules (Starts Closed)
-        self.sub_menu_frame = ctk.CTkFrame(self.sidebar, fg_color="transparent")
-        self.sub_menu_frame.grid_columnconfigure(0, weight=1)
+        self.nav_parent_btn.bind("<Enter>", lambda e: self._on_nav_btn_enter("transform"), add="+")
+        self.nav_parent_btn.bind("<Leave>", lambda e: self._on_nav_btn_leave("transform"), add="+")
 
-        # Sub-items: KRA Management, Absent Management, Attendance Summary, Time and Leave Master
+        # Offscreen child buttons container for backward compatibility
+        self._offscreen_compat = ctk.CTkFrame(self)
+        self.sub_menu_frame = ctk.CTkFrame(self._offscreen_compat, fg_color="transparent")
         transform_sub_items = [
             ("transform", "KRA Management", ui.ICON_KRA),
             ("absent", "Absent Management", ui.ICON_ABSENT),
             ("att_summary", "Attendance Summary", ui.ICON_ATTENDANCE),
             ("time_leave", "Time and Leave Master", ui.ICON_TIME_LEAVE),
         ]
-
         for idx, (name, text, icon) in enumerate(transform_sub_items):
             btn = ui.create_sub_nav_button(
                 self.sub_menu_frame,
@@ -176,28 +191,35 @@ class App(ctk.CTk):
             )
             self.sub_nav_btns[name] = btn
 
-        # ── Collapsible Analyse Navigation Group (Closed by Default) ──────────
-        self.analyse_parent_frame, self.analyse_parent_btn, self.analyse_chevron = ui.create_collapsible_nav_item(
+        # ── Compact Analyse Navigation Rail Button (Row 3) ─────────────────────
+        self.analyse_parent_frame = self.sidebar
+        self.analyse_chevron = ctk.CTkLabel(self.sidebar, text="▸")
+        self.analyse_parent_btn = ctk.CTkButton(
             self.sidebar,
-            text="Analyse",
-            icon=ui.ICON_ANALYSE,
-            on_select=lambda: self._on_analyse_parent_clicked(),
-            on_toggle=lambda: self.toggle_analyse_menu(),
-            row=4,
+            text=ui.ICON_ANALYSE,
+            width=46,
+            height=42,
+            corner_radius=8,
+            anchor="center",
+            fg_color="transparent",
+            hover_color=ui.COLOR_NAV_HOVER,
+            text_color=ui.COLOR_TEXT_SEC,
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=18),
+            command=self._on_analyse_parent_clicked,
         )
-        self.analyse_chevron.configure(text="▸")
+        self.analyse_parent_btn.grid(row=3, column=0, padx=6, pady=4)
+        ui.create_tooltip(self.analyse_parent_btn, "Analyse")
 
-        # Sub-menu container for Analyse child modules (Starts Closed)
-        self.analyse_sub_menu_frame = ctk.CTkFrame(self.sidebar, fg_color="transparent")
-        self.analyse_sub_menu_frame.grid_columnconfigure(0, weight=1)
+        self.analyse_parent_btn.bind("<Enter>", lambda e: self._on_nav_btn_enter("analyse"), add="+")
+        self.analyse_parent_btn.bind("<Leave>", lambda e: self._on_nav_btn_leave("analyse"), add="+")
 
-        # Sub-items: Workforce Intelligence, Time Series Analysis, Upload
+        # Offscreen child buttons container for Analyse backward compatibility
+        self.analyse_sub_menu_frame = ctk.CTkFrame(self._offscreen_compat, fg_color="transparent")
         analyse_sub_items = [
             ("workforce_intelligence", "Workforce Intelligence", ui.ICON_ANALYSE),
             ("analyse_time_series", "Time Series Analysis", ui.ICON_DASHBOARD),
             ("analyse_upload", "Upload", ui.ICON_UPLOAD),
         ]
-
         for idx, (name, text, icon) in enumerate(analyse_sub_items):
             btn = ui.create_sub_nav_button(
                 self.analyse_sub_menu_frame,
@@ -208,7 +230,7 @@ class App(ctk.CTk):
             )
             self.sub_nav_btns[name] = btn
 
-        # Main Content (Takes all remaining width)
+        # Main Content (Takes all remaining width permanently)
         self.main_content = ctk.CTkFrame(self, fg_color="transparent", corner_radius=0)
         self.main_content.grid(row=0, column=1, sticky="nsew", padx=30, pady=30)
         self.main_content.grid_rowconfigure(0, weight=1)
@@ -227,143 +249,382 @@ class App(ctk.CTk):
         self._build_workforce_intelligence_frame()
 
     def toggle_sidebar(self, force_state=None):
-        """Toggle sidebar between expanded (280px) and collapsed icon-rail (60px)."""
+        """Preserves permanent compact icon rail navigation (width 60-64px)."""
         if force_state is not None:
             self.sidebar_collapsed = force_state
         else:
             self.sidebar_collapsed = not self.sidebar_collapsed
-
-        if self.sidebar_collapsed:
-            # 1. Collapse sidebar container to 60px
-            self.sidebar.configure(width=60)
-            self.sidebar.grid_propagate(False)
-
-            # 2. Compact header
-            self.lbl_logo.grid_remove()
-            self.lbl_logo_compact.grid(row=0, column=0, sticky="nsew", padx=0)
-            self.btn_sidebar_toggle.grid(row=0, column=1, sticky="e", padx=(0, 4))
-            self.btn_sidebar_toggle.configure(text="▶", width=22, height=22)
-            ui.create_tooltip(self.btn_sidebar_toggle, "Expand Sidebar")
-
-            # 3. Hide chevrons and child submenus
-            self.nav_chevron.grid_remove()
-            self.analyse_chevron.grid_remove()
-            self.sub_menu_frame.grid_remove()
-            self.analyse_sub_menu_frame.grid_remove()
-
-            # 4. Icon-only parent buttons
-            self.nav_parent_frame.grid_configure(padx=6)
-            self.analyse_parent_frame.grid_configure(padx=6)
-            self.nav_parent_btn.configure(text=ui.ICON_HOME, anchor="center")
-            self.analyse_parent_btn.configure(text=ui.ICON_ANALYSE, anchor="center")
-            ui.create_tooltip(self.nav_parent_btn, "Transform (click to expand)")
-            ui.create_tooltip(self.analyse_parent_btn, "Analyse (click to expand)")
-        else:
-            # 1. Expand sidebar container to 280px
-            self.sidebar.configure(width=280)
-            self.sidebar.grid_propagate(False)
-
-            # 2. Expanded header
-            self.lbl_logo_compact.grid_remove()
-            self.lbl_logo.grid(row=0, column=0, sticky="w", padx=(6, 0))
-            self.btn_sidebar_toggle.grid(row=0, column=1, sticky="e", padx=0)
-            self.btn_sidebar_toggle.configure(text="◀", width=28, height=28)
-            ui.create_tooltip(self.btn_sidebar_toggle, "Collapse Sidebar (expand workspace)")
-
-            # 3. Restore parent buttons
-            self.nav_parent_frame.grid_configure(padx=14)
-            self.analyse_parent_frame.grid_configure(padx=14)
-            self.nav_parent_btn.configure(text=f"  {ui.ICON_HOME}   Transform", anchor="w")
-            self.analyse_parent_btn.configure(text=f"  {ui.ICON_ANALYSE}   Analyse", anchor="w")
-            self.nav_chevron.grid()
-            self.analyse_chevron.grid()
-
-            # 4. Restore submenus to their previous expansion states
-            if self.transform_menu_expanded:
-                self.sub_menu_frame.grid(row=3, column=0, sticky="ew")
-                self.nav_chevron.configure(text="▾")
-            else:
-                self.sub_menu_frame.grid_remove()
-                self.nav_chevron.configure(text="▸")
-
-            if self.analyse_menu_expanded:
-                self.analyse_sub_menu_frame.grid(row=5, column=0, sticky="ew")
-                self.analyse_chevron.configure(text="▾")
-            else:
-                self.analyse_sub_menu_frame.grid_remove()
-                self.analyse_chevron.configure(text="▸")
-
+        target_w = 64
+        self.sidebar.configure(width=target_w)
+        self.sidebar.grid_propagate(False)
         self.update_idletasks()
 
+    def _on_nav_btn_enter(self, group: str):
+        if self._nav_leave_timer:
+            try:
+                self.after_cancel(self._nav_leave_timer)
+            except Exception:
+                pass
+            self._nav_leave_timer = None
+
+        if self.floating_nav_popup and self.floating_nav_popup.winfo_exists():
+            if self.floating_nav_group == group:
+                return
+            self.close_floating_nav()
+            self._show_floating_nav(group)
+            return
+
+        if self._nav_hover_timer:
+            try:
+                self.after_cancel(self._nav_hover_timer)
+            except Exception:
+                pass
+        self._nav_hover_timer = self.after(150, lambda: self._show_floating_nav(group))
+
+    def _on_nav_btn_leave(self, group: str):
+        if self._nav_hover_timer:
+            try:
+                self.after_cancel(self._nav_hover_timer)
+            except Exception:
+                pass
+            self._nav_hover_timer = None
+        self._nav_leave_timer = self.after(250, self._check_and_close_floating_nav)
+
+    def _check_and_close_floating_nav(self):
+        self._nav_leave_timer = None
+        if not self.floating_nav_popup or not self.floating_nav_popup.winfo_exists():
+            return
+        try:
+            x = self.winfo_pointerx()
+            y = self.winfo_pointery()
+            px = self.floating_nav_popup.winfo_rootx()
+            py = self.floating_nav_popup.winfo_rooty()
+            pw = self.floating_nav_popup.winfo_width()
+            ph = self.floating_nav_popup.winfo_height()
+            inside_popup = (px <= x <= px + pw) and (py <= y <= py + ph)
+
+            parent_btn = self.nav_parent_btn if self.floating_nav_group == "transform" else self.analyse_parent_btn
+            bx = parent_btn.winfo_rootx()
+            by = parent_btn.winfo_rooty()
+            bw = parent_btn.winfo_width()
+            bh = parent_btn.winfo_height()
+            inside_btn = (bx <= x <= bx + bw) and (by <= y <= by + bh)
+
+            if not inside_popup and not inside_btn:
+                self.close_floating_nav()
+        except Exception:
+            self.close_floating_nav()
+
     def _on_transform_parent_clicked(self):
-        """When Transform parent is clicked, toggle submenu and show overview."""
-        if self.sidebar_collapsed:
-            self.toggle_sidebar(force_state=False)
-            self.toggle_transform_menu(force_state=True)
+        """Clicking Transform opens/toggles its floating submenu."""
+        if self.floating_nav_popup and self.floating_nav_popup.winfo_exists() and self.floating_nav_group == "transform":
+            self.close_floating_nav()
         else:
-            self.toggle_transform_menu()
-        self.select_frame_by_name("dashboard")
+            self._show_floating_nav("transform")
+            if self.current_active_frame not in ("dashboard", "transform", "generate", "absent", "att_summary", "time_leave"):
+                self.select_frame_by_name("dashboard")
 
     def toggle_transform_menu(self, force_state=None):
-        """Toggle the collapsible Transform sub-menu between expanded and collapsed states."""
+        """Toggle Transform floating submenu."""
         if force_state is not None:
             self.transform_menu_expanded = force_state
         else:
             self.transform_menu_expanded = not self.transform_menu_expanded
         self.menu_expanded = self.transform_menu_expanded
-
-        if not self.sidebar_collapsed:
-            if self.transform_menu_expanded:
-                self.sub_menu_frame.grid(row=3, column=0, sticky="ew")
+        if self.transform_menu_expanded:
+            if hasattr(self, "nav_chevron") and self.nav_chevron:
                 self.nav_chevron.configure(text="▾")
-            else:
-                self.sub_menu_frame.grid_remove()
+            self._show_floating_nav("transform")
+            if hasattr(self, "sub_menu_frame") and self.sub_menu_frame:
+                self.sub_menu_frame.grid()
+        else:
+            if hasattr(self, "nav_chevron") and self.nav_chevron:
                 self.nav_chevron.configure(text="▸")
-        # Update active indicator on parent if needed
+            if hasattr(self, "sub_menu_frame") and self.sub_menu_frame:
+                self.sub_menu_frame.grid_remove()
+            if self.floating_nav_group == "transform":
+                self.close_floating_nav()
         self._refresh_nav_active_states()
 
     def _on_analyse_parent_clicked(self):
-        """When Analyse parent is clicked, toggle submenu and show active/default frame."""
-        if self.sidebar_collapsed:
-            self.toggle_sidebar(force_state=False)
-            self.toggle_analyse_menu(force_state=True)
+        """Clicking Analyse opens/toggles its floating submenu."""
+        if self.floating_nav_popup and self.floating_nav_popup.winfo_exists() and self.floating_nav_group == "analyse":
+            self.close_floating_nav()
         else:
-            self.toggle_analyse_menu()
-
-        cur = getattr(self, "current_active_frame", None)
-        if cur not in ("workforce_intelligence", "analyse_time_series", "analyse_upload"):
-            self.select_frame_by_name("workforce_intelligence")
-        else:
-            self.select_frame_by_name(cur)
+            self._show_floating_nav("analyse")
+            if self.current_active_frame not in ("workforce_intelligence", "analyse_time_series", "analyse_upload"):
+                self.select_frame_by_name("workforce_intelligence")
 
     def toggle_analyse_menu(self, force_state=None):
-        """Toggle the collapsible Analyse sub-menu between expanded and collapsed states."""
+        """Toggle Analyse floating submenu."""
         if force_state is not None:
             self.analyse_menu_expanded = force_state
         else:
             self.analyse_menu_expanded = not self.analyse_menu_expanded
-
-        if not self.sidebar_collapsed:
-            if self.analyse_menu_expanded:
-                self.analyse_sub_menu_frame.grid(row=5, column=0, sticky="ew")
+        if self.analyse_menu_expanded:
+            if hasattr(self, "analyse_chevron") and self.analyse_chevron:
                 self.analyse_chevron.configure(text="▾")
-            else:
-                self.analyse_sub_menu_frame.grid_remove()
+            self._show_floating_nav("analyse")
+            if hasattr(self, "analyse_sub_menu_frame") and self.analyse_sub_menu_frame:
+                self.analyse_sub_menu_frame.grid()
+        else:
+            if hasattr(self, "analyse_chevron") and self.analyse_chevron:
                 self.analyse_chevron.configure(text="▸")
-        # Update active indicator on parent if needed
+            if hasattr(self, "analyse_sub_menu_frame") and self.analyse_sub_menu_frame:
+                self.analyse_sub_menu_frame.grid_remove()
+            if self.floating_nav_group == "analyse":
+                self.close_floating_nav()
         self._refresh_nav_active_states()
 
+    def _show_floating_nav(self, group: str):
+        if self._nav_hover_timer:
+            try:
+                self.after_cancel(self._nav_hover_timer)
+            except Exception:
+                pass
+            self._nav_hover_timer = None
+        self.close_floating_nav()
+
+        # Close any open filter dropdown
+        if hasattr(ui, "SearchableDropdown") and ui.SearchableDropdown._active_dropdown:
+            try:
+                ui.SearchableDropdown._active_dropdown.close_dropdown()
+            except Exception:
+                pass
+
+        self.update_idletasks()
+        parent_btn = self.nav_parent_btn if group == "transform" else self.analyse_parent_btn
+
+        rx = self.sidebar.winfo_rootx() + self.sidebar.winfo_width() + 1
+        ry = parent_btn.winfo_rooty()
+
+        scale = 1.0
+        if hasattr(self, "_get_widget_scaling"):
+            try:
+                scale = self._get_widget_scaling()
+            except Exception:
+                scale = 1.0
+
+        if group == "transform":
+            items = [
+                ("dashboard", "Transform Overview", ui.ICON_HOME),
+                ("transform", "KRA Management", ui.ICON_KRA),
+                ("absent", "Absent Management", ui.ICON_ABSENT),
+                ("att_summary", "Attendance Summary", ui.ICON_ATTENDANCE),
+                ("time_leave", "Time and Leave Master", ui.ICON_TIME_LEAVE),
+            ]
+            title = "TRANSFORM"
+            self.transform_menu_expanded = True
+            if hasattr(self, "nav_chevron") and self.nav_chevron:
+                self.nav_chevron.configure(text="▾")
+        else:
+            items = [
+                ("workforce_intelligence", "Workforce Intelligence", ui.ICON_ANALYSE),
+                ("analyse_time_series", "Time Series Analysis", ui.ICON_DASHBOARD),
+                ("analyse_upload", "Upload", ui.ICON_UPLOAD),
+            ]
+            title = "ANALYSE"
+            self.analyse_menu_expanded = True
+            if hasattr(self, "analyse_chevron") and self.analyse_chevron:
+                self.analyse_chevron.configure(text="▾")
+
+        import tkinter as tk
+        top = tk.Toplevel(self)
+        top.overrideredirect(True)
+        top.attributes("-topmost", True)
+        top.configure(bg=ui.COLOR_CARD)
+        self.floating_nav_popup = top
+        self.floating_nav_group = group
+
+        card = ctk.CTkFrame(
+            top,
+            fg_color=ui.COLOR_CARD,
+            border_width=1,
+            border_color=ui.COLOR_BORDER,
+            corner_radius=8,
+        )
+        card.pack(fill="both", expand=True)
+
+        lbl_hdr = ctk.CTkLabel(
+            card,
+            text=title,
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=10, weight="bold"),
+            text_color=ui.COLOR_TEXT_DIM,
+            anchor="w",
+        )
+        lbl_hdr.pack(fill="x", padx=14, pady=(12, 6))
+
+        buttons = []
+        for name, text, icon in items:
+            is_active = (name == self.current_active_frame) or (name == "transform" and self.current_active_frame == "generate")
+            bg_col = ui.COLOR_NAV_ACTIVE if is_active else "transparent"
+            txt_col = ui.COLOR_TEXT if is_active else ui.COLOR_TEXT_SEC
+            font_wt = "bold" if is_active else "normal"
+
+            btn = ctk.CTkButton(
+                card,
+                text=f"  {icon}   {text}",
+                height=36,
+                corner_radius=6,
+                anchor="w",
+                fg_color=bg_col,
+                hover_color=ui.COLOR_NAV_HOVER,
+                text_color=txt_col,
+                font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12, weight=font_wt),
+                command=lambda n=name: self._on_flyout_item_selected(n),
+            )
+            btn.pack(fill="x", padx=8, pady=2)
+            buttons.append(btn)
+
+        ctk.CTkFrame(card, height=4, fg_color="transparent").pack(fill="x", pady=(0, 4))
+
+        # Dynamic size calculation to guarantee zero clipping on all Windows DPI scales
+        top.update_idletasks()
+        req_w = top.winfo_reqwidth()
+        req_h = top.winfo_reqheight()
+
+        popup_w = max(int(270 * scale), req_w + int(8 * scale))
+        popup_h = req_h + int(6 * scale)
+
+        sh = self.winfo_screenheight()
+        if ry + popup_h > sh - 20:
+            ry = max(10, sh - popup_h - 20)
+        if ry < 10:
+            ry = 10
+
+        top.geometry(f"{popup_w}x{popup_h}+{rx}+{ry}")
+
+        # Flyout hover maintenance
+        def _on_flyout_enter(e):
+            if self._nav_leave_timer:
+                try:
+                    self.after_cancel(self._nav_leave_timer)
+                except Exception:
+                    pass
+                self._nav_leave_timer = None
+
+        def _on_flyout_leave(e):
+            if self._nav_leave_timer:
+                try:
+                    self.after_cancel(self._nav_leave_timer)
+                except Exception:
+                    pass
+            self._nav_leave_timer = self.after(250, self._check_and_close_floating_nav)
+
+        card.bind("<Enter>", _on_flyout_enter)
+        card.bind("<Leave>", _on_flyout_leave)
+        for b in buttons:
+            b.bind("<Enter>", _on_flyout_enter)
+            b.bind("<Leave>", _on_flyout_leave)
+
+        # Keyboard bindings
+        top.bind("<Escape>", lambda e: self._on_flyout_escape())
+        top.bind("<Down>", lambda e: self._on_flyout_cycle_focus(buttons, 1))
+        top.bind("<Up>", lambda e: self._on_flyout_cycle_focus(buttons, -1))
+
+        if buttons:
+            buttons[0].focus_set()
+
+        self._nav_outside_bind_id = self.bind("<ButtonPress-1>", self._on_nav_outside_click, add="+")
+
+    def _on_flyout_item_selected(self, name: str):
+        self.select_frame_by_name(name)
+        self.close_floating_nav()
+
+    def _on_flyout_escape(self):
+        parent_btn = self.nav_parent_btn if self.floating_nav_group == "transform" else self.analyse_parent_btn
+        self.close_floating_nav()
+        parent_btn.focus_set()
+
+    def _on_flyout_cycle_focus(self, buttons, direction):
+        focused = None
+        for idx, b in enumerate(buttons):
+            if b.focus_get() == b:
+                focused = idx
+                break
+        if focused is None:
+            nxt = 0 if direction > 0 else len(buttons) - 1
+        else:
+            nxt = (focused + direction) % len(buttons)
+        buttons[nxt].focus_set()
+        return "break"
+
+    def _on_nav_outside_click(self, event):
+        if not self.floating_nav_popup or not self.floating_nav_popup.winfo_exists():
+            return
+        try:
+            x = event.x_root
+            y = event.y_root
+            px = self.floating_nav_popup.winfo_rootx()
+            py = self.floating_nav_popup.winfo_rooty()
+            pw = self.floating_nav_popup.winfo_width()
+            ph = self.floating_nav_popup.winfo_height()
+            inside_popup = (px <= x <= px + pw) and (py <= y <= py + ph)
+
+            parent_btn = self.nav_parent_btn if self.floating_nav_group == "transform" else self.analyse_parent_btn
+            bx = parent_btn.winfo_rootx()
+            by = parent_btn.winfo_rooty()
+            bw = parent_btn.winfo_width()
+            bh = parent_btn.winfo_height()
+            inside_btn = (bx <= x <= bx + bw) and (by <= y <= by + bh)
+
+            if not inside_popup and not inside_btn:
+                self.close_floating_nav()
+        except Exception:
+            self.close_floating_nav()
+
+    def close_floating_nav(self):
+        if self._nav_hover_timer:
+            try:
+                self.after_cancel(self._nav_hover_timer)
+            except Exception:
+                pass
+            self._nav_hover_timer = None
+        if self._nav_leave_timer:
+            try:
+                self.after_cancel(self._nav_leave_timer)
+            except Exception:
+                pass
+            self._nav_leave_timer = None
+        if self._nav_outside_bind_id:
+            try:
+                self.unbind("<ButtonPress-1>", self._nav_outside_bind_id)
+            except Exception:
+                pass
+            self._nav_outside_bind_id = None
+        if self.floating_nav_popup:
+            try:
+                if self.floating_nav_popup.winfo_exists():
+                    self.floating_nav_popup.destroy()
+            except Exception:
+                pass
+            self.floating_nav_popup = None
+        self.floating_nav_group = None
+        self.transform_menu_expanded = False
+        self.analyse_menu_expanded = False
+        self.menu_expanded = False
+        if hasattr(self, "nav_chevron") and self.nav_chevron:
+            self.nav_chevron.configure(text="▸")
+        if hasattr(self, "analyse_chevron") and self.analyse_chevron:
+            self.analyse_chevron.configure(text="▸")
+        if hasattr(self, "sub_menu_frame") and self.sub_menu_frame:
+            self.sub_menu_frame.grid_remove()
+        if hasattr(self, "analyse_sub_menu_frame") and self.analyse_sub_menu_frame:
+            self.analyse_sub_menu_frame.grid_remove()
+
     def _refresh_nav_active_states(self):
-        """Update parent and child navigation highlight based on current screen and submenu states."""
+        """Update parent navigation highlight on the rail based on current screen."""
         name = getattr(self, "current_active_frame", "dashboard")
         transform_children = ("dashboard", "transform", "generate", "absent", "att_summary", "time_leave")
         analyse_children = ("workforce_intelligence", "analyse_time_series", "analyse_dashboard", "analyse_upload")
 
-        is_transform_parent = (name == "dashboard") or (name in transform_children and not self.transform_menu_expanded)
-        is_analyse_parent = (name in analyse_children and not self.analyse_menu_expanded)
+        is_transform_parent = name in transform_children
+        is_analyse_parent = name in analyse_children
 
-        ui.set_nav_active(self.nav_parent_btn, is_transform_parent)
-        ui.set_nav_active(self.analyse_parent_btn, is_analyse_parent)
+        if hasattr(self, "nav_parent_btn") and self.nav_parent_btn:
+            ui.set_nav_active(self.nav_parent_btn, is_transform_parent)
+        if hasattr(self, "analyse_parent_btn") and self.analyse_parent_btn:
+            ui.set_nav_active(self.analyse_parent_btn, is_analyse_parent)
 
         for n, btn in self.sub_nav_btns.items():
             is_active = (n == name) or (name == "generate" and n == "transform")
@@ -374,8 +635,6 @@ class App(ctk.CTk):
             name = "analyse_time_series"
         self.current_active_frame = name
 
-        # Do NOT auto-expand menus on screen selection!
-        # Just update parent and child highlight based on whether the submenu is expanded or collapsed
         self._refresh_nav_active_states()
 
         # Hide all frames

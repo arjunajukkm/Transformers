@@ -52,6 +52,18 @@ def _norm_str(val: Optional[str]) -> Optional[str]:
     return s.lower()
 
 
+def _norm_emp(val: Optional[str]) -> Optional[str]:
+    """Normalize employee filter string to stable employee ID prefix if format is 'EMP001 — Name'."""
+    s = _norm_str(val)
+    if s is None:
+        return None
+    if " — " in s:
+        return s.split(" — ")[0].strip()
+    if " - " in s:
+        return s.split(" - ")[0].strip()
+    return s
+
+
 class WorkforceIntelligenceBridge:
     """
     Decoupled analytical service interface for Transformers 2.0 Workforce Intelligence.
@@ -103,7 +115,7 @@ class WorkforceIntelligenceBridge:
         bu_key = _norm_str(business_unit)
         dept_key = _norm_str(department)
         mgr_key = _norm_str(manager)
-        emp_key = _norm_str(employee)
+        emp_key = _norm_emp(employee)
         dr_key = (date_range[0], date_range[1]) if date_range and len(date_range) == 2 else None
 
         cache_key = (

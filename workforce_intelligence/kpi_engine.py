@@ -70,18 +70,42 @@ def hours_to_duration_str(hrs: Optional[Union[float, int]]) -> str:
     return f"{h}h {m:02d}m"
 
 
+def get_effective_bu(raw_bu_val: Any, raw_dept_val: Any) -> str:
+    """
+    Compute effective Business Unit adhering to enterprise Lending attribution rule:
+    If raw Business Unit is 'Lending', Department acts as the effective Business Unit.
+    Preserves Unknown / Unassigned for missing or empty attributes.
+    """
+    b_str = str(raw_bu_val).strip() if pd.notna(raw_bu_val) else ""
+    if not b_str or b_str.lower() in ("nan", "none", ""):
+        return "Unknown / Unassigned"
+    if b_str.lower() == "lending":
+        d_str = str(raw_dept_val).strip() if pd.notna(raw_dept_val) else ""
+        if d_str and d_str.lower() not in ("nan", "none", ""):
+            return d_str
+    return b_str
+
+
 def ensure_clean_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     """
     Ensure normalized helper columns exist on the DataFrame without mutating original.
-    Returns df if already normalized, or a normalized copy.
+    Returns df if already normalized, or a normalized copy with _eff_bu.
     """
     if df is None or len(df) == 0:
         return pd.DataFrame()
     if "_emp_num" in df.columns and "_bu" in df.columns and "_att_type" in df.columns:
+        if "_eff_bu" not in df.columns and "_dept" in df.columns:
+            df = df.copy()
+            df["_eff_bu"] = [get_effective_bu(b, d) for b, d in zip(df["_bu"], df["_dept"])]
         return df
 
     from storage.snapshot_service import normalize_dataset_dataframe
-    return normalize_dataset_dataframe(df)
+    work_df = normalize_dataset_dataframe(df)
+    if "_eff_bu" not in work_df.columns:
+        b_series = work_df["_bu"] if "_bu" in work_df.columns else ["" for _ in range(len(work_df))]
+        d_series = work_df["_dept"] if "_dept" in work_df.columns else ["" for _ in range(len(work_df))]
+        work_df["_eff_bu"] = [get_effective_bu(b, d) for b, d in zip(b_series, d_series)]
+    return work_df
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -246,8 +270,20 @@ def compute_wfh_allowance_monthly(
 
             # Calculate WFH days within the scope_date_range if provided
             if scope_date_range and len(scope_date_range) == 2 and scope_date_range[0] and scope_date_range[1]:
-                start_d, end_d = scope_date_range
-                s_mask = grp["_date"].apply(lambda d: start_d <= d <= end_d if isinstance(d, (date, datetime)) else False)
+                raw_sd, raw_ed = scope_date_range
+                sd = raw_sd.date() if isinstance(raw_sd, datetime) else (tsa.parse_date_value(raw_sd) if isinstance(raw_sd, str) else raw_sd)
+                ed = raw_ed.date() if isinstance(raw_ed, datetime) else (tsa.parse_date_value(raw_ed) if isinstance(raw_ed, str) else raw_ed)
+                def _in_scope_d(d):
+                    if d is None or pd.isna(d):
+                        return False
+                    if isinstance(d, datetime):
+                        d = d.date()
+                    elif isinstance(d, str):
+                        d = tsa.parse_date_value(d)
+                    if isinstance(d, date) and sd and ed:
+                        return sd <= d <= ed
+                    return False
+                s_mask = grp["_date"].apply(_in_scope_d)
                 wfh_in_scope = float(grp.loc[s_mask, "_clean_qty"].sum())
                 scoped_rec_ids = grp.loc[s_mask, "record_id"].tolist() if "record_id" in grp.columns else []
             else:
@@ -693,26 +729,104 @@ def compute_workforce_intelligence_bundle(
     filtered = work_df.copy()
 
     # Apply global filters
-    if business_unit and business_unit not in ("All", "All Business Units", ""):
-        filtered = filtered[filtered["_bu"].str.lower() == business_unit.strip().lower()]
+    if business_unit and str(business_unit).strip() not in ("All", "All Business Units", ""):
+        bu_clean = str(business_unit).strip().lower()
+        if bu_clean in ("unknown", "unknown / unassigned", "unassigned"):
+            filtered = filtered[
+                filtered["_eff_bu"].astype(str).str.strip().str.lower().isin(("unknown / unassigned", "unknown", "unassigned", "", "nan", "none"))
+            ]
+        else:
+            filtered = filtered[
+                (filtered["_eff_bu"].astype(str).str.strip().str.lower() == bu_clean) |
+                (filtered["_bu"].astype(str).str.strip().str.lower() == bu_clean)
+            ]
 
-    if department and department not in ("All", "All Departments", ""):
-        filtered = filtered[filtered["_dept"].str.lower() == department.strip().lower()]
+    if department and str(department).strip() not in ("All", "All Departments", ""):
+        dept_clean = str(department).strip().lower()
+        if dept_clean in ("unknown", "unknown / unassigned", "unassigned"):
+            filtered = filtered[
+                filtered["_dept"].isna() |
+                filtered["_dept"].astype(str).str.strip().str.lower().isin(("unknown / unassigned", "unknown", "unassigned", "", "nan", "none"))
+            ]
+        else:
+            filtered = filtered[filtered["_dept"].astype(str).str.strip().str.lower() == dept_clean]
 
-    if manager and manager not in ("All", "All Managers", "All Reporting Managers", ""):
-        filtered = filtered[filtered["_rm"].str.lower() == manager.strip().lower()]
+    if manager and str(manager).strip() not in ("All", "All Managers", "All Reporting Managers", ""):
+        mgr_clean = str(manager).strip().lower()
+        if mgr_clean in ("unknown", "unknown / unassigned", "unassigned"):
+            filtered = filtered[
+                filtered["_rm"].isna() |
+                filtered["_rm"].astype(str).str.strip().str.lower().isin(("unknown / unassigned", "unknown", "unassigned", "", "nan", "none"))
+            ]
+        else:
+            filtered = filtered[filtered["_rm"].astype(str).str.strip().str.lower() == mgr_clean]
 
-    if employee and employee not in ("All", "All Employees", ""):
-        emp_clean = employee.strip().lower()
+    if employee and str(employee).strip() not in ("All", "All Employees", ""):
+        emp_raw = str(employee).strip()
+        # Extract stable employee ID prefix if format is "EMP001 — Employee Name"
+        if " — " in emp_raw:
+            emp_id_key = emp_raw.split(" — ")[0].strip().lower()
+        elif " - " in emp_raw:
+            emp_id_key = emp_raw.split(" - ")[0].strip().lower()
+        else:
+            emp_id_key = emp_raw.lower()
+
         filtered = filtered[
-            (filtered["_emp_num"].str.lower() == emp_clean) |
-            (filtered["_emp_name"].str.lower() == emp_clean)
+            (filtered["_emp_num"].astype(str).str.strip().str.lower() == emp_id_key) |
+            (filtered["_emp_name"].astype(str).str.strip().str.lower() == emp_raw.lower())
         ]
 
+    clean_date_range = None
     if date_range and len(date_range) == 2:
-        start_d, end_d = date_range
-        if start_d and end_d and "_date" in filtered.columns:
-            filtered = filtered[filtered["_date"].apply(lambda d: start_d <= d <= end_d if isinstance(d, (date, datetime)) else False)]
+        raw_start, raw_end = date_range
+        if raw_start is not None and raw_end is not None:
+            # Normalize start and end to datetime.date
+            start_d = raw_start
+            end_d = raw_end
+            if isinstance(start_d, datetime):
+                start_d = start_d.date()
+            elif isinstance(start_d, str) and start_d not in ("", "nan", "None"):
+                try:
+                    start_d = tsa.parse_date_value(start_d)
+                except Exception:
+                    start_d = None
+            elif not isinstance(start_d, date):
+                start_d = None
+
+            if isinstance(end_d, datetime):
+                end_d = end_d.date()
+            elif isinstance(end_d, str) and end_d not in ("", "nan", "None"):
+                try:
+                    end_d = tsa.parse_date_value(end_d)
+                except Exception:
+                    end_d = None
+            elif not isinstance(end_d, date):
+                end_d = None
+
+            clean_date_range = None
+            if start_d is not None and end_d is not None:
+                # Chronological check: start date cannot be after end date
+                if start_d > end_d:
+                    return _empty_bundle(exception_threshold, wfh_allowance)
+
+                clean_date_range = (start_d, end_d)
+
+                if "_date" in filtered.columns:
+                    def _in_date_range(d_val) -> bool:
+                        if d_val is None or pd.isna(d_val):
+                            return False
+                        if isinstance(d_val, datetime):
+                            d_val = d_val.date()
+                        elif isinstance(d_val, str) and d_val not in ("", "nan", "None"):
+                            try:
+                                d_val = tsa.parse_date_value(d_val)
+                            except Exception:
+                                return False
+                        if isinstance(d_val, date):
+                            return start_d <= d_val <= end_d
+                        return False
+
+                    filtered = filtered[filtered["_date"].apply(_in_date_range)]
 
     total_records = len(filtered)
     if total_records == 0:
@@ -795,15 +909,7 @@ def compute_workforce_intelligence_bundle(
     daily_att_dict: Dict[Any, Dict[str, Any]] = {}
     bu_dict: Dict[str, Dict[str, Any]] = {}
 
-    def _get_eff_bu(raw_bu_val: Any, raw_dept_val: Any) -> str:
-        b_str = str(raw_bu_val).strip() if pd.notna(raw_bu_val) else ""
-        if not b_str or b_str.lower() in ("nan", "none", ""):
-            return "Unknown / Unassigned"
-        if b_str.lower() == "lending":
-            d_str = str(raw_dept_val).strip() if pd.notna(raw_dept_val) else ""
-            if d_str and d_str.lower() not in ("nan", "none", ""):
-                return d_str
-        return b_str
+    _get_eff_bu = get_effective_bu
 
     def _ensure_bu(bu_name: str) -> Dict[str, Any]:
         if bu_name not in bu_dict:
@@ -1360,7 +1466,7 @@ def compute_workforce_intelligence_bundle(
     wfh_monthly_bundle = compute_wfh_allowance_monthly(
         filtered,
         allowance_days=wfh_allowance,
-        scope_date_range=date_range,
+        scope_date_range=clean_date_range,
         full_dataset_df=work_df,
     )
 

@@ -31,7 +31,7 @@ Implements Step 21 & Step 23 requirements:
 6. Pure CustomTkinter/Tkinter desktop implementation (zero Qt, zero web dependencies).
 """
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 import math
 from pathlib import Path
 import queue
@@ -42,6 +42,7 @@ import customtkinter as ctk
 import pandas as pd
 
 from storage import AnalyticalSnapshot, snapshot_service
+import time_series_analysis as tsa
 import ui_components as ui
 from workforce_intelligence.snapshot_bridge import workforce_bridge
 
@@ -170,7 +171,7 @@ class ExecutiveKPICard(ctk.CTkFrame):
     """
     Styled, high-contrast KPI metric card for Executive Overview.
     Presents card number/title, primary value, secondary percentage/qualification,
-    and operational context footnote.
+    and operational context footnote with responsive text wrapping and managed padding.
     """
 
     def __init__(
@@ -195,61 +196,91 @@ class ExecutiveKPICard(ctk.CTkFrame):
         self.accent_color = accent_color
         self.default_unit = default_unit
         self.tooltip_text = tooltip_text
+        self._last_cfg_w: int = 0
 
         self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(0, weight=0)
+        self.grid_rowconfigure(1, weight=0)
+        self.grid_rowconfigure(2, weight=0)
+        self.grid_rowconfigure(3, weight=1)
 
         # Header: Number & Title with color dot indicator
         h_frame = ctk.CTkFrame(self, fg_color="transparent")
-        h_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=(6, 2))
+        h_frame.grid(row=0, column=0, sticky="ew", padx=7, pady=(5, 2))
         h_frame.grid_columnconfigure(1, weight=1)
 
         dot = ctk.CTkLabel(
             h_frame,
             text="●",
-            font=ctk.CTkFont(size=10),
+            font=ctk.CTkFont(size=11),
             text_color=accent_color,
             width=10,
         )
-        dot.grid(row=0, column=0, sticky="w", padx=(0, 3))
+        dot.grid(row=0, column=0, sticky="nw", padx=(0, 3), pady=(2, 0))
 
         self.lbl_title = ctk.CTkLabel(
             h_frame,
             text=title,
-            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=10, weight="bold"),
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11, weight="bold"),
             text_color=ui.COLOR_TEXT_DIM,
             anchor="w",
+            justify="left",
+            wraplength=140,
         )
-        self.lbl_title.grid(row=0, column=1, sticky="w")
+        self.lbl_title.grid(row=0, column=1, sticky="ew")
 
         # Primary Value Label
         self.lbl_val = ctk.CTkLabel(
             self,
             text="—",
-            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=19, weight="bold"),
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=22, weight="bold"),
             text_color=ui.COLOR_TEXT,
             anchor="w",
+            justify="left",
+            wraplength=160,
         )
-        self.lbl_val.grid(row=1, column=0, sticky="w", padx=10, pady=(0, 1))
+        self.lbl_val.grid(row=1, column=0, sticky="ew", padx=7, pady=(0, 1))
 
         # Secondary / Percentage Label
         self.lbl_sub = ctk.CTkLabel(
             self,
             text="",
-            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=10, weight="bold"),
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11, weight="bold"),
             text_color=accent_color,
             anchor="w",
+            justify="left",
+            wraplength=160,
         )
-        self.lbl_sub.grid(row=2, column=0, sticky="w", padx=10, pady=(0, 1))
+        self.lbl_sub.grid(row=2, column=0, sticky="ew", padx=7, pady=(0, 1))
 
         # Footnote / Explanation Label
         self.lbl_note = ctk.CTkLabel(
             self,
             text=tooltip_text,
-            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=9),
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=10),
             text_color=ui.COLOR_TEXT_SEC,
             anchor="w",
+            justify="left",
+            wraplength=160,
         )
-        self.lbl_note.grid(row=3, column=0, sticky="w", padx=10, pady=(0, 6))
+        self.lbl_note.grid(row=3, column=0, sticky="ew", padx=7, pady=(0, 5))
+
+        self.bind("<Configure>", self._on_card_configure)
+
+    def _on_card_configure(self, event):
+        w = event.width
+        if abs(w - self._last_cfg_w) < 4:
+            return
+        self._last_cfg_w = w
+        scaling = self._get_widget_scaling() if hasattr(self, "_get_widget_scaling") else 1.0
+        unscaled_w = w / (scaling if scaling > 0 else 1.0)
+        inner_w = max(90, int(unscaled_w - 14))
+        title_w = max(75, int(inner_w - 14))
+
+        self.lbl_title.configure(wraplength=title_w)
+        self.lbl_val.configure(wraplength=inner_w)
+        self.lbl_sub.configure(wraplength=inner_w)
+        self.lbl_note.configure(wraplength=inner_w)
 
     def update_values(
         self,
@@ -306,7 +337,7 @@ class AttendanceCompositionWidget(ctk.CTkFrame):
         self.lbl_title = ctk.CTkLabel(
             t_box,
             text="Attendance Composition",
-            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11, weight="bold"),
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12, weight="bold"),
             text_color=ui.COLOR_TEXT,
             anchor="w",
         )
@@ -315,7 +346,7 @@ class AttendanceCompositionWidget(ctk.CTkFrame):
         self.lbl_sub = ctk.CTkLabel(
             t_box,
             text="Quantity-weighted day equivalents & % of composition denominator",
-            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=8),
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=9),
             text_color=ui.COLOR_TEXT_SEC,
             anchor="w",
         )
@@ -324,7 +355,7 @@ class AttendanceCompositionWidget(ctk.CTkFrame):
         self.lbl_denom_badge = ctk.CTkLabel(
             hdr,
             text="",
-            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=9, weight="bold"),
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=10, weight="bold"),
             text_color=ui.COLOR_ACCENT,
             anchor="e",
         )
@@ -333,7 +364,7 @@ class AttendanceCompositionWidget(ctk.CTkFrame):
         # Stacked bar canvas
         self.bar_canvas = tk.Canvas(
             self,
-            height=16,
+            height=18,
             bg=ui.COLOR_CARD,
             bd=0,
             highlightthickness=0,
@@ -350,7 +381,7 @@ class AttendanceCompositionWidget(ctk.CTkFrame):
         self.lbl_empty = ctk.CTkLabel(
             self,
             text="No attendance data available in active dataset",
-            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11),
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12),
             text_color=ui.COLOR_TEXT_DIM,
         )
 
@@ -458,7 +489,7 @@ class AttendanceCompositionWidget(ctk.CTkFrame):
 
             dot_text = "⚠️" if (is_unclass and days > 0) else "●"
             dot_color = ui.COLOR_WARNING if (is_unclass and days > 0) else color
-            dot_size = 7 if dot_text == "●" else 9
+            dot_size = 8 if dot_text == "●" else 10
 
             lbl_dot = ctk.CTkLabel(
                 cell,
@@ -473,7 +504,7 @@ class AttendanceCompositionWidget(ctk.CTkFrame):
             lbl_name = ctk.CTkLabel(
                 cell,
                 text=short_name,
-                font=ctk.CTkFont(family=ui.FONT_FAMILY, size=9, weight="bold"),
+                font=ctk.CTkFont(family=ui.FONT_FAMILY, size=10, weight="bold"),
                 text_color=cat_col,
                 anchor="w",
             )
@@ -484,7 +515,7 @@ class AttendanceCompositionWidget(ctk.CTkFrame):
             lbl_val = ctk.CTkLabel(
                 cell,
                 text=val_str,
-                font=ctk.CTkFont(family=ui.FONT_FAMILY, size=8),
+                font=ctk.CTkFont(family=ui.FONT_FAMILY, size=9),
                 text_color=val_col,
                 anchor="w",
             )
@@ -528,7 +559,7 @@ class DailyAttendanceTrendWidget(ctk.CTkFrame):
         self.lbl_title = ctk.CTkLabel(
             t_box,
             text="Daily Attendance Trend",
-            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11, weight="bold"),
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12, weight="bold"),
             text_color=ui.COLOR_TEXT,
             anchor="w",
         )
@@ -536,7 +567,7 @@ class DailyAttendanceTrendWidget(ctk.CTkFrame):
         self.lbl_subtitle = ctk.CTkLabel(
             t_box,
             text="Present • WFH • Leave trends by calendar date",
-            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=8),
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=9),
             text_color=ui.COLOR_TEXT_SEC,
             anchor="w",
         )
@@ -549,7 +580,7 @@ class DailyAttendanceTrendWidget(ctk.CTkFrame):
             ctk.CTkLabel(
                 leg,
                 text=f"● {s_name}",
-                font=ctk.CTkFont(family=ui.FONT_FAMILY, size=9, weight="bold"),
+                font=ctk.CTkFont(family=ui.FONT_FAMILY, size=10, weight="bold"),
                 text_color=s_col,
             ).pack(side="left", padx=(6, 0))
 
@@ -557,9 +588,9 @@ class DailyAttendanceTrendWidget(ctk.CTkFrame):
         self.btn_expand = ctk.CTkButton(
             hdr,
             text="⛶",
-            width=26,
-            height=22,
-            font=ctk.CTkFont(size=13),
+            width=28,
+            height=24,
+            font=ctk.CTkFont(size=14),
             fg_color="transparent",
             text_color=ui.COLOR_TEXT_SEC,
             hover_color=ui.COLOR_CARD_HOVER,
@@ -616,7 +647,7 @@ class DailyAttendanceTrendWidget(ctk.CTkFrame):
         self.lbl_hover_info = ctk.CTkLabel(
             self,
             text="Hover over chart line to inspect daily values",
-            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=8),
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=9),
             text_color=ui.COLOR_TEXT_DIM,
             anchor="w",
         )
@@ -626,7 +657,7 @@ class DailyAttendanceTrendWidget(ctk.CTkFrame):
         self.lbl_empty = ctk.CTkLabel(
             self,
             text="No daily attendance records in active dataset",
-            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11),
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12),
             text_color=ui.COLOR_TEXT_DIM,
         )
 
@@ -656,6 +687,13 @@ class DailyAttendanceTrendWidget(ctk.CTkFrame):
     def update_data(self, trend_data: List[Dict[str, Any]], reporting_period: str = ""):
         self._trend_data = trend_data or []
         self._reporting_period = reporting_period
+
+        if self._expanded_dialog is not None and self._expanded_dialog.winfo_exists():
+            try:
+                self._expanded_dialog.update_data(self._trend_data, reporting_period=self._reporting_period)
+            except Exception:
+                pass
+
         if not self._trend_data:
             self.reset()
             return
@@ -718,14 +756,14 @@ class DailyAttendanceTrendWidget(ctk.CTkFrame):
         # Draw Y-axis scale on fixed y_axis_canvas
         # Unit label at top right of Y-axis canvas
         self.y_axis_canvas.create_text(
-            26, 5.0, text="days", anchor="e", fill=ui.COLOR_TEXT_DIM, font=(ui.FONT_FAMILY, 7)
+            26, 5.0, text="days", anchor="e", fill=ui.COLOR_TEXT_DIM, font=(ui.FONT_FAMILY, 8)
         )
         grid_fracs = [0.0, 0.5, 1.0] if max_val <= 6 else [0.0, 0.333, 0.667, 1.0]
         for frac in grid_fracs:
             y = pad_top + frac * h_avail
             val_at_y = int(round(max_val * (1.0 - frac)))
             self.y_axis_canvas.create_text(
-                22, y, text=f"{val_at_y}", anchor="e", fill=ui.COLOR_TEXT_DIM, font=(ui.FONT_FAMILY, 8)
+                22, y, text=f"{val_at_y}", anchor="e", fill=ui.COLOR_TEXT_DIM, font=(ui.FONT_FAMILY, 9)
             )
             # Extension tick line connecting cleanly with chart grid line
             self.y_axis_canvas.create_line(23, y, 28, y, fill=ui.COLOR_BORDER, width=1)
@@ -826,7 +864,7 @@ class DailyAttendanceTrendWidget(ctk.CTkFrame):
                     text=d_lbl,
                     anchor=anchor,
                     fill=ui.COLOR_TEXT_DIM,
-                    font=(ui.FONT_FAMILY, 8),
+                    font=(ui.FONT_FAMILY, 9),
                 )
 
     def _on_canvas_motion(self, event):
@@ -916,17 +954,18 @@ class ExpandedDailyAttendanceTrendDialog(ctk.CTkToplevel):
         ctk.CTkLabel(
             t_box,
             text="Daily Attendance Trend — Expanded Analysis",
-            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=15, weight="bold"),
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=16, weight="bold"),
             text_color=ui.COLOR_TEXT,
             anchor="w",
         ).pack(anchor="w")
-        ctk.CTkLabel(
+        self.lbl_subtitle = ctk.CTkLabel(
             t_box,
             text=f"Present • WFH • Leave quantity-weighted daily time series{period_str}",
-            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11),
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12),
             text_color=ui.COLOR_TEXT_SEC,
             anchor="w",
-        ).pack(anchor="w")
+        )
+        self.lbl_subtitle.pack(anchor="w")
 
         r_box = ctk.CTkFrame(hdr, fg_color="transparent")
         r_box.grid(row=0, column=1, sticky="e", padx=20, pady=10)
@@ -959,9 +998,175 @@ class ExpandedDailyAttendanceTrendDialog(ctk.CTkToplevel):
         self.bind("<Escape>", lambda e: self._on_close())
         self.focus_force()
 
+    def update_data(self, trend_data: List[Dict[str, Any]], reporting_period: str = ""):
+        """Update expanded chart view live with new filtered trend data."""
+        self._trend_data = trend_data or []
+        self._reporting_period = reporting_period
+        period_str = f" • Reporting Period: {reporting_period}" if reporting_period else ""
+        if hasattr(self, "lbl_subtitle"):
+            self.lbl_subtitle.configure(text=f"Present • WFH • Leave quantity-weighted daily time series{period_str}")
+        if hasattr(self, "expanded_trend"):
+            self.expanded_trend.update_data(self._trend_data, reporting_period=self._reporting_period)
+
     def _on_close(self):
         if hasattr(self.parent_widget, "_expanded_dialog"):
             self.parent_widget._expanded_dialog = None
+        self.destroy()
+
+
+
+class DateRangePickerDialog(ctk.CTkToplevel):
+    """
+    Compact modal dialog for selecting custom start and end dates from observed dataset dates.
+    Validates start_date <= end_date. Prevents duplicate dialogs.
+    """
+    def __init__(
+        self,
+        parent_view: "WorkforceDashboardView",
+        available_dates: List[date],
+        current_start: Optional[date] = None,
+        current_end: Optional[date] = None,
+        on_apply: Optional[Any] = None,
+    ):
+        super().__init__()
+        self.parent_view = parent_view
+        self._available_dates = sorted(available_dates)
+        self._on_apply = on_apply
+        self._date_strings = [d.isoformat() for d in self._available_dates]
+
+        self.title("Select Custom Date Range")
+        self.geometry("380x250")
+        self.resizable(False, False)
+        self.configure(fg_color=ui.COLOR_BG)
+
+        # Center on parent_view
+        self.update_idletasks()
+        try:
+            x = max(50, parent_view.winfo_rootx() + 150)
+            y = max(50, parent_view.winfo_rooty() + 100)
+            self.geometry(f"+{x}+{y}")
+        except Exception:
+            pass
+
+        # Content frame
+        frame = ctk.CTkFrame(self, fg_color=ui.COLOR_CARD, corner_radius=8)
+        frame.pack(fill="both", expand=True, padx=16, pady=16)
+
+        ctk.CTkLabel(
+            frame,
+            text="Custom Date Range",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=14, weight="bold"),
+            text_color=ui.COLOR_TEXT,
+        ).pack(anchor="w", padx=16, pady=(12, 6))
+
+        # Start Date row
+        f_start = ctk.CTkFrame(frame, fg_color="transparent")
+        f_start.pack(fill="x", padx=16, pady=4)
+        ctk.CTkLabel(
+            f_start,
+            text="Start Date:",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12),
+            text_color=ui.COLOR_TEXT_SEC,
+            width=80,
+            anchor="w",
+        ).pack(side="left")
+
+        default_start_str = current_start.isoformat() if current_start else (self._date_strings[0] if self._date_strings else "")
+        self.combo_start = ctk.CTkComboBox(
+            f_start,
+            values=self._date_strings or ["N/A"],
+            height=28,
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12),
+        )
+        if default_start_str in self._date_strings:
+            self.combo_start.set(default_start_str)
+        self.combo_start.pack(side="left", fill="x", expand=True)
+
+        # End Date row
+        f_end = ctk.CTkFrame(frame, fg_color="transparent")
+        f_end.pack(fill="x", padx=16, pady=4)
+        ctk.CTkLabel(
+            f_end,
+            text="End Date:",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12),
+            text_color=ui.COLOR_TEXT_SEC,
+            width=80,
+            anchor="w",
+        ).pack(side="left")
+
+        default_end_str = current_end.isoformat() if current_end else (self._date_strings[-1] if self._date_strings else "")
+        self.combo_end = ctk.CTkComboBox(
+            f_end,
+            values=self._date_strings or ["N/A"],
+            height=28,
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12),
+        )
+        if default_end_str in self._date_strings:
+            self.combo_end.set(default_end_str)
+        self.combo_end.pack(side="left", fill="x", expand=True)
+
+        # Error / Validation Label
+        self.lbl_error = ctk.CTkLabel(
+            frame,
+            text="",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11),
+            text_color=ui.COLOR_ERROR,
+            anchor="w",
+        )
+        self.lbl_error.pack(fill="x", padx=16, pady=(4, 2))
+
+        # Button row
+        btn_box = ctk.CTkFrame(frame, fg_color="transparent")
+        btn_box.pack(fill="x", padx=16, pady=(6, 12))
+
+        btn_cancel = ui.create_secondary_button(
+            btn_box,
+            "Cancel",
+            command=self._on_close,
+            width=70,
+            height=26,
+        )
+        btn_cancel.pack(side="right", padx=(6, 0))
+
+        btn_apply = ui.create_primary_button(
+            btn_box,
+            "Apply Range",
+            command=self._on_apply_clicked,
+            width=90,
+            height=26,
+        )
+        btn_apply.pack(side="right")
+
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.bind("<Escape>", lambda e: self._on_close())
+        self.focus_force()
+
+    def _on_apply_clicked(self):
+        s_val = self.combo_start.get().strip()
+        e_val = self.combo_end.get().strip()
+        parsed_s = tsa.parse_date_value(s_val)
+        parsed_e = tsa.parse_date_value(e_val)
+
+        if not parsed_s or not parsed_e:
+            self.lbl_error.configure(text="Invalid date selection.")
+            return
+
+        if parsed_s > parsed_e:
+            self.lbl_error.configure(text="Start date cannot be after end date.")
+            return
+
+        if self._on_apply:
+            self._on_apply(parsed_s, parsed_e)
+        self._on_close()
+
+    def _on_close(self):
+        if hasattr(self.parent_view, "_date_picker_dialog"):
+            self.parent_view._date_picker_dialog = None
+        # If user cancelled and custom range was not set, revert combobox display
+        if hasattr(self.parent_view, "combo_date_range") and hasattr(self.parent_view, "_filter_state"):
+            cur_preset = self.parent_view._filter_state.get("date_preset", "All Dates")
+            if cur_preset != "Custom Range":
+                self.parent_view.combo_date_range.set(cur_preset)
         self.destroy()
 
 
@@ -971,10 +1176,11 @@ class DataQualityDetailDialog(ctk.CTkToplevel):
     unclassified records, conflicting employee-days, and attendance composition reconciliation.
     Easily closed via Close button or Escape key.
     """
-    def __init__(self, parent_view: "WorkforceDashboardView", bundle: Dict[str, Any]):
+    def __init__(self, parent_view: "WorkforceDashboardView", bundle: Dict[str, Any], full_bundle: Optional[Dict[str, Any]] = None):
         super().__init__()
         self.parent_view = parent_view
         self._bundle = bundle or {}
+        self._full_bundle = full_bundle or self._bundle
 
         self.title("Data Quality & Governance Diagnostics")
         self.geometry("620x520")
@@ -1005,14 +1211,14 @@ class DataQualityDetailDialog(ctk.CTkToplevel):
         ctk.CTkLabel(
             t_box,
             text="Data Quality Diagnostics & Reconciliation",
-            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=15, weight="bold"),
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=16, weight="bold"),
             text_color=ui.COLOR_TEXT,
             anchor="w",
         ).pack(anchor="w")
         ctk.CTkLabel(
             t_box,
             text="Comprehensive validation findings for active workforce intelligence dataset",
-            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11),
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12),
             text_color=ui.COLOR_TEXT_SEC,
             anchor="w",
         ).pack(anchor="w")
@@ -1060,7 +1266,7 @@ class DataQualityDetailDialog(ctk.CTkToplevel):
 
         ctk.CTkLabel(c1, text=icon_txt, font=ctk.CTkFont(size=24)).grid(row=0, column=0, rowspan=2, padx=14, pady=12)
         ctk.CTkLabel(
-            c1, text=status_txt, font=ctk.CTkFont(family=ui.FONT_FAMILY, size=13, weight="bold"),
+            c1, text=status_txt, font=ctk.CTkFont(family=ui.FONT_FAMILY, size=14, weight="bold"),
             text_color=status_col, anchor="w",
         ).grid(row=0, column=1, sticky="w", pady=(10, 0))
         desc_txt = (
@@ -1069,7 +1275,7 @@ class DataQualityDetailDialog(ctk.CTkToplevel):
             "Certain records contain unclassified statuses or multiple contradictory entries on the same employee-date."
         )
         ctk.CTkLabel(
-            c1, text=desc_txt, font=ctk.CTkFont(family=ui.FONT_FAMILY, size=10),
+            c1, text=desc_txt, font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11),
             text_color=ui.COLOR_TEXT_SEC, anchor="w", wraplength=480,
         ).grid(row=1, column=1, sticky="w", pady=(0, 10))
 
@@ -1079,7 +1285,7 @@ class DataQualityDetailDialog(ctk.CTkToplevel):
         c2.grid_columnconfigure(0, weight=1)
 
         ctk.CTkLabel(
-            c2, text="Diagnostic Findings", font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12, weight="bold"),
+            c2, text="Diagnostic Findings", font=ctk.CTkFont(family=ui.FONT_FAMILY, size=13, weight="bold"),
             text_color=ui.COLOR_TEXT, anchor="w",
         ).pack(anchor="w", padx=14, pady=(10, 6))
 
@@ -1091,17 +1297,25 @@ class DataQualityDetailDialog(ctk.CTkToplevel):
             ("Unresolved Attendance Days", f"{_fmt_days(unclass_days)} ({unclass_pct:.1f}%)",
              "Total day equivalents left unresolved in the attendance composition denominator."),
         ]
+        full_unclass = self._full_bundle.get("unclassified_records_count", 0)
+        full_conflicts = self._full_bundle.get("conflicting_employee_days_count", 0)
+        if full_unclass != unclass_cnt or full_conflicts != conflicts_cnt:
+            findings.append((
+                "Dataset-Wide Quality Baseline",
+                f"{full_conflicts:,} conflicts • {full_unclass:,} unclassified",
+                "Total unresolved data quality findings detected across the entire uploaded dataset.",
+            ))
         for f_title, f_val, f_desc in findings:
             f_row = ctk.CTkFrame(c2, fg_color="transparent")
             f_row.pack(fill="x", padx=14, pady=4)
             f_row.grid_columnconfigure(0, weight=1)
             f_row.grid_columnconfigure(1, weight=0)
 
-            ctk.CTkLabel(f_row, text=f_title, font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11, weight="bold"),
+            ctk.CTkLabel(f_row, text=f_title, font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12, weight="bold"),
                          text_color=ui.COLOR_TEXT).grid(row=0, column=0, sticky="w")
-            ctk.CTkLabel(f_row, text=f_val, font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11, weight="bold"),
+            ctk.CTkLabel(f_row, text=f_val, font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12, weight="bold"),
                          text_color=ui.COLOR_WARNING if ("0" not in f_val and f_val != "0.0") else ui.COLOR_SUCCESS).grid(row=0, column=1, sticky="e")
-            ctk.CTkLabel(f_row, text=f_desc, font=ctk.CTkFont(family=ui.FONT_FAMILY, size=9),
+            ctk.CTkLabel(f_row, text=f_desc, font=ctk.CTkFont(family=ui.FONT_FAMILY, size=10),
                          text_color=ui.COLOR_TEXT_DIM, wraplength=480, anchor="w").grid(row=1, column=0, columnspan=2, sticky="w", pady=(1, 4))
 
         # 3. Attendance Composition Reconciliation Card
@@ -1109,7 +1323,7 @@ class DataQualityDetailDialog(ctk.CTkToplevel):
         c3.pack(fill="x", pady=(0, 10))
 
         ctk.CTkLabel(
-            c3, text="Attendance Reconciliation", font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12, weight="bold"),
+            c3, text="Attendance Reconciliation", font=ctk.CTkFont(family=ui.FONT_FAMILY, size=13, weight="bold"),
             text_color=ui.COLOR_TEXT, anchor="w",
         ).pack(anchor="w", padx=14, pady=(10, 6))
 
@@ -1121,9 +1335,9 @@ class DataQualityDetailDialog(ctk.CTkToplevel):
         for r_name, r_val in recon_items:
             r_frame = ctk.CTkFrame(c3, fg_color="transparent")
             r_frame.pack(fill="x", padx=14, pady=2)
-            ctk.CTkLabel(r_frame, text=r_name, font=ctk.CTkFont(family=ui.FONT_FAMILY, size=10),
+            ctk.CTkLabel(r_frame, text=r_name, font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11),
                          text_color=ui.COLOR_TEXT_SEC).pack(side="left")
-            ctk.CTkLabel(r_frame, text=r_val, font=ctk.CTkFont(family=ui.FONT_FAMILY, size=10, weight="bold"),
+            ctk.CTkLabel(r_frame, text=r_val, font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11, weight="bold"),
                          text_color=ui.COLOR_TEXT).pack(side="right")
 
         # 4. Governance & Attendance Exceptions Notice Card
@@ -1136,7 +1350,7 @@ class DataQualityDetailDialog(ctk.CTkToplevel):
                 f"Attendance Exceptions ({excp_days:,} Regularized employee-days) represent approved operational swipe regularizations. "
                 f"They are legitimate attendance events tracked for policy governance, and are separate from data-quality validation findings."
             ),
-            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=9),
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=10),
             text_color=ui.COLOR_TEXT_DIM,
             justify="left",
             anchor="w",
@@ -1214,7 +1428,7 @@ class BusinessUnitComparisonTableWidget(ctk.CTkFrame):
         self.lbl_title = ctk.CTkLabel(
             t_box,
             text="Business Unit Attendance Comparison",
-            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11, weight="bold"),
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12, weight="bold"),
             text_color=ui.COLOR_TEXT,
             anchor="w",
         )
@@ -1223,7 +1437,7 @@ class BusinessUnitComparisonTableWidget(ctk.CTkFrame):
         self.lbl_sub = ctk.CTkLabel(
             t_box,
             text="Organizational breakdown with effective BU mapping & Regularized exception rates",
-            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=8),
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=9),
             text_color=ui.COLOR_TEXT_SEC,
             anchor="w",
         )
@@ -1232,7 +1446,7 @@ class BusinessUnitComparisonTableWidget(ctk.CTkFrame):
         self.lbl_bu_count = ctk.CTkLabel(
             hdr,
             text="",
-            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=9, weight="bold"),
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=10, weight="bold"),
             text_color=ui.COLOR_TEXT_DIM,
             anchor="e",
         )
@@ -1250,14 +1464,14 @@ class BusinessUnitComparisonTableWidget(ctk.CTkFrame):
         # 1. Sticky Header Canvas (Row 0 of grid_box)
         self.header_canvas = tk.Canvas(
             self.grid_box,
-            height=24,
+            height=26,
             bg=ui.COLOR_INPUT_BG,
             bd=0,
             highlightthickness=0,
         )
         self.header_canvas.grid(row=0, column=0, sticky="ew")
 
-        self.header_spacer = ctk.CTkFrame(self.grid_box, width=10, height=24, fg_color=ui.COLOR_INPUT_BG)
+        self.header_spacer = ctk.CTkFrame(self.grid_box, width=10, height=26, fg_color=ui.COLOR_INPUT_BG)
         self.header_spacer.grid(row=0, column=1, sticky="ns")
 
         self.table_hdr_frame = ctk.CTkFrame(self.header_canvas, fg_color=ui.COLOR_INPUT_BG, corner_radius=0)
@@ -1291,14 +1505,14 @@ class BusinessUnitComparisonTableWidget(ctk.CTkFrame):
         # 3. Pinned Organization-Wide Total Canvas (Row 2 of grid_box)
         self.total_canvas = tk.Canvas(
             self.grid_box,
-            height=26,
+            height=28,
             bg="#18233C",
             bd=0,
             highlightthickness=0,
         )
         self.total_canvas.grid(row=2, column=0, sticky="ew")
 
-        self.total_spacer = ctk.CTkFrame(self.grid_box, width=10, height=26, fg_color="#18233C")
+        self.total_spacer = ctk.CTkFrame(self.grid_box, width=10, height=28, fg_color="#18233C")
         self.total_spacer.grid(row=2, column=1, sticky="ns")
 
         self.total_frame = ctk.CTkFrame(self.total_canvas, fg_color="#18233C", corner_radius=0)
@@ -1330,7 +1544,7 @@ class BusinessUnitComparisonTableWidget(ctk.CTkFrame):
         self.lbl_info = ctk.CTkLabel(
             self,
             text="Tip: Shift + MouseWheel to scroll columns horizontally  •  Hover row for full BU details",
-            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=8),
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=9),
             text_color=ui.COLOR_TEXT_DIM,
             anchor="w",
         )
@@ -1340,7 +1554,7 @@ class BusinessUnitComparisonTableWidget(ctk.CTkFrame):
         self.lbl_note = ctk.CTkLabel(
             self,
             text="* Headcount reflects observed unique employees in each BU; Total reflects deduplicated organization-wide unique headcount. Exception rate = Regularized employee-days / Recorded employee-days.",
-            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=8),
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=9),
             text_color=ui.COLOR_TEXT_DIM,
             anchor="w",
         )
@@ -1350,7 +1564,7 @@ class BusinessUnitComparisonTableWidget(ctk.CTkFrame):
         self.lbl_empty = ctk.CTkLabel(
             self,
             text="No Business Unit data available in active dataset",
-            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11),
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12),
             text_color=ui.COLOR_TEXT_DIM,
         )
 
@@ -1426,8 +1640,8 @@ class BusinessUnitComparisonTableWidget(ctk.CTkFrame):
         """
         self.update_idletasks()
 
-        hdr_h = max(24, self.table_hdr_frame.winfo_reqheight())
-        tot_h = max(26, self.total_frame.winfo_reqheight())
+        hdr_h = max(26, self.table_hdr_frame.winfo_reqheight())
+        tot_h = max(28, self.total_frame.winfo_reqheight())
 
         hdr_w = self.table_hdr_frame.winfo_reqwidth()
         tot_w = self.total_frame.winfo_reqwidth()
@@ -1536,10 +1750,10 @@ class BusinessUnitComparisonTableWidget(ctk.CTkFrame):
             lbl = ctk.CTkLabel(
                 self.table_hdr_frame,
                 text=title,
-                font=ctk.CTkFont(family=ui.FONT_FAMILY, size=8, weight="bold"),
+                font=ctk.CTkFont(family=ui.FONT_FAMILY, size=9, weight="bold"),
                 text_color=ui.COLOR_TEXT_SEC,
                 width=col_w,
-                height=18,
+                height=20,
                 anchor=anchor,
             )
             lbl.grid(row=0, column=idx, sticky="nsew", padx=2, pady=3)
@@ -1552,7 +1766,7 @@ class BusinessUnitComparisonTableWidget(ctk.CTkFrame):
         row_count = len(self._bu_data)
         for row_idx, b in enumerate(self._bu_data):
             row_bg = "transparent" if row_idx % 2 == 0 else "#0D1424"
-            row_box = ctk.CTkFrame(self.rows_inner_frame, fg_color=row_bg, corner_radius=2, height=22)
+            row_box = ctk.CTkFrame(self.rows_inner_frame, fg_color=row_bg, corner_radius=2, height=24)
             row_box.grid(row=row_idx, column=0, sticky="ew", pady=1)
             self._configure_frame_columns(row_box)
 
@@ -1598,10 +1812,10 @@ class BusinessUnitComparisonTableWidget(ctk.CTkFrame):
                 lbl = ctk.CTkLabel(
                     row_box,
                     text=txt,
-                    font=ctk.CTkFont(family=ui.FONT_FAMILY, size=8, weight="bold" if is_b else "normal"),
+                    font=ctk.CTkFont(family=ui.FONT_FAMILY, size=9, weight="bold" if is_b else "normal"),
                     text_color=col,
                     width=col_w,
-                    height=18,
+                    height=20,
                     anchor=anch,
                 )
                 lbl.grid(row=0, column=c_idx, sticky="nsew", padx=2, pady=1)
@@ -1653,10 +1867,10 @@ class BusinessUnitComparisonTableWidget(ctk.CTkFrame):
             lbl = ctk.CTkLabel(
                 self.total_frame,
                 text=txt,
-                font=ctk.CTkFont(family=ui.FONT_FAMILY, size=8, weight="bold"),
+                font=ctk.CTkFont(family=ui.FONT_FAMILY, size=9, weight="bold"),
                 text_color=col,
                 width=col_w,
-                height=18,
+                height=20,
                 anchor=anch,
             )
             lbl.grid(row=0, column=c_idx, sticky="nsew", padx=2, pady=3)
@@ -1689,6 +1903,22 @@ class WorkforceDashboardView(ctk.CTkFrame):
         self._metrics_queue: queue.Queue = queue.Queue()
         self.kpi_cards: Dict[str, ExecutiveKPICard] = {}
 
+        # Global Filter state & debounce tracking
+        self._filter_state: Dict[str, Any] = {
+            "date_range": None,
+            "business_unit": None,
+            "department": None,
+            "manager": None,
+            "employee": None,
+            "date_preset": "All Dates",
+        }
+        self._filter_debounce_timer: Optional[str] = None
+        self._full_dataset_dq_bundle: Optional[Dict[str, Any]] = None
+        self._available_dates: List[date] = []
+        self._emp_key_map: Dict[str, str] = {}
+        self._emp_disp_map: Dict[str, str] = {}
+        self._date_picker_dialog = None
+
         self.grid_rowconfigure(0, weight=0)  # Header + Metadata
         self.grid_rowconfigure(1, weight=0)  # Future Filters Placeholder
         self.grid_rowconfigure(2, weight=0)  # Horizontal Navigation Tabs
@@ -1715,13 +1945,16 @@ class WorkforceDashboardView(ctk.CTkFrame):
 
         inner = ctk.CTkFrame(self.header_card, fg_color="transparent")
         inner.grid(row=0, column=0, sticky="ew", padx=12, pady=5)
+        inner.grid_columnconfigure(0, weight=0)
         inner.grid_columnconfigure(1, weight=1)
+        inner.grid_columnconfigure(2, weight=0)
+        inner.grid_columnconfigure(3, weight=0)
 
         # Left: Title
         lbl_title = ctk.CTkLabel(
             inner,
             text="Workforce Intelligence",
-            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=16, weight="bold"),
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=18, weight="bold"),
             text_color=ui.COLOR_TEXT,
             anchor="w",
         )
@@ -1735,58 +1968,60 @@ class WorkforceDashboardView(ctk.CTkFrame):
         f_ds = ctk.CTkFrame(meta_strip, fg_color="transparent")
         f_ds.pack(side="left", padx=(8, 10), pady=3)
         ctk.CTkLabel(
-            f_ds, text="📄", font=ctk.CTkFont(size=10), text_color=ui.COLOR_TEXT_DIM
+            f_ds, text="📄", font=ctk.CTkFont(size=11), text_color=ui.COLOR_TEXT_DIM
         ).pack(side="left", padx=(0, 3))
         self.lbl_dataset_name = ctk.CTkLabel(
-            f_ds, text="No dataset loaded", font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11, weight="bold"),
+            f_ds, text="No dataset loaded", font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12, weight="bold"),
             text_color=ui.COLOR_WARNING, anchor="w"
         )
         self.lbl_dataset_name.pack(side="left")
+        ui.create_tooltip(self.lbl_dataset_name, "Active analytical dataset identity")
 
         # 2. Reporting Period
         f_per = ctk.CTkFrame(meta_strip, fg_color="transparent")
         f_per.pack(side="left", padx=(0, 10), pady=3)
         ctk.CTkLabel(
-            f_per, text="📅", font=ctk.CTkFont(size=10), text_color=ui.COLOR_TEXT_DIM
+            f_per, text="📅", font=ctk.CTkFont(size=11), text_color=ui.COLOR_TEXT_DIM
         ).pack(side="left", padx=(0, 3))
         self.lbl_period = ctk.CTkLabel(
-            f_per, text="N/A", font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11),
+            f_per, text="N/A", font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12),
             text_color=ui.COLOR_TEXT, anchor="w"
         )
         self.lbl_period.pack(side="left")
 
         # 3. Status
         f_stat = ctk.CTkFrame(meta_strip, fg_color="transparent")
-        f_stat.pack(side="left", padx=(0, 10), pady=3)
+        f_stat.pack(side="left", padx=(0, 8), pady=3)
         self.lbl_status_dot = ctk.CTkLabel(
-            f_stat, text="●", font=ctk.CTkFont(size=10), text_color=ui.COLOR_WARNING
+            f_stat, text="●", font=ctk.CTkFont(size=11), text_color=ui.COLOR_WARNING
         )
         self.lbl_status_dot.pack(side="left", padx=(0, 3))
         self.lbl_status_text = ctk.CTkLabel(
-            f_stat, text="Awaiting Ingestion", font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11),
+            f_stat, text="Awaiting Ingestion", font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12),
             text_color=ui.COLOR_WARNING, anchor="w"
         )
         self.lbl_status_text.pack(side="left")
+        ui.create_tooltip(self.lbl_status_text, "Active record and unique employee count")
 
-        # 4. Data Quality Badge (Clickable to open DataQualityDetailDialog)
+        # 4. Data Quality Badge (Clickable to open DataQualityDetailDialog, placed at Column 2 for guaranteed visibility)
         self.f_dq = ctk.CTkFrame(
-            meta_strip,
+            inner,
             fg_color=ui.COLOR_CARD,
             corner_radius=6,
             cursor="hand2",
             border_width=1,
             border_color=ui.COLOR_BORDER,
         )
-        self.f_dq.pack(side="left", padx=(0, 8), pady=2)
+        self.f_dq.grid(row=0, column=2, sticky="e", padx=(4, 8))
         self.lbl_dq_info = ctk.CTkLabel(
             self.f_dq,
             text="DQ: Standard",
-            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11, weight="bold"),
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12, weight="bold"),
             text_color=ui.COLOR_TEXT_SEC,
             anchor="w",
             cursor="hand2",
         )
-        self.lbl_dq_info.pack(side="left", padx=8, pady=1)
+        self.lbl_dq_info.pack(side="left", padx=8, pady=2)
         self.f_dq.bind("<Button-1>", lambda e: self._show_dq_details_dialog())
         self.lbl_dq_info.bind("<Button-1>", lambda e: self._show_dq_details_dialog())
         ui.create_tooltip(self.lbl_dq_info, "Click to view Data Quality diagnostics and reconciliation details")
@@ -1796,10 +2031,10 @@ class WorkforceDashboardView(ctk.CTkFrame):
             inner,
             "📂 Upload",
             command=self._on_go_to_upload,
-            width=85,
-            height=26,
+            width=90,
+            height=28,
         )
-        self.btn_go_upload.grid(row=0, column=2, sticky="e")
+        self.btn_go_upload.grid(row=0, column=3, sticky="e")
 
     def _on_go_to_upload(self):
         """Navigate user to the upload section to load/replace data."""
@@ -1807,11 +2042,11 @@ class WorkforceDashboardView(ctk.CTkFrame):
             self.app.select_frame_by_name("analyse_upload")
 
     # ─────────────────────────────────────────────────────────────────────────
-    # B. Future Filters Toolbar Placeholder (Step 22)
+    # B. Global Filters Toolbar (Functional Step 29)
     # ─────────────────────────────────────────────────────────────────────────
 
     def _build_filters_placeholder(self):
-        """Build the clearly labelled single-row placeholder for future global filter toolbar."""
+        """Build the functional, single-row compact global filter toolbar."""
         self.filter_card = ui.create_card(self)
         self.filter_card.grid(row=1, column=0, sticky="ew", pady=(0, 6))
 
@@ -1823,45 +2058,491 @@ class WorkforceDashboardView(ctk.CTkFrame):
         ctk.CTkLabel(
             inner,
             text="Filters:",
-            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=10, weight="bold"),
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11, weight="bold"),
             text_color=ui.COLOR_TEXT_DIM,
             anchor="w",
         ).grid(row=0, column=0, padx=(2, 6), sticky="w")
+        # 1. Date Range
+        self.combo_date_range = ui.SearchableDropdown(
+            inner,
+            values=["All Dates"],
+            height=28,
+            placeholder="All Dates",
+            command=self._on_date_range_selected,
+        )
+        self.combo_date_range.set("All Dates")
+        self.combo_date_range.configure(state="disabled")
+        self.combo_date_range.grid(row=0, column=1, sticky="ew", padx=3)
 
-        filter_configs = [
-            (1, "Date Range", "All Dates"),
-            (2, "Business Unit", "All Business Units"),
-            (3, "Department", "All Departments"),
-            (4, "Reporting Manager", "All Reporting Managers"),
-            (5, "Employee", "All Employees"),
-        ]
+        # 2. Business Unit
+        self.combo_bu = ui.SearchableDropdown(
+            inner,
+            values=["All Business Units"],
+            height=28,
+            placeholder="All Business Units",
+            command=self._on_bu_selected,
+        )
+        self.combo_bu.set("All Business Units")
+        self.combo_bu.configure(state="disabled")
+        self.combo_bu.grid(row=0, column=2, sticky="ew", padx=3)
 
-        for col_idx, flbl, def_val in filter_configs:
-            combo = ctk.CTkComboBox(
-                inner,
-                values=[f"{flbl}: {def_val}"],
-                state="disabled",
-                height=26,
-                fg_color=ui.COLOR_INPUT_BG,
-                border_color=ui.COLOR_BORDER,
-                text_color=ui.COLOR_TEXT_SEC,
-                font=ctk.CTkFont(family=ui.FONT_FAMILY, size=10),
-            )
-            combo.set(f"{flbl}: {def_val}")
-            combo.grid(row=0, column=col_idx, sticky="ew", padx=3)
+        # 3. Department
+        self.combo_dept = ui.SearchableDropdown(
+            inner,
+            values=["All Departments"],
+            height=28,
+            placeholder="All Departments",
+            command=self._on_dept_selected,
+        )
+        self.combo_dept.set("All Departments")
+        self.combo_dept.configure(state="disabled")
+        self.combo_dept.grid(row=0, column=3, sticky="ew", padx=3)
 
-        btn_reset = ctk.CTkButton(
+        # 4. Reporting Manager
+        self.combo_manager = ui.SearchableDropdown(
+            inner,
+            values=["All Reporting Managers"],
+            height=28,
+            placeholder="All Reporting Managers",
+            command=self._on_manager_selected,
+        )
+        self.combo_manager.set("All Reporting Managers")
+        self.combo_manager.configure(state="disabled")
+        self.combo_manager.grid(row=0, column=4, sticky="ew", padx=3)
+
+        # 5. Employee
+        self.combo_employee = ui.SearchableDropdown(
+            inner,
+            values=["All Employees"],
+            height=28,
+            placeholder="All Employees",
+            command=self._on_employee_selected,
+        )
+        self.combo_employee.set("All Employees")
+        self.combo_employee.configure(state="disabled")
+        self.combo_employee.grid(row=0, column=5, sticky="ew", padx=3)
+
+        # 6. Reset Filters Button
+        self.btn_reset_filters = ctk.CTkButton(
             inner,
             text="Reset",
             state="disabled",
-            height=26,
-            width=60,
+            height=28,
+            width=65,
             fg_color=ui.COLOR_BTN_SEC,
+            hover_color=ui.COLOR_NAV_HOVER,
             text_color=ui.COLOR_TEXT_DIM,
             corner_radius=6,
-            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=10),
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11, weight="bold"),
+            command=self._on_reset_filters_clicked,
         )
-        btn_reset.grid(row=0, column=6, sticky="ew", padx=(3, 2))
+        self.btn_reset_filters.grid(row=0, column=6, sticky="ew", padx=(3, 0))
+
+    def _disable_filters(self):
+        """Disable all filter controls when no valid dataset is active."""
+        if hasattr(self, "combo_date_range"):
+            self.combo_date_range.configure(state="normal")
+            self.combo_date_range.set("All Dates")
+            self.combo_date_range.configure(values=["All Dates"], state="disabled")
+        if hasattr(self, "combo_bu"):
+            self.combo_bu.configure(state="normal")
+            self.combo_bu.set("All Business Units")
+            self.combo_bu.configure(values=["All Business Units"], state="disabled")
+        if hasattr(self, "combo_dept"):
+            self.combo_dept.configure(state="normal")
+            self.combo_dept.set("All Departments")
+            self.combo_dept.configure(values=["All Departments"], state="disabled")
+        if hasattr(self, "combo_manager"):
+            self.combo_manager.configure(state="normal")
+            self.combo_manager.set("All Reporting Managers")
+            self.combo_manager.configure(values=["All Reporting Managers"], state="disabled")
+        if hasattr(self, "combo_employee"):
+            self.combo_employee.configure(state="normal")
+            self.combo_employee.set("All Employees")
+            self.combo_employee.configure(values=["All Employees"], state="disabled")
+        if hasattr(self, "btn_reset_filters"):
+            self.btn_reset_filters.configure(state="disabled", text_color=ui.COLOR_TEXT_DIM)
+
+    def _populate_filters_from_snapshot(self, snap: AnalyticalSnapshot):
+        """Populate initial filter choices from active snapshot dataset."""
+        if not snap or not snap.is_valid():
+            self._disable_filters()
+            return
+
+        df = snap.fact_df
+        if df is None or len(df) == 0:
+            self._disable_filters()
+            return
+
+        from workforce_intelligence.kpi_engine import ensure_clean_dataframe, get_effective_bu
+        work_df = ensure_clean_dataframe(df)
+
+        # 1. Dates
+        dates = []
+        if "_date" in work_df.columns:
+            for d in work_df["_date"].dropna():
+                if isinstance(d, datetime):
+                    dates.append(d.date())
+                elif isinstance(d, date):
+                    dates.append(d)
+                elif isinstance(d, str):
+                    try:
+                        parsed = tsa.parse_date_value(d)
+                        if parsed:
+                            dates.append(parsed)
+                    except Exception:
+                        pass
+        self._available_dates = sorted(list(set(dates)))
+
+        date_options = ["All Dates"]
+        if self._available_dates:
+            min_d = self._available_dates[0]
+            max_d = self._available_dates[-1]
+            span_days = (max_d - min_d).days + 1
+
+            # Months observed
+            months_seen = []
+            for d in self._available_dates:
+                m_str = d.strftime("%b %Y")
+                if m_str not in months_seen:
+                    months_seen.append(m_str)
+            if len(months_seen) > 1:
+                date_options.extend(months_seen)
+
+            if span_days >= 7:
+                date_options.append("Last 7 Days")
+            if span_days >= 14:
+                date_options.append("Last 14 Days")
+            if span_days >= 30:
+                date_options.append("Last 30 Days")
+
+        date_options.append("Custom Range...")
+
+        self.combo_date_range.configure(values=date_options, state="normal")
+        cur_preset = self._filter_state.get("date_preset", "All Dates")
+        self.combo_date_range.set(cur_preset)
+
+        # 2. Business Units (using effective BU attribution)
+        if "_eff_bu" in work_df.columns:
+            bus = sorted([str(b).strip() for b in work_df["_eff_bu"].unique() if pd.notna(b) and str(b).strip() not in ("", "nan", "None")])
+        else:
+            bus = sorted([get_effective_bu(b, d) for b, d in zip(work_df["_bu"], work_df["_dept"])])
+            bus = sorted(list(set(bus)))
+        bu_options = ["All Business Units"] + [b for b in bus if b != "Unknown / Unassigned"]
+        if "Unknown / Unassigned" in bus:
+            bu_options.append("Unknown / Unassigned")
+
+        self.combo_bu.configure(values=bu_options, state="normal")
+        cur_bu = self._filter_state.get("business_unit")
+        self.combo_bu.set(cur_bu if cur_bu else "All Business Units")
+
+        # 3. Department, Manager, Employee based on current scope
+        self._update_dependent_filter_options(changed_level="initial", work_df=work_df)
+
+        self.btn_reset_filters.configure(state="normal", text_color=ui.COLOR_TEXT)
+
+    def _update_dependent_filter_options(self, changed_level: str = "initial", work_df: Optional[pd.DataFrame] = None):
+        """Update dependent dropdown options (Department, Manager, Employee) based on higher-level active filters."""
+        if work_df is None:
+            snap = snapshot_service.get_active_snapshot()
+            if not snap or not snap.is_valid():
+                return
+            from workforce_intelligence.kpi_engine import ensure_clean_dataframe
+            work_df = ensure_clean_dataframe(snap.fact_df)
+
+        sub_df = work_df
+
+        # Filter by active date range
+        dr = self._filter_state.get("date_range")
+        if dr and len(dr) == 2 and "_date" in sub_df.columns:
+            s_d, e_d = dr
+            sub_df = sub_df[sub_df["_date"].apply(lambda d: s_d <= d <= e_d if isinstance(d, (date, datetime)) else False)]
+
+        # Filter by active Business Unit
+        sel_bu = self._filter_state.get("business_unit")
+        if sel_bu and sel_bu not in ("All", "All Business Units"):
+            bu_lower = str(sel_bu).strip().lower()
+            if bu_lower in ("unknown", "unknown / unassigned"):
+                sub_df = sub_df[sub_df["_eff_bu"].astype(str).str.strip().str.lower().isin(("unknown / unassigned", "unknown", "", "nan", "none"))]
+            else:
+                sub_df = sub_df[
+                    (sub_df["_eff_bu"].astype(str).str.strip().str.lower() == bu_lower) |
+                    (sub_df["_bu"].astype(str).str.strip().str.lower() == bu_lower)
+                ]
+
+        # Departments in this scope
+        depts = sorted(list(set(
+            str(d).strip() for d in sub_df["_dept"].dropna().unique()
+            if str(d).strip() not in ("", "nan", "None")
+        )))
+        dept_options = ["All Departments"] + [d for d in depts if d != "Unknown / Unassigned"]
+        if "Unknown / Unassigned" in depts:
+            dept_options.append("Unknown / Unassigned")
+
+        cur_dept = self._filter_state.get("department")
+        if cur_dept and cur_dept not in depts and cur_dept not in ("All", "All Departments"):
+            self._filter_state["department"] = None
+            cur_dept = None
+
+        self.combo_dept.configure(values=dept_options, state="normal")
+        self.combo_dept.set(cur_dept if cur_dept else "All Departments")
+
+        # Filter further by active Department
+        sel_dept = self._filter_state.get("department")
+        if sel_dept and sel_dept not in ("All", "All Departments"):
+            dept_lower = str(sel_dept).strip().lower()
+            if dept_lower in ("unknown", "unknown / unassigned"):
+                sub_df = sub_df[sub_df["_dept"].isna() | sub_df["_dept"].astype(str).str.strip().str.lower().isin(("unknown / unassigned", "unknown", "", "nan", "none"))]
+            else:
+                sub_df = sub_df[sub_df["_dept"].astype(str).str.strip().str.lower() == dept_lower]
+
+        # Managers in this scope
+        mgrs = sorted(list(set(
+            str(m).strip() for m in sub_df["_rm"].dropna().unique()
+            if str(m).strip() not in ("", "nan", "None")
+        )))
+        mgr_options = ["All Reporting Managers"] + [m for m in mgrs if m != "Unknown / Unassigned"]
+        if "Unknown / Unassigned" in mgrs:
+            mgr_options.append("Unknown / Unassigned")
+
+        cur_mgr = self._filter_state.get("manager")
+        if cur_mgr and cur_mgr not in mgrs and cur_mgr not in ("All", "All Reporting Managers"):
+            self._filter_state["manager"] = None
+            cur_mgr = None
+
+        self.combo_manager.configure(values=mgr_options, state="normal")
+        self.combo_manager.set(cur_mgr if cur_mgr else "All Reporting Managers")
+
+        # Filter further by active Manager
+        sel_mgr = self._filter_state.get("manager")
+        if sel_mgr and sel_mgr not in ("All", "All Reporting Managers"):
+            mgr_lower = str(sel_mgr).strip().lower()
+            if mgr_lower in ("unknown", "unknown / unassigned"):
+                sub_df = sub_df[sub_df["_rm"].isna() | sub_df["_rm"].astype(str).str.strip().str.lower().isin(("unknown / unassigned", "unknown", "", "nan", "none"))]
+            else:
+                sub_df = sub_df[sub_df["_rm"].astype(str).str.strip().str.lower() == mgr_lower]
+
+        # Employees in this scope
+        emp_pairs = []
+        if "_emp_num" in sub_df.columns:
+            for _, r in sub_df[["_emp_num", "_emp_name"]].drop_duplicates().iterrows():
+                e_id = str(r["_emp_num"]).strip()
+                e_nm = str(r["_emp_name"]).strip() if pd.notna(r["_emp_name"]) else e_id
+                if e_id and e_id not in ("", "nan", "None"):
+                    if e_nm and e_nm != e_id and e_nm.lower() not in ("nan", "none"):
+                        emp_pairs.append((e_id, f"{e_id} — {e_nm}"))
+                    else:
+                        emp_pairs.append((e_id, e_id))
+
+        emp_pairs.sort(key=lambda x: x[0])
+        self._emp_key_map = {disp: eid for eid, disp in emp_pairs}
+        self._emp_disp_map = {eid: disp for eid, disp in emp_pairs}
+
+        emp_display_options = ["All Employees"] + [disp for _, disp in emp_pairs]
+
+        cur_emp = self._filter_state.get("employee")
+        if cur_emp and cur_emp not in self._emp_disp_map and cur_emp not in ("All", "All Employees"):
+            self._filter_state["employee"] = None
+            cur_emp = None
+
+        self.combo_employee.configure(values=emp_display_options, state="normal")
+        cur_disp = self._emp_disp_map.get(cur_emp, "All Employees") if cur_emp else "All Employees"
+        self.combo_employee.set(cur_disp)
+
+    def _on_date_range_selected(self, val: str):
+        val = val.strip()
+        if val == "All Dates":
+            self._filter_state["date_range"] = None
+            self._filter_state["date_preset"] = "All Dates"
+            if self._available_dates:
+                self.lbl_period.configure(text=f"{self._available_dates[0]} to {self._available_dates[-1]}")
+            self._update_dependent_filter_options(changed_level="date")
+            self._schedule_metrics_load()
+        elif val == "Custom Range...":
+            self._show_date_range_picker_dialog()
+        elif val == "Last 7 Days" and self._available_dates:
+            max_d = self._available_dates[-1]
+            start_d = max_d - timedelta(days=6)
+            self._filter_state["date_range"] = (start_d, max_d)
+            self._filter_state["date_preset"] = "Last 7 Days"
+            self.lbl_period.configure(text=f"{start_d.isoformat()} to {max_d.isoformat()}")
+            self._update_dependent_filter_options(changed_level="date")
+            self._schedule_metrics_load()
+        elif val == "Last 14 Days" and self._available_dates:
+            max_d = self._available_dates[-1]
+            start_d = max_d - timedelta(days=13)
+            self._filter_state["date_range"] = (start_d, max_d)
+            self._filter_state["date_preset"] = "Last 14 Days"
+            self.lbl_period.configure(text=f"{start_d.isoformat()} to {max_d.isoformat()}")
+            self._update_dependent_filter_options(changed_level="date")
+            self._schedule_metrics_load()
+        elif val == "Last 30 Days" and self._available_dates:
+            max_d = self._available_dates[-1]
+            start_d = max_d - timedelta(days=29)
+            self._filter_state["date_range"] = (start_d, max_d)
+            self._filter_state["date_preset"] = "Last 30 Days"
+            self.lbl_period.configure(text=f"{start_d.isoformat()} to {max_d.isoformat()}")
+            self._update_dependent_filter_options(changed_level="date")
+            self._schedule_metrics_load()
+        else:
+            # Check if val is an observed month, e.g. "Sep 2026"
+            matched_dates = [d for d in self._available_dates if d.strftime("%b %Y") == val]
+            if matched_dates:
+                start_d = matched_dates[0]
+                end_d = matched_dates[-1]
+                self._filter_state["date_range"] = (start_d, end_d)
+                self._filter_state["date_preset"] = val
+                self.lbl_period.configure(text=f"{start_d.isoformat()} to {end_d.isoformat()}")
+                self._update_dependent_filter_options(changed_level="date")
+                self._schedule_metrics_load()
+            else:
+                self._filter_state["date_range"] = None
+                self._filter_state["date_preset"] = "All Dates"
+                self._update_dependent_filter_options(changed_level="date")
+                self._schedule_metrics_load()
+
+    def _show_date_range_picker_dialog(self):
+        if hasattr(self, "_date_picker_dialog") and self._date_picker_dialog is not None and self._date_picker_dialog.winfo_exists():
+            self._date_picker_dialog.lift()
+            self._date_picker_dialog.focus_force()
+            return
+
+        cur_dr = self._filter_state.get("date_range")
+        cur_s = cur_dr[0] if cur_dr else None
+        cur_e = cur_dr[1] if cur_dr else None
+
+        def _on_custom_apply(start_d: date, end_d: date):
+            self._filter_state["date_range"] = (start_d, end_d)
+            self._filter_state["date_preset"] = "Custom Range"
+            self.combo_date_range.set(f"{start_d.isoformat()} to {end_d.isoformat()}")
+            self.lbl_period.configure(text=f"{start_d.isoformat()} to {end_d.isoformat()}")
+            self._update_dependent_filter_options(changed_level="date")
+            self._schedule_metrics_load()
+
+        self._date_picker_dialog = DateRangePickerDialog(
+            parent_view=self,
+            available_dates=self._available_dates,
+            current_start=cur_s,
+            current_end=cur_e,
+            on_apply=_on_custom_apply,
+        )
+
+    def _on_bu_selected(self, val: str):
+        val = str(val).strip()
+        if hasattr(self, "combo_bu"):
+            self.combo_bu.set(val)
+        if val in ("All Business Units", "All", ""):
+            self._filter_state["business_unit"] = None
+        else:
+            self._filter_state["business_unit"] = val
+        self._update_dependent_filter_options(changed_level="bu")
+        self._schedule_metrics_load()
+
+    def _on_dept_selected(self, val: str):
+        val = str(val).strip()
+        if hasattr(self, "combo_dept"):
+            self.combo_dept.set(val)
+        if val in ("All Departments", "All", ""):
+            self._filter_state["department"] = None
+        else:
+            self._filter_state["department"] = val
+        self._update_dependent_filter_options(changed_level="dept")
+        self._schedule_metrics_load()
+
+    def _on_manager_selected(self, val: str):
+        val = str(val).strip()
+        if hasattr(self, "combo_manager"):
+            self.combo_manager.set(val)
+        if val in ("All Reporting Managers", "All Managers", "All", ""):
+            self._filter_state["manager"] = None
+        else:
+            self._filter_state["manager"] = val
+        self._update_dependent_filter_options(changed_level="manager")
+        self._schedule_metrics_load()
+
+    def _on_employee_selected(self, val: str):
+        val = str(val).strip()
+        if hasattr(self, "combo_employee"):
+            self.combo_employee.set(val)
+        if val in ("All Employees", "All", ""):
+            self._filter_state["employee"] = None
+        else:
+            emp_id = getattr(self, "_emp_key_map", {}).get(val, val)
+            if " — " in emp_id:
+                emp_id = emp_id.split(" — ")[0].strip()
+            self._filter_state["employee"] = emp_id
+        self._schedule_metrics_load()
+
+    def _on_reset_filters_clicked(self):
+        """Reset all active filters and restore full reporting scope."""
+        self._filter_state = {
+            "date_range": None,
+            "business_unit": None,
+            "department": None,
+            "manager": None,
+            "employee": None,
+            "date_preset": "All Dates",
+        }
+        if hasattr(self, "combo_date_range"):
+            self.combo_date_range.set("All Dates")
+        if hasattr(self, "combo_bu"):
+            self.combo_bu.set("All Business Units")
+        if hasattr(self, "combo_dept"):
+            self.combo_dept.set("All Departments")
+        if hasattr(self, "combo_manager"):
+            self.combo_manager.set("All Reporting Managers")
+        if hasattr(self, "combo_employee"):
+            self.combo_employee.set("All Employees")
+        snap = snapshot_service.get_active_snapshot()
+        if snap and snap.is_valid():
+            self._populate_filters_from_snapshot(snap)
+            min_d = snap.metadata.get("min_date", "N/A")
+            max_d = snap.metadata.get("max_date", "N/A")
+            if hasattr(self, "lbl_period"):
+                self.lbl_period.configure(text=f"{min_d} to {max_d}")
+        self._load_overview_metrics()
+
+    def _schedule_metrics_load(self):
+        """Debounce metric loading by 150ms to prevent rapid consecutive recalculations."""
+        if hasattr(self, "_filter_debounce_timer") and self._filter_debounce_timer is not None:
+            try:
+                self.after_cancel(self._filter_debounce_timer)
+            except Exception:
+                pass
+        self._filter_debounce_timer = self.after(150, self._load_overview_metrics)
+
+    def _update_active_scope_label(self):
+        """Update the active scope label beneath the tab navigation."""
+        if not hasattr(self, "lbl_active_scope"):
+            return
+        parts = []
+        d_val = self.combo_date_range.get() if hasattr(self, "combo_date_range") else "All Dates"
+        bu_val = self.combo_bu.get() if hasattr(self, "combo_bu") else "All Business Units"
+        dept_val = self.combo_dept.get() if hasattr(self, "combo_dept") else "All Departments"
+        mgr_val = self.combo_manager.get() if hasattr(self, "combo_manager") else "All Reporting Managers"
+        emp_val = self.combo_employee.get() if hasattr(self, "combo_employee") else "All Employees"
+
+        if d_val and d_val not in ("All Dates", ""):
+            parts.append(d_val)
+        else:
+            parts.append("All Dates")
+
+        if bu_val and bu_val not in ("All Business Units", "All", ""):
+            parts.append(bu_val)
+        if dept_val and dept_val not in ("All Departments", "All", ""):
+            parts.append(dept_val)
+        if mgr_val and mgr_val not in ("All Reporting Managers", "All Managers", "All", ""):
+            parts.append(mgr_val)
+        if emp_val and emp_val not in ("All Employees", "All", ""):
+            parts.append(emp_val)
+
+        if len(parts) == 1:
+            scope_desc = f"Complete Active Population ({parts[0]})"
+        else:
+            scope_desc = " • ".join(parts)
+        self.lbl_active_scope.configure(
+            text=f"Executive Overview • {scope_desc}"
+        )
 
     # ─────────────────────────────────────────────────────────────────────────
     # C. Horizontal Navigation Bar (6 Views)
@@ -1875,7 +2556,7 @@ class WorkforceDashboardView(ctk.CTkFrame):
             border_width=1,
             border_color=ui.COLOR_BORDER,
             corner_radius=6,
-            height=34,
+            height=36,
         )
         self.nav_card.grid(row=2, column=0, sticky="ew", pady=(0, 6))
         self.nav_card.grid_columnconfigure(tuple(range(len(VIEW_KEYS))), weight=1)
@@ -1886,8 +2567,8 @@ class WorkforceDashboardView(ctk.CTkFrame):
             btn = ctk.CTkButton(
                 self.nav_card,
                 text=text,
-                font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11, weight="normal"),
-                height=28,
+                font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12, weight="normal"),
+                height=30,
                 corner_radius=5,
                 fg_color="transparent",
                 hover_color=ui.COLOR_NAV_HOVER,
@@ -2005,13 +2686,14 @@ class WorkforceDashboardView(ctk.CTkFrame):
         self.scope_strip.grid(row=0, column=0, sticky="ew", pady=(2, 4))
         self.scope_strip.grid_columnconfigure(0, weight=1)
 
-        ctk.CTkLabel(
+        self.lbl_active_scope = ctk.CTkLabel(
             self.scope_strip,
             text="Executive Overview • Complete Active Population (All Business Units • All Dates)",
-            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11, weight="bold"),
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12, weight="bold"),
             text_color=ui.COLOR_TEXT_SEC,
             anchor="w",
-        ).grid(row=0, column=0, sticky="w", padx=2)
+        )
+        self.lbl_active_scope.grid(row=0, column=0, sticky="w", padx=2)
 
         # 2. State Containers (Empty, Loading, Error, KPI Grid)
         # 2A. Empty State Container
@@ -2099,6 +2781,7 @@ class WorkforceDashboardView(ctk.CTkFrame):
         row1_frame = ctk.CTkFrame(self.overview_kpi_frame, fg_color="transparent")
         row1_frame.grid(row=0, column=0, sticky="ew", pady=(0, 3))
         row1_frame.grid_columnconfigure((0, 1, 2, 3, 4), weight=1, uniform="kpi_r1")
+        row1_frame.grid_rowconfigure(0, weight=1)
 
         card_configs_r1 = [
             ("kpi_1_emp_hc", "1. EMP HC", "#3B82F6", "employees", "Observed Headcount"),
@@ -2117,13 +2800,14 @@ class WorkforceDashboardView(ctk.CTkFrame):
                 default_unit=unit,
                 tooltip_text=tip,
             )
-            card.grid(row=0, column=col, sticky="nsew", padx=3, pady=2)
+            card.grid(row=0, column=col, sticky="nsew", padx=2, pady=2)
             self.kpi_cards[cid] = card
 
         # ── Row 2: 5 Cards (Uniform columns 0–4) ──
         row2_frame = ctk.CTkFrame(self.overview_kpi_frame, fg_color="transparent")
         row2_frame.grid(row=1, column=0, sticky="ew", pady=(0, 4))
         row2_frame.grid_columnconfigure((0, 1, 2, 3, 4), weight=1, uniform="kpi_r2")
+        row2_frame.grid_rowconfigure(0, weight=1)
 
         card_configs_r2 = [
             ("kpi_6_wfh", "6. WFH", "#6366F1", "days", "Work from home days"),
@@ -2142,7 +2826,7 @@ class WorkforceDashboardView(ctk.CTkFrame):
                 default_unit=unit,
                 tooltip_text=tip,
             )
-            card.grid(row=0, column=col, sticky="nsew", padx=3, pady=2)
+            card.grid(row=0, column=col, sticky="nsew", padx=2, pady=2)
             self.kpi_cards[cid] = card
 
         # ── Reconciliation & Composition Transparency Card ──
@@ -2155,27 +2839,33 @@ class WorkforceDashboardView(ctk.CTkFrame):
         r_inner.grid_columnconfigure(1, weight=1)
 
         self.lbl_recon_icon = ctk.CTkLabel(
-            r_inner, text="✓", font=ctk.CTkFont(size=13, weight="bold"), text_color=ui.COLOR_SUCCESS, width=18
+            r_inner, text="✓", font=ctk.CTkFont(size=14, weight="bold"), text_color=ui.COLOR_SUCCESS, width=18
         )
         self.lbl_recon_icon.grid(row=0, column=0, rowspan=2, sticky="nw", padx=(0, 6), pady=(1, 0))
 
         self.lbl_recon_title = ctk.CTkLabel(
             r_inner,
             text="Complete Additive Attendance Composition (100.0% Reconciled)",
-            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=10, weight="bold"),
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11, weight="bold"),
             text_color=ui.COLOR_SUCCESS,
             anchor="w",
+            justify="left",
+            wraplength=600,
         )
-        self.lbl_recon_title.grid(row=0, column=1, sticky="w")
+        self.lbl_recon_title.grid(row=0, column=1, sticky="ew")
 
         self.lbl_recon_desc = ctk.CTkLabel(
             r_inner,
             text="All recorded attendance days are reconciled across Present, OD, Leave, WFH, Holiday, Week Off, and Absent.",
-            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=9),
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=10),
             text_color=ui.COLOR_TEXT_SEC,
             anchor="w",
+            justify="left",
+            wraplength=600,
         )
-        self.lbl_recon_desc.grid(row=1, column=1, sticky="w", pady=(0, 0))
+        self.lbl_recon_desc.grid(row=1, column=1, sticky="ew", pady=(0, 0))
+
+        self.recon_card.bind("<Configure>", self._on_recon_card_configure)
 
         # ── Middle Row: 2 Analytical Visualizations Side-by-Side ──
         self.charts_row_frame = ctk.CTkFrame(self.overview_kpi_frame, fg_color="transparent")
@@ -2199,6 +2889,19 @@ class WorkforceDashboardView(ctk.CTkFrame):
 
         # Initial state: Empty
         self._set_overview_state("empty")
+
+    def _on_recon_card_configure(self, event):
+        w = event.width
+        if abs(w - getattr(self, "_last_recon_w", 0)) < 4:
+            return
+        self._last_recon_w = w
+        scaling = self.recon_card._get_widget_scaling() if hasattr(self.recon_card, "_get_widget_scaling") else 1.0
+        unscaled_w = w / (scaling if scaling > 0 else 1.0)
+        wrap_w = max(200, int(unscaled_w - 45))
+        if hasattr(self, "lbl_recon_title"):
+            self.lbl_recon_title.configure(wraplength=wrap_w)
+        if hasattr(self, "lbl_recon_desc"):
+            self.lbl_recon_desc.configure(wraplength=wrap_w)
 
     def _set_overview_state(self, state: str, message: str = ""):
         """Switch visibility between empty, loading, error, and ready states."""
@@ -2251,13 +2954,24 @@ class WorkforceDashboardView(ctk.CTkFrame):
 
         dataset_id = getattr(snap, "dataset_id", snap.key)
 
-        def _worker(jid: int, d_id: str, q: queue.Queue):
+        bu = self._filter_state.get("business_unit")
+        dept = self._filter_state.get("department")
+        mgr = self._filter_state.get("manager")
+        emp = self._filter_state.get("employee")
+        dr = self._filter_state.get("date_range")
+
+        def _worker(jid: int, d_id: str, q: queue.Queue, b=bu, d=dept, m=mgr, e=emp, r=dr):
             try:
-                bundle = workforce_bridge.get_workforce_metrics()
+                bundle = workforce_bridge.get_workforce_metrics(
+                    business_unit=b,
+                    department=d,
+                    manager=m,
+                    employee=e,
+                    date_range=r,
+                )
                 q.put(("success", bundle, jid, d_id))
-            except Exception as e:
-                err_msg = str(e)
-                q.put(("error", err_msg, jid, d_id))
+            except Exception as err:
+                q.put(("error", str(err), jid, d_id))
 
         threading.Thread(
             target=_worker,
@@ -2312,6 +3026,8 @@ class WorkforceDashboardView(ctk.CTkFrame):
         """Populate the 10 KPI cards and reconciliation status card from bundle."""
         if not bundle:
             return
+
+        self._update_active_scope_label()
 
         # 1. EMP HC
         emp_hc = bundle.get("kpi_1_emp_hc", 0)
@@ -2413,6 +3129,11 @@ class WorkforceDashboardView(ctk.CTkFrame):
         unclass_pct = bundle.get("kpi_unclassified_pct", 0.0)
         conflicts_cnt = bundle.get("conflicting_employee_days_count", 0)
 
+        full_b = getattr(self, "_full_dataset_dq_bundle", None) or bundle
+        ds_unclass = full_b.get("unclassified_records_count", 0)
+        ds_conflicts = full_b.get("conflicting_employee_days_count", 0)
+        ds_issues = ds_unclass + ds_conflicts
+
         if conflicts_cnt > 0:
             self.lbl_dq_info.configure(
                 text=f"DQ: {conflicts_cnt} to review",
@@ -2422,6 +3143,12 @@ class WorkforceDashboardView(ctk.CTkFrame):
             self.lbl_dq_info.configure(
                 text=f"DQ: {unclass_cnt} to review",
                 text_color=ui.COLOR_WARNING,
+            )
+        elif ds_issues > 0:
+            # Active scope is clean, but dataset contains unresolved records
+            self.lbl_dq_info.configure(
+                text=f"DQ: Scope Clean ({ds_issues} in dataset)",
+                text_color=ui.COLOR_TEXT_SEC,
             )
         else:
             self.lbl_dq_info.configure(
@@ -2468,6 +3195,15 @@ class WorkforceDashboardView(ctk.CTkFrame):
                 text=f"All {denom_str} recorded attendance days are categorized across Present ({_fmt_days(q_pres)}), OD ({_fmt_days(q_od)}), Leave ({_fmt_days(q_leave)}), WFH ({_fmt_days(q_wfh)}), Holiday ({_fmt_days(q_hol)}), Week Off ({_fmt_days(q_wo)}), and Absent ({_fmt_days(q_ab)}).",
             )
 
+        if hasattr(self, "recon_card") and self.recon_card.winfo_width() > 10:
+            scaling = self.recon_card._get_widget_scaling() if hasattr(self.recon_card, "_get_widget_scaling") else 1.0
+            unscaled_w = self.recon_card.winfo_width() / (scaling if scaling > 0 else 1.0)
+            wrap_w = max(200, int(unscaled_w - 45))
+            if hasattr(self, "lbl_recon_title"):
+                self.lbl_recon_title.configure(wraplength=wrap_w)
+            if hasattr(self, "lbl_recon_desc"):
+                self.lbl_recon_desc.configure(wraplength=wrap_w)
+
         # Update the 3 analytical visualizations
         comp_data = bundle.get("attendance_composition", [])
         if hasattr(self, "comp_widget"):
@@ -2489,7 +3225,12 @@ class WorkforceDashboardView(ctk.CTkFrame):
             self._dq_dialog.lift()
             self._dq_dialog.focus_force()
             return
-        self._dq_dialog = DataQualityDetailDialog(self, getattr(self, "_current_bundle", {}))
+        full_b = getattr(self, "_full_dataset_dq_bundle", None)
+        self._dq_dialog = DataQualityDetailDialog(
+            self,
+            bundle=getattr(self, "_current_bundle", {}),
+            full_bundle=full_b,
+        )
 
     # ─────────────────────────────────────────────────────────────────────────
     # F. Navigation State & View Switching
@@ -2512,14 +3253,14 @@ class WorkforceDashboardView(ctk.CTkFrame):
                     fg_color=ui.COLOR_ACCENT,
                     hover_color=ui.COLOR_ACCENT_HOVER,
                     text_color=ui.COLOR_TEXT,
-                    font=ctk.CTkFont(family=ui.FONT_FAMILY, size=13, weight="bold"),
+                    font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12, weight="bold"),
                 )
             else:
                 btn.configure(
                     fg_color="transparent",
                     hover_color=ui.COLOR_NAV_HOVER,
                     text_color=ui.COLOR_TEXT_SEC,
-                    font=ctk.CTkFont(family=ui.FONT_FAMILY, size=13, weight="normal"),
+                    font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12, weight="normal"),
                 )
 
         # Toggle view containers
@@ -2554,13 +3295,14 @@ class WorkforceDashboardView(ctk.CTkFrame):
         if snap and snap.is_valid():
             raw_name = Path(snap.raw_source).name if snap.raw_source else "Active In-Memory Dataset"
             self._full_dataset_name = raw_name
-            disp_name = raw_name if len(raw_name) <= 36 else raw_name[:33] + "..."
+            disp_name = raw_name if len(raw_name) <= 30 else raw_name[:27] + "..."
             total_rows = snap.row_count
             total_emps = snap.metadata.get("employee_count", 0)
             min_d = snap.metadata.get("min_date", "N/A")
             max_d = snap.metadata.get("max_date", "N/A")
 
             self.lbl_dataset_name.configure(text=disp_name, text_color=ui.COLOR_TEXT)
+            ui.create_tooltip(self.lbl_dataset_name, f"Dataset: {raw_name}")
             self.lbl_period.configure(text=f"{min_d} to {max_d}")
             self.lbl_status_dot.configure(text="●", text_color=ui.COLOR_SUCCESS)
             emp_str = "employee" if total_emps == 1 else "employees"
@@ -2569,10 +3311,28 @@ class WorkforceDashboardView(ctk.CTkFrame):
                 text=f"{total_rows:,} {rec_str} • {total_emps:,} {emp_str}",
                 text_color=ui.COLOR_SUCCESS,
             )
+            ui.create_tooltip(self.lbl_status_text, f"{total_rows:,} {rec_str} across {total_emps:,} unique {emp_str}")
             self.lbl_dq_info.configure(text="DQ: Clean", text_color=ui.COLOR_SUCCESS)
 
             dataset_id = getattr(snap, "dataset_id", snap.key)
-            if dataset_id != self._current_dataset_id or self._last_metrics_bundle is None:
+            if dataset_id != self._current_dataset_id:
+                self._current_dataset_id = dataset_id
+                self._last_metrics_bundle = None
+                self._filter_state = {
+                    "date_range": None,
+                    "business_unit": None,
+                    "department": None,
+                    "manager": None,
+                    "employee": None,
+                    "date_preset": "All Dates",
+                }
+                try:
+                    self._full_dataset_dq_bundle = workforce_bridge.get_workforce_metrics()
+                except Exception:
+                    self._full_dataset_dq_bundle = None
+                self._populate_filters_from_snapshot(snap)
+                self._load_overview_metrics()
+            elif self._last_metrics_bundle is None:
                 self._load_overview_metrics()
             else:
                 self._render_overview_kpis(self._last_metrics_bundle)
@@ -2588,6 +3348,8 @@ class WorkforceDashboardView(ctk.CTkFrame):
             )
             self.lbl_dq_info.configure(text="DQ: Standard", text_color=ui.COLOR_TEXT_SEC)
 
+            self._disable_filters()
             self._current_dataset_id = None
             self._last_metrics_bundle = None
+            self._full_dataset_dq_bundle = None
             self._set_overview_state("empty")
