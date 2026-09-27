@@ -18,6 +18,14 @@ venv/
 .DS_Store
 Thumbs.db
 
+# Output and employee data files
+output/
+ID card generation*.xlsx
+test_*.xlsx
+*_backup.py
+*.pdf
+scratch/
+
 # Local Data / Employee Datasets (Data Privacy)
 local_data/
 

@@ -54,6 +54,7 @@ ICON_CHECK      = "✓"
 ICON_CROSS      = "✕"
 ICON_DOT        = "●"
 ICON_FILE       = "📄"
+ICON_IDCARD     = "🪪"
 
 
 # ════════════════════════════════════════════════════════════════
@@ -202,10 +203,17 @@ def create_secondary_button(parent, text: str, command, width=100, height=32):
     )
 
 
-def create_status_badge(parent, text="Ready", row=0):
+def create_status_badge(parent, text="Ready", row=0, pack_side=None, padx=None, pady=None):
     """Create a dot + label status indicator."""
     frame = ctk.CTkFrame(parent, fg_color="transparent")
-    frame.grid(row=row, column=0, sticky="w", padx=16, pady=(0, 8))
+    if pack_side is not None:
+        px = padx if padx is not None else 0
+        py = pady if pady is not None else 0
+        frame.pack(side=pack_side, padx=px, pady=py)
+    else:
+        px = padx if padx is not None else 16
+        py = pady if pady is not None else (0, 8)
+        frame.grid(row=row, column=0, sticky="w", padx=px, pady=py)
 
     dot = ctk.CTkLabel(
         frame, text=ICON_DOT,

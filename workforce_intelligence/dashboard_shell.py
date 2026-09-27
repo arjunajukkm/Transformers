@@ -522,6 +522,18 @@ class AttendanceCompositionWidget(ctk.CTkFrame):
             lbl_val.grid(row=1, column=0, columnspan=2, sticky="w", padx=(6, 4), pady=(0, 2))
 
 
+class AttendanceStatusBreakdownWidget(AttendanceCompositionWidget):
+    """
+    Compact organization-wide attendance status breakdown chart for the Attendance tab.
+    Displays all 8 mutually exclusive categories with quantity-weighted day equivalents
+    and percentages reconciling 100% to the composition denominator.
+    """
+    def __init__(self, parent, **kwargs):
+        super().__init__(parent, **kwargs)
+        self.lbl_title.configure(text="Attendance Status Breakdown")
+        self.lbl_sub.configure(text="Quantity-weighted day equivalents & % of composition denominator")
+
+
 class DailyAttendanceTrendWidget(ctk.CTkFrame):
     """
     Compact daily attendance trend chart tracking Present, WFH, and Leave
@@ -1013,6 +1025,536 @@ class ExpandedDailyAttendanceTrendDialog(ctk.CTkToplevel):
             self.parent_widget._expanded_dialog = None
         self.destroy()
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Attendance-Focused Daily Trend & Expanded Dialog (Step 31)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class AttendanceDailyTrendWidget(ctk.CTkFrame):
+    """
+    Attendance-focused daily trend chart tracking Present, Absent, Missing Swipes,
+    and Regularized exception days across the reporting period.
+    Features:
+    - Mutually exclusive status series (Present: solid green, Absent: solid red)
+    - Cross-cutting analytical overlays (Missing Swipes: dashed amber, Regularized: dotted rose)
+    - Distinct marker geometries (circle for status, square for MS, triangle for Regularized)
+    - Responsive horizontal scrolling for long periods
+    - Fixed Y-axis scale and grid lines
+    - Mouse hover inspection displaying all 4 series with their explicit units
+    - Enlarged inspection dialog
+    """
+    def __init__(self, parent, **kwargs):
+        kwargs.setdefault("corner_radius", 10)
+        kwargs.setdefault("fg_color", ui.COLOR_CARD)
+        kwargs.setdefault("border_width", 1)
+        kwargs.setdefault("border_color", ui.COLOR_BORDER)
+        super().__init__(parent, **kwargs)
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=1)
+        self._trend_data: List[Dict[str, Any]] = []
+        self._reporting_period: str = ""
+        self._hover_coords: List[Tuple[float, Dict[str, Any]]] = []
+        self._max_val: float = 1.0
+        self._expanded_dialog: Optional["ExpandedAttendanceDailyTrendDialog"] = None
+        self._scroll_active: bool = False
+
+        # Header block (Row 0)
+        hdr = ctk.CTkFrame(self, fg_color="transparent")
+        hdr.grid(row=0, column=0, sticky="ew", padx=12, pady=(8, 2))
+        hdr.grid_columnconfigure(0, weight=1)
+        hdr.grid_columnconfigure(1, weight=0)
+        hdr.grid_columnconfigure(2, weight=0)
+
+        t_box = ctk.CTkFrame(hdr, fg_color="transparent")
+        t_box.grid(row=0, column=0, sticky="w")
+        self.lbl_title = ctk.CTkLabel(
+            t_box,
+            text="Daily Attendance Trend",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12, weight="bold"),
+            text_color=ui.COLOR_TEXT,
+            anchor="w",
+        )
+        self.lbl_title.pack(anchor="w")
+        self.lbl_subtitle = ctk.CTkLabel(
+            t_box,
+            text="Present & Absent day equivalents • Missing Swipe & Regularized distinct days",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=9),
+            text_color=ui.COLOR_TEXT_SEC,
+            anchor="w",
+        )
+        self.lbl_subtitle.pack(anchor="w")
+
+        # Top-right series legend
+        leg = ctk.CTkFrame(hdr, fg_color="transparent")
+        leg.grid(row=0, column=1, sticky="e")
+        legend_items = [
+            ("● Present", "#10B981"),
+            ("● Absent", "#EF4444"),
+            ("■ Missing Swipes", "#F59E0B"),
+            ("▲ Regularized", "#F43F5E"),
+        ]
+        for s_name, s_col in legend_items:
+            ctk.CTkLabel(
+                leg,
+                text=s_name,
+                font=ctk.CTkFont(family=ui.FONT_FAMILY, size=9, weight="bold"),
+                text_color=s_col,
+            ).pack(side="left", padx=(5, 0))
+
+        # Expand button (Row 0, Col 2)
+        self.btn_expand = ctk.CTkButton(
+            hdr,
+            text="⛶",
+            width=28,
+            height=24,
+            font=ctk.CTkFont(size=14),
+            fg_color="transparent",
+            text_color=ui.COLOR_TEXT_SEC,
+            hover_color=ui.COLOR_CARD_HOVER,
+            command=self._on_expand_clicked,
+        )
+        self.btn_expand.grid(row=0, column=2, sticky="e", padx=(8, 0))
+        ui.create_tooltip(self.btn_expand, "Expand Daily Attendance Trend")
+
+        # Chart Container (Row 1): Fixed Y-axis (Col 0) + Scrollable Plot Canvas (Col 1)
+        self.plot_container = ctk.CTkFrame(self, fg_color="transparent")
+        self.plot_container.grid(row=1, column=0, sticky="nsew", padx=10, pady=(2, 2))
+        self.plot_container.grid_columnconfigure(0, weight=0, minsize=32)
+        self.plot_container.grid_columnconfigure(1, weight=1)
+        self.plot_container.grid_rowconfigure(0, weight=1)
+        self.plot_container.grid_rowconfigure(1, weight=0)
+
+        # Fixed Y-axis canvas on left
+        self.y_axis_canvas = tk.Canvas(
+            self.plot_container,
+            width=32,
+            height=135,
+            bg=ui.COLOR_CARD,
+            bd=0,
+            highlightthickness=0,
+        )
+        self.y_axis_canvas.grid(row=0, column=0, sticky="ns", padx=(0, 0), pady=0)
+
+        # Scrollable plot canvas
+        self.chart_canvas = tk.Canvas(
+            self.plot_container,
+            height=135,
+            bg=ui.COLOR_CARD,
+            bd=0,
+            highlightthickness=0,
+        )
+        self.chart_canvas.grid(row=0, column=1, sticky="nsew", padx=0, pady=0)
+
+        # Horizontal Scrollbar
+        self.h_scrollbar = ctk.CTkScrollbar(
+            self.plot_container,
+            orientation="horizontal",
+            command=self.chart_canvas.xview,
+            height=9,
+        )
+        self.chart_canvas.configure(xscrollcommand=self.h_scrollbar.set)
+
+        self.chart_canvas.bind("<Configure>", lambda e: self._draw_chart())
+        self.chart_canvas.bind("<Motion>", self._on_canvas_motion)
+        self.chart_canvas.bind("<Leave>", self._on_canvas_leave)
+        self.chart_canvas.bind("<MouseWheel>", self._on_mousewheel)
+        self.chart_canvas.bind("<Shift-MouseWheel>", self._on_mousewheel)
+
+        # Hover coordinate & value inspector label (Row 2)
+        self.lbl_hover_info = ctk.CTkLabel(
+            self,
+            text="Hover over chart line to inspect daily values",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=9),
+            text_color=ui.COLOR_TEXT_DIM,
+            anchor="w",
+        )
+        self.lbl_hover_info.grid(row=2, column=0, sticky="ew", padx=12, pady=(0, 4))
+
+        # Empty state label
+        self.lbl_empty = ctk.CTkLabel(
+            self,
+            text="No daily attendance records in active dataset",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12),
+            text_color=ui.COLOR_TEXT_DIM,
+        )
+
+        self.reset()
+
+    def _on_expand_clicked(self):
+        """Open the dedicated enlarged Daily Attendance Trend dialog."""
+        if self._expanded_dialog is not None and self._expanded_dialog.winfo_exists():
+            self._expanded_dialog.lift()
+            self._expanded_dialog.focus_force()
+            return
+        if not self._trend_data:
+            return
+        self._expanded_dialog = ExpandedAttendanceDailyTrendDialog(
+            parent_widget=self,
+            trend_data=self._trend_data,
+            reporting_period=self._reporting_period,
+        )
+
+    def _on_mousewheel(self, event):
+        """Allow horizontal scrolling with mouse wheel when scrollbar is active."""
+        if self._scroll_active:
+            delta = event.delta
+            if delta != 0:
+                self.chart_canvas.xview_scroll(int(-1 * (delta / 120)), "units")
+
+    def update_data(self, trend_data: List[Dict[str, Any]], reporting_period: str = ""):
+        self._trend_data = trend_data or []
+        self._reporting_period = reporting_period
+
+        if self._expanded_dialog is not None and self._expanded_dialog.winfo_exists():
+            try:
+                self._expanded_dialog.update_data(self._trend_data, reporting_period=self._reporting_period)
+            except Exception:
+                pass
+
+        if not self._trend_data:
+            self.reset()
+            return
+
+        self.lbl_empty.grid_remove()
+        self.plot_container.grid()
+        self.lbl_hover_info.grid()
+        self._draw_chart()
+        self.after_idle(self._draw_chart)
+
+    def reset(self):
+        self._trend_data = []
+        self._reporting_period = ""
+        self._hover_coords = []
+        self._max_val = 1.0
+        self._scroll_active = False
+        self.chart_canvas.delete("all")
+        self.y_axis_canvas.delete("all")
+        self.h_scrollbar.grid_remove()
+        self.lbl_hover_info.configure(text="Hover over chart line to inspect daily values")
+        self.plot_container.grid_remove()
+        self.lbl_hover_info.grid_remove()
+        self.lbl_empty.grid(row=1, column=0, rowspan=2, pady=25)
+        if self._expanded_dialog is not None and self._expanded_dialog.winfo_exists():
+            try:
+                self._expanded_dialog.destroy()
+            except Exception:
+                pass
+            self._expanded_dialog = None
+
+    def _draw_chart(self):
+        self.chart_canvas.delete("all")
+        self.y_axis_canvas.delete("all")
+        self._hover_coords = []
+        visible_w = self.chart_canvas.winfo_width()
+        h = self.chart_canvas.winfo_height()
+        if visible_w <= 40 or h <= 20 or not self._trend_data:
+            return
+
+        pad_top = 16.0
+        pad_bottom = 18.0
+        pad_h = 6.0
+        h_avail = max(10.0, h - pad_top - pad_bottom)
+        n_dates = len(self._trend_data)
+
+        # Determine vertical scale max across all 4 series
+        max_val = 1.0
+        for d in self._trend_data:
+            max_val = max(
+                max_val,
+                float(d.get("present_days", 0.0)),
+                float(d.get("absent_days", 0.0)),
+                float(d.get("missing_swipe_days", 0)),
+                float(d.get("regularized_days", 0)),
+            )
+        if max_val < 4.0:
+            max_val = 4.0
+        max_val = math.ceil(max_val)
+        self._max_val = float(max_val)
+
+        # Draw Y-axis scale on fixed y_axis_canvas
+        self.y_axis_canvas.create_text(
+            28, 5.0, text="days", anchor="e", fill=ui.COLOR_TEXT_DIM, font=(ui.FONT_FAMILY, 8)
+        )
+        grid_fracs = [0.0, 0.5, 1.0] if max_val <= 6 else [0.0, 0.333, 0.667, 1.0]
+        for frac in grid_fracs:
+            y = pad_top + frac * h_avail
+            val_at_y = int(round(max_val * (1.0 - frac)))
+            self.y_axis_canvas.create_text(
+                24, y, text=f"{val_at_y}", anchor="e", fill=ui.COLOR_TEXT_DIM, font=(ui.FONT_FAMILY, 9)
+            )
+            self.y_axis_canvas.create_line(26, y, 32, y, fill=ui.COLOR_BORDER, width=1)
+
+        # Horizontal layout: minimum spacing per point = 24px
+        min_spacing = 24.0
+        natural_w = pad_h * 2 + (n_dates - 1) * min_spacing if n_dates > 1 else pad_h * 2
+
+        if natural_w > visible_w:
+            plot_w = natural_w
+            x_step = min_spacing
+            self._scroll_active = True
+            self.h_scrollbar.grid(row=1, column=1, sticky="ew", padx=0, pady=(2, 0))
+            self.chart_canvas.configure(scrollregion=(0, 0, plot_w, h))
+        else:
+            plot_w = visible_w
+            x_step = (visible_w - 2 * pad_h) / max(1, n_dates - 1) if n_dates > 1 else 0.0
+            self._scroll_active = False
+            self.h_scrollbar.grid_remove()
+            self.chart_canvas.configure(scrollregion=(0, 0, visible_w, h))
+            self.chart_canvas.xview_moveto(0.0)
+
+        # Horizontal grid lines
+        for frac in grid_fracs:
+            y = pad_top + frac * h_avail
+            self.chart_canvas.create_line(0, y, plot_w, y, fill=ui.COLOR_BORDER, width=1)
+
+        # Calculate coordinates for each date point
+        for i, d_rec in enumerate(self._trend_data):
+            if n_dates == 1:
+                x = plot_w / 2.0
+            else:
+                x = pad_h + i * x_step
+            self._hover_coords.append((x, d_rec))
+
+        # Plot 4 Series:
+        # 1. Missing Swipes: dashed amber (#F59E0B)
+        # 2. Regularized: dotted rose (#F43F5E)
+        # 3. Absent: solid red (#EF4444)
+        # 4. Present: solid green (#10B981)
+        series_configs = [
+            ("missing_swipe_days", "#F59E0B", (4, 3), "square"),
+            ("regularized_days", "#F43F5E", (2, 2), "triangle"),
+            ("absent_days", "#EF4444", None, "circle"),
+            ("present_days", "#10B981", None, "circle"),
+        ]
+
+        for s_key, s_color, s_dash, m_shape in series_configs:
+            pts = []
+            for x, d_rec in self._hover_coords:
+                val = float(d_rec.get(s_key, 0.0))
+                y = pad_top + (1.0 - (val / self._max_val)) * h_avail
+                pts.extend([x, y])
+
+            if len(pts) >= 4:
+                if s_dash:
+                    self.chart_canvas.create_line(pts, fill=s_color, width=2, dash=s_dash)
+                else:
+                    self.chart_canvas.create_line(pts, fill=s_color, width=2)
+
+            for j in range(0, len(pts), 2):
+                px, py = pts[j], pts[j + 1]
+                if m_shape == "circle":
+                    self.chart_canvas.create_oval(
+                        px - 2.5, py - 2.5, px + 2.5, py + 2.5,
+                        fill=s_color, outline=ui.COLOR_CARD, width=1
+                    )
+                elif m_shape == "square":
+                    self.chart_canvas.create_rectangle(
+                        px - 2.5, py - 2.5, px + 2.5, py + 2.5,
+                        fill=s_color, outline=ui.COLOR_CARD, width=1
+                    )
+                elif m_shape == "triangle":
+                    self.chart_canvas.create_polygon(
+                        px, py - 3.5, px - 3.0, py + 3.0, px + 3.0, py + 3.0,
+                        fill=s_color, outline=ui.COLOR_CARD, width=1
+                    )
+
+        # Date axis labels (subsampled based on point spacing)
+        label_spacing_step = max(1, math.ceil(65.0 / max(1.0, x_step)))
+        sample_indices = set(range(0, n_dates, label_spacing_step))
+        sample_indices.add(n_dates - 1)
+
+        if n_dates > 2 and (n_dates - 1) in sample_indices:
+            candidates = sorted([idx for idx in sample_indices if idx < n_dates - 1])
+            if candidates and ((n_dates - 1) - candidates[-1]) < max(1, int(label_spacing_step * 0.6)):
+                sample_indices.remove(candidates[-1])
+
+        for i, (x, d_rec) in enumerate(self._hover_coords):
+            if i in sample_indices:
+                d_lbl = d_rec.get("date_str", "")
+                if len(d_lbl) == 10 and d_lbl[4] == "-" and d_lbl[7] == "-":
+                    try:
+                        dt = datetime.strptime(d_lbl, "%Y-%m-%d")
+                        d_lbl = dt.strftime("%d %b")
+                    except Exception:
+                        d_lbl = d_lbl[5:]
+
+                if i == 0:
+                    anchor = "w"
+                    lx = 2.0
+                elif i == n_dates - 1:
+                    anchor = "e"
+                    lx = plot_w - 2.0
+                else:
+                    anchor = "center"
+                    lx = x
+
+                self.chart_canvas.create_text(
+                    lx,
+                    h - 7,
+                    text=d_lbl,
+                    anchor=anchor,
+                    fill=ui.COLOR_TEXT_DIM,
+                    font=(ui.FONT_FAMILY, 9),
+                )
+
+    def _on_canvas_motion(self, event):
+        if not self._hover_coords:
+            return
+        canvas_x = self.chart_canvas.canvasx(event.x)
+        nearest_x, nearest_rec = min(self._hover_coords, key=lambda item: abs(item[0] - canvas_x))
+        h = self.chart_canvas.winfo_height()
+        pad_top = 16.0
+        pad_bottom = 18.0
+        h_avail = max(10.0, h - pad_top - pad_bottom)
+
+        self.chart_canvas.delete("hover_indicator")
+        # Vertical guide line
+        self.chart_canvas.create_line(
+            nearest_x, pad_top, nearest_x, h - pad_bottom,
+            fill="#3B82F6", width=1, dash=(2, 2), tags="hover_indicator"
+        )
+        # Highlight points on hover
+        series_items = [
+            ("present_days", "#10B981", "circle"),
+            ("absent_days", "#EF4444", "circle"),
+            ("missing_swipe_days", "#F59E0B", "square"),
+            ("regularized_days", "#F43F5E", "triangle"),
+        ]
+        for s_key, s_col, m_shape in series_items:
+            val = float(nearest_rec.get(s_key, 0.0))
+            y_pt = pad_top + (1.0 - (val / self._max_val)) * h_avail
+            if m_shape == "circle":
+                self.chart_canvas.create_oval(
+                    nearest_x - 4.5, y_pt - 4.5, nearest_x + 4.5, y_pt + 4.5,
+                    fill=s_col, outline="#FFFFFF", width=1.5, tags="hover_indicator"
+                )
+            elif m_shape == "square":
+                self.chart_canvas.create_rectangle(
+                    nearest_x - 4.5, y_pt - 4.5, nearest_x + 4.5, y_pt + 4.5,
+                    fill=s_col, outline="#FFFFFF", width=1.5, tags="hover_indicator"
+                )
+            elif m_shape == "triangle":
+                self.chart_canvas.create_polygon(
+                    nearest_x, y_pt - 5.5, nearest_x - 4.5, y_pt + 4.5, nearest_x + 4.5, y_pt + 4.5,
+                    fill=s_col, outline="#FFFFFF", width=1.5, tags="hover_indicator"
+                )
+
+        pres_d = float(nearest_rec.get("present_days", 0.0))
+        ab_d = float(nearest_rec.get("absent_days", 0.0))
+        ms_d = int(nearest_rec.get("missing_swipe_days", 0))
+        reg_d = int(nearest_rec.get("regularized_days", 0))
+        d_str = nearest_rec.get("date_str", "")
+
+        self.lbl_hover_info.configure(
+            text=f"📅 {d_str}   •   Present: {_fmt_days(pres_d)}   •   Absent: {_fmt_days(ab_d)}   •   Missing Swipes: {ms_d:,} emp-days   •   Regularized: {reg_d:,} emp-days",
+            text_color=ui.COLOR_TEXT,
+        )
+
+    def _on_canvas_leave(self, event):
+        self.chart_canvas.delete("hover_indicator")
+        self.lbl_hover_info.configure(
+            text="Hover over chart line to inspect daily values",
+            text_color=ui.COLOR_TEXT_DIM,
+        )
+
+
+class ExpandedAttendanceDailyTrendDialog(ctk.CTkToplevel):
+    """
+    Dedicated enlarged, resizable modal/dialog displaying the Attendance Daily Trend.
+    Reuses prepared trend data without reloading Excel or recomputing KPIs.
+    Supports horizontal scrolling for long reporting periods, hover inspection,
+    and Escape key to close. Prevents duplicate dialogs.
+    """
+    def __init__(self, parent_widget: "AttendanceDailyTrendWidget", trend_data: List[Dict[str, Any]], reporting_period: str = ""):
+        super().__init__()
+        self.parent_widget = parent_widget
+        self._trend_data = trend_data
+        self._reporting_period = reporting_period
+
+        self.title("Daily Attendance Trend — Expanded Analysis")
+        self.geometry("1100x650")
+        self.minsize(800, 450)
+        self.configure(fg_color=ui.COLOR_BG)
+
+        self.update_idletasks()
+        try:
+            x = max(50, parent_widget.winfo_rootx() - 100)
+            y = max(50, parent_widget.winfo_rooty() - 100)
+            self.geometry(f"+{x}+{y}")
+        except Exception:
+            pass
+
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=1)
+
+        # Top Header Bar
+        hdr = ctk.CTkFrame(self, fg_color=ui.COLOR_CARD, corner_radius=0, height=52)
+        hdr.grid(row=0, column=0, sticky="ew")
+        hdr.grid_columnconfigure(0, weight=1)
+        hdr.grid_columnconfigure(1, weight=0)
+
+        t_box = ctk.CTkFrame(hdr, fg_color="transparent")
+        t_box.grid(row=0, column=0, sticky="w", padx=20, pady=10)
+
+        period_str = f" • Reporting Period: {reporting_period}" if reporting_period else ""
+        ctk.CTkLabel(
+            t_box,
+            text="Daily Attendance Trend — Expanded Analysis",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=16, weight="bold"),
+            text_color=ui.COLOR_TEXT,
+            anchor="w",
+        ).pack(anchor="w")
+        self.lbl_subtitle = ctk.CTkLabel(
+            t_box,
+            text=f"Present & Absent day equivalents • Missing Swipes & Regularized distinct days{period_str}",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12),
+            text_color=ui.COLOR_TEXT_SEC,
+            anchor="w",
+        )
+        self.lbl_subtitle.pack(anchor="w")
+
+        r_box = ctk.CTkFrame(hdr, fg_color="transparent")
+        r_box.grid(row=0, column=1, sticky="e", padx=20, pady=10)
+
+        btn_close = ui.create_secondary_button(
+            r_box,
+            "✕ Close",
+            command=self._on_close,
+            width=80,
+            height=28,
+        )
+        btn_close.pack(side="right")
+
+        # Body: embed an expanded AttendanceDailyTrendWidget
+        body = ctk.CTkFrame(self, fg_color="transparent")
+        body.grid(row=1, column=0, sticky="nsew", padx=20, pady=(12, 16))
+        body.grid_columnconfigure(0, weight=1)
+        body.grid_rowconfigure(0, weight=1)
+
+        self.expanded_trend = AttendanceDailyTrendWidget(body, fg_color=ui.COLOR_CARD)
+        self.expanded_trend.grid(row=0, column=0, sticky="nsew")
+        if hasattr(self.expanded_trend, "btn_expand"):
+            self.expanded_trend.btn_expand.grid_remove()
+
+        self.expanded_trend.update_data(self._trend_data, reporting_period=self._reporting_period)
+
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.bind("<Escape>", lambda e: self._on_close())
+        self.focus_force()
+
+    def update_data(self, trend_data: List[Dict[str, Any]], reporting_period: str = ""):
+        self._trend_data = trend_data or []
+        self._reporting_period = reporting_period
+        period_str = f" • Reporting Period: {reporting_period}" if reporting_period else ""
+        if hasattr(self, "lbl_subtitle"):
+            self.lbl_subtitle.configure(text=f"Present & Absent day equivalents • Missing Swipes & Regularized distinct days{period_str}")
+        if hasattr(self, "expanded_trend"):
+            self.expanded_trend.update_data(self._trend_data, reporting_period=self._reporting_period)
+
+    def _on_close(self):
+        if hasattr(self.parent_widget, "_expanded_dialog"):
+            self.parent_widget._expanded_dialog = None
+        self.destroy()
 
 
 class DateRangePickerDialog(ctk.CTkToplevel):
@@ -1878,6 +2420,511 @@ class BusinessUnitComparisonTableWidget(ctk.CTkFrame):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Attendance Business Unit Comparison Table (Step 31)
+# ─────────────────────────────────────────────────────────────────────────────
+
+ATTENDANCE_TABLE_COLUMNS = [
+    # (col_id, title, min_width, anchor)
+    ("bu", "Business Unit", 160, "w"),
+    ("hc", "Headcount", 65, "e"),
+    ("rec_days", "Rec. Days", 65, "e"),
+    ("present", "Present", 65, "e"),
+    ("pres_pct", "Pres %", 55, "e"),
+    ("absent", "Absent", 60, "e"),
+    ("absent_pct", "Absent %", 55, "e"),
+    ("ms_days", "MS Days", 60, "e"),
+    ("ms_rate", "MS Rate", 60, "e"),
+    ("reg_days", "Reg Days", 60, "e"),
+    ("reg_rate", "Reg Rate", 60, "e"),
+]
+TOTAL_ATTENDANCE_TABLE_WIDTH = sum(c[2] for c in ATTENDANCE_TABLE_COLUMNS)  # 710px
+
+
+class AttendanceBUComparisonWidget(ctk.CTkFrame):
+    """
+    Attendance-focused scrollable Business Unit comparison table with strict column alignment.
+    Displays BU-level Observed Headcount, Recorded Days, Present Days & %, Absent Days & %,
+    Missing Swipe Days & Rate, Regularized Exception Days & Rate, and pinned organization total.
+    Features:
+    - Bounded fixed-height rows viewport (6-8 rows visible).
+    - Sticky header pinned at the top with clickable sort columns.
+    - Pinned Organization-Wide Total row directly beneath data rows.
+    - Synchronized horizontal scrolling across Header, Data Rows, and Total Row.
+    - Full BU text accessible via hover inspection line.
+    - Mouse-wheel isolation preventing outer page scrolling.
+    """
+    def __init__(self, parent, **kwargs):
+        kwargs.setdefault("corner_radius", 10)
+        kwargs.setdefault("fg_color", ui.COLOR_CARD)
+        kwargs.setdefault("border_width", 1)
+        kwargs.setdefault("border_color", ui.COLOR_BORDER)
+        super().__init__(parent, **kwargs)
+        self.grid_columnconfigure(0, weight=1)
+        self._bu_data: List[Dict[str, Any]] = []
+        self._bu_total: Dict[str, Any] = {}
+        self._sort_col: str = "bu"
+        self._sort_desc: bool = False
+
+        # Header block (Row 0)
+        hdr = ctk.CTkFrame(self, fg_color="transparent")
+        hdr.grid(row=0, column=0, sticky="ew", padx=12, pady=(8, 4))
+        hdr.grid_columnconfigure(0, weight=1)
+        hdr.grid_columnconfigure(1, weight=0)
+
+        t_box = ctk.CTkFrame(hdr, fg_color="transparent")
+        t_box.grid(row=0, column=0, sticky="w")
+        self.lbl_title = ctk.CTkLabel(
+            t_box,
+            text="Business Unit Attendance Comparison",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12, weight="bold"),
+            text_color=ui.COLOR_TEXT,
+            anchor="w",
+        )
+        self.lbl_title.pack(anchor="w")
+
+        self.lbl_sub = ctk.CTkLabel(
+            t_box,
+            text="Headcount, recorded days, Present/Absent % (composition denom), and MS/Regularized exception rates (recorded days denom)",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=9),
+            text_color=ui.COLOR_TEXT_SEC,
+            anchor="w",
+        )
+        self.lbl_sub.pack(anchor="w")
+
+        self.lbl_bu_count = ctk.CTkLabel(
+            hdr,
+            text="",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=10, weight="bold"),
+            text_color=ui.COLOR_TEXT_DIM,
+            anchor="e",
+        )
+        self.lbl_bu_count.grid(row=0, column=1, sticky="e")
+
+        # Table Grid Container (Row 1)
+        self.grid_box = ctk.CTkFrame(self, fg_color="transparent")
+        self.grid_box.grid(row=1, column=0, sticky="ew", padx=10, pady=(2, 2))
+        self.grid_box.grid_columnconfigure(0, weight=1)
+        self.grid_box.grid_columnconfigure(1, weight=0)
+
+        # 1. Sticky Header Canvas (Row 0 of grid_box)
+        self.header_canvas = tk.Canvas(
+            self.grid_box,
+            height=26,
+            bg=ui.COLOR_INPUT_BG,
+            bd=0,
+            highlightthickness=0,
+        )
+        self.header_canvas.grid(row=0, column=0, sticky="ew")
+
+        self.header_spacer = ctk.CTkFrame(self.grid_box, width=10, height=26, fg_color=ui.COLOR_INPUT_BG)
+        self.header_spacer.grid(row=0, column=1, sticky="ns")
+
+        self.table_hdr_frame = ctk.CTkFrame(self.header_canvas, fg_color=ui.COLOR_INPUT_BG, corner_radius=0)
+        self.header_window = self.header_canvas.create_window((0, 0), window=self.table_hdr_frame, anchor="nw")
+
+        # 2. Data Rows Viewport Canvas (Row 1 of grid_box)
+        self.rows_canvas = tk.Canvas(
+            self.grid_box,
+            height=176,
+            bg=ui.COLOR_CARD,
+            bd=0,
+            highlightthickness=0,
+        )
+        self.rows_canvas.grid(row=1, column=0, sticky="nsew")
+
+        self.v_scrollbar = ctk.CTkScrollbar(
+            self.grid_box,
+            orientation="vertical",
+            command=self.rows_canvas.yview,
+            width=10,
+            button_color="#334155",
+            button_hover_color="#475569",
+        )
+        self.v_scrollbar.grid(row=1, column=1, sticky="ns", padx=(2, 0))
+        self.rows_canvas.configure(yscrollcommand=self.v_scrollbar.set)
+
+        self.rows_inner_frame = ctk.CTkFrame(self.rows_canvas, fg_color="transparent")
+        self.rows_frame = self.rows_inner_frame  # Backwards compatibility alias
+        self.rows_window = self.rows_canvas.create_window((0, 0), window=self.rows_inner_frame, anchor="nw")
+
+        # 3. Pinned Organization-Wide Total Canvas (Row 2 of grid_box)
+        self.total_canvas = tk.Canvas(
+            self.grid_box,
+            height=28,
+            bg="#18233C",
+            bd=0,
+            highlightthickness=0,
+        )
+        self.total_canvas.grid(row=2, column=0, sticky="ew")
+
+        self.total_spacer = ctk.CTkFrame(self.grid_box, width=10, height=28, fg_color="#18233C")
+        self.total_spacer.grid(row=2, column=1, sticky="ns")
+
+        self.total_frame = ctk.CTkFrame(self.total_canvas, fg_color="#18233C", corner_radius=0)
+        self.total_window = self.total_canvas.create_window((0, 0), window=self.total_frame, anchor="nw")
+
+        # 4. Horizontal Scrollbar (Row 3 of grid_box)
+        self.h_scrollbar = ctk.CTkScrollbar(
+            self.grid_box,
+            orientation="horizontal",
+            command=self._on_h_scroll,
+            height=10,
+            button_color="#334155",
+            button_hover_color="#475569",
+        )
+        self.h_scrollbar.grid(row=3, column=0, sticky="ew", pady=(3, 2))
+
+        self.h_scrollbar_spacer = ctk.CTkFrame(self.grid_box, width=10, height=10, fg_color="transparent")
+        self.h_scrollbar_spacer.grid(row=3, column=1, sticky="ns")
+
+        self.rows_canvas.configure(xscrollcommand=self._on_canvas_xscroll)
+
+        # Backwards compatibility aliases
+        self.table_canvas = self.rows_canvas
+        self.table_viewport = self.grid_box
+        self.table_inner_frame = self.rows_inner_frame
+
+        # Row 2 of Widget: Interactive Info Tip / Full BU Name Display
+        self.lbl_info = ctk.CTkLabel(
+            self,
+            text="Tip: Shift + MouseWheel to scroll columns horizontally  •  Click header to sort  •  Hover row for full BU details",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=9),
+            text_color=ui.COLOR_TEXT_DIM,
+            anchor="w",
+        )
+        self.lbl_info.grid(row=2, column=0, sticky="w", padx=12, pady=(2, 0))
+
+        # Row 3 of Widget: Footnote
+        self.lbl_note = ctk.CTkLabel(
+            self,
+            text="* Headcount reflects observed unique employees in each BU; Total reflects deduplicated organization-wide unique headcount. Present % and Absent % use composition denominator; MS Rate and Reg Rate use recorded employee-days.",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=9),
+            text_color=ui.COLOR_TEXT_DIM,
+            anchor="w",
+        )
+        self.lbl_note.grid(row=3, column=0, sticky="w", padx=12, pady=(0, 4))
+
+        # Empty state label
+        self.lbl_empty = ctk.CTkLabel(
+            self,
+            text="No Business Unit data available in active dataset",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12),
+            text_color=ui.COLOR_TEXT_DIM,
+        )
+
+        # Mouse wheel & configure bindings
+        self.rows_canvas.bind("<MouseWheel>", self._on_rows_mousewheel)
+        self.rows_canvas.bind("<Shift-MouseWheel>", self._on_shift_mousewheel)
+        self.rows_inner_frame.bind("<MouseWheel>", self._on_rows_mousewheel)
+        self.rows_inner_frame.bind("<Shift-MouseWheel>", self._on_shift_mousewheel)
+        self.header_canvas.bind("<Shift-MouseWheel>", self._on_shift_mousewheel)
+        self.total_canvas.bind("<Shift-MouseWheel>", self._on_shift_mousewheel)
+
+        self.grid_box.bind("<Configure>", self._on_grid_box_configure)
+        self.rows_canvas.bind("<Configure>", lambda e: self._sync_table_geometry())
+
+        self.reset()
+
+    def _on_h_scroll(self, *args):
+        """Scroll Header, Data Rows, and Total Row horizontally in lockstep."""
+        self.header_canvas.xview(*args)
+        self.rows_canvas.xview(*args)
+        self.total_canvas.xview(*args)
+
+    def _on_canvas_xscroll(self, first, last):
+        """Synchronize horizontal scrollbar thumb with current canvas view."""
+        self.h_scrollbar.set(first, last)
+
+    def _on_rows_mousewheel(self, event):
+        """Scroll BU rows vertically while stopping event propagation to outer page."""
+        delta = -1 if event.delta > 0 else 1
+        self.rows_canvas.yview_scroll(delta, "units")
+        return "break"
+
+    def _on_shift_mousewheel(self, event):
+        """Scroll all three canvases horizontally via Shift + MouseWheel."""
+        delta = -1 if event.delta > 0 else 1
+        self.header_canvas.xview_scroll(delta, "units")
+        self.rows_canvas.xview_scroll(delta, "units")
+        self.total_canvas.xview_scroll(delta, "units")
+        return "break"
+
+    def _on_row_enter(self, b_rec: Dict[str, Any]):
+        """Display full unclipped BU details in the info tip line on hover."""
+        bu_full = b_rec.get("business_unit", "")
+        h_c = b_rec.get("observed_headcount", 0)
+        r_d = b_rec.get("recorded_employee_days", 0)
+        p_pct = b_rec.get("present_pct", 0.0)
+        a_pct = b_rec.get("absent_pct", 0.0)
+        m_c = b_rec.get("missing_swipe_days", 0)
+        e_c = b_rec.get("regularized_days", b_rec.get("exception_days", 0))
+        self.lbl_info.configure(
+            text=f"🏢 {bu_full}  •  Headcount: {h_c:,}  •  Recorded Days: {r_d:,}  •  Present: {p_pct:.1f}%  •  Absent: {a_pct:.1f}%  •  MS Days: {m_c:,}  •  Reg Days: {e_c:,}",
+            text_color=ui.COLOR_TEXT,
+        )
+
+    def _on_row_leave(self):
+        self.lbl_info.configure(
+            text="Tip: Shift + MouseWheel to scroll columns horizontally  •  Click header to sort  •  Hover row for full BU details",
+            text_color=ui.COLOR_TEXT_DIM,
+        )
+
+    def _on_header_click(self, col_id: str):
+        """Sort data rows by clicked column."""
+        if self._sort_col == col_id:
+            self._sort_desc = not self._sort_desc
+        else:
+            self._sort_col = col_id
+            self._sort_desc = False
+        self._apply_sort()
+        self._render_headers()
+        self._render_rows()
+
+    def _apply_sort(self):
+        def _sort_key(item: Dict[str, Any]):
+            col = self._sort_col
+            if col == "bu":
+                return str(item.get("business_unit", "")).lower()
+            elif col == "hc":
+                return item.get("observed_headcount", 0)
+            elif col == "rec_days":
+                return item.get("recorded_employee_days", 0)
+            elif col == "present":
+                return item.get("present_days", 0.0)
+            elif col == "pres_pct":
+                return item.get("present_pct", 0.0)
+            elif col == "absent":
+                return item.get("absent_days", 0.0)
+            elif col == "absent_pct":
+                return item.get("absent_pct", 0.0)
+            elif col == "ms_days":
+                return item.get("missing_swipe_days", 0)
+            elif col == "ms_rate":
+                return item.get("missing_swipe_rate_pct", 0.0)
+            elif col == "reg_days":
+                return item.get("regularized_days", item.get("exception_days", 0))
+            elif col == "reg_rate":
+                return item.get("regularized_rate_pct", item.get("exception_rate_pct", 0.0))
+            return 0
+        self._bu_data.sort(key=_sort_key, reverse=self._sort_desc)
+
+    def update_data(self, bu_data: List[Dict[str, Any]], bu_total: Dict[str, Any]):
+        self._bu_data = list(bu_data) if bu_data else []
+        self._bu_total = bu_total or {}
+
+        if not self._bu_data:
+            self.reset()
+            return
+
+        self.lbl_empty.grid_remove()
+        self.grid_box.grid()
+        self.lbl_info.grid()
+
+        cnt = len(self._bu_data)
+        self.lbl_bu_count.configure(text=f"{cnt} Business Units")
+
+        self._apply_sort()
+        self._render_headers()
+        self._render_rows()
+        self._render_total()
+        self._sync_table_geometry()
+        self.after_idle(self._sync_table_geometry)
+
+    def reset(self):
+        self._bu_data = []
+        self._bu_total = {}
+        for child in self.table_hdr_frame.winfo_children():
+            child.destroy()
+        for child in self.rows_inner_frame.winfo_children():
+            child.destroy()
+        for child in self.total_frame.winfo_children():
+            child.destroy()
+        self.lbl_bu_count.configure(text="")
+        self.lbl_info.grid_remove()
+        self.grid_box.grid_remove()
+        self.lbl_empty.grid(row=1, column=0, pady=30)
+
+    def _render_headers(self):
+        for child in self.table_hdr_frame.winfo_children():
+            child.destroy()
+        self._configure_frame_columns(self.table_hdr_frame)
+
+        for idx, (col_id, title, col_w, anchor) in enumerate(ATTENDANCE_TABLE_COLUMNS):
+            sort_indicator = ""
+            if self._sort_col == col_id:
+                sort_indicator = " ▼" if self._sort_desc else " ▲"
+            lbl = ctk.CTkLabel(
+                self.table_hdr_frame,
+                text=f"{title}{sort_indicator}",
+                font=ctk.CTkFont(family=ui.FONT_FAMILY, size=9, weight="bold"),
+                text_color=ui.COLOR_ACCENT if self._sort_col == col_id else ui.COLOR_TEXT_SEC,
+                width=col_w,
+                height=20,
+                anchor=anchor,
+                cursor="hand2",
+            )
+            lbl.grid(row=0, column=idx, sticky="nsew", padx=2, pady=3)
+            lbl.bind("<Button-1>", lambda e, c=col_id: self._on_header_click(c))
+            lbl.bind("<Shift-MouseWheel>", self._on_shift_mousewheel)
+
+    def _render_rows(self):
+        for child in self.rows_inner_frame.winfo_children():
+            child.destroy()
+
+        for row_idx, b in enumerate(self._bu_data):
+            row_bg = "transparent" if row_idx % 2 == 0 else "#0D1424"
+            row_box = ctk.CTkFrame(self.rows_inner_frame, fg_color=row_bg, corner_radius=2, height=24)
+            row_box.grid(row=row_idx, column=0, sticky="ew", pady=1)
+            self._configure_frame_columns(row_box)
+
+            bu_name = b.get("business_unit", "")
+            disp_name = bu_name if len(bu_name) <= 38 else bu_name[:35] + "..."
+
+            hc = b.get("observed_headcount", 0)
+            rec_days = b.get("recorded_employee_days", 0)
+            pres_d = b.get("present_days", 0.0)
+            pres_pct = b.get("present_pct", 0.0)
+            ab_d = b.get("absent_days", 0.0)
+            ab_pct = b.get("absent_pct", 0.0)
+            ms_d = b.get("missing_swipe_days", 0)
+            ms_rate = b.get("missing_swipe_rate_pct", 0.0)
+            reg_d = b.get("regularized_days", b.get("exception_days", 0))
+            reg_rate = b.get("regularized_rate_pct", b.get("exception_rate_pct", 0.0))
+
+            cells = [
+                (disp_name, "w", ui.COLOR_TEXT, True),
+                (f"{hc:,}", "e", ui.COLOR_TEXT, False),
+                (f"{rec_days:,}", "e", ui.COLOR_TEXT, False),
+                (_fmt_days(pres_d), "e", ui.COLOR_TEXT, False),
+                (f"{pres_pct:.1f}%", "e", "#10B981", False),
+                (_fmt_days(ab_d), "e", ui.COLOR_ERROR if ab_d > 0 else ui.COLOR_TEXT_SEC, False),
+                (f"{ab_pct:.1f}%", "e", ui.COLOR_ERROR if ab_pct > 0 else ui.COLOR_TEXT_SEC, False),
+                (f"{ms_d:,}", "e", "#F59E0B" if ms_d > 0 else ui.COLOR_TEXT_SEC, False),
+                (f"{ms_rate:.1f}%", "e", "#F59E0B" if ms_d > 0 else ui.COLOR_TEXT_SEC, False),
+                (f"{reg_d:,}", "e", "#F43F5E" if reg_d > 0 else ui.COLOR_TEXT_SEC, False),
+                (f"{reg_rate:.1f}%", "e", "#F43F5E" if reg_d > 0 else ui.COLOR_TEXT_SEC, False),
+            ]
+
+            row_box.bind("<Enter>", lambda e, rec=b: self._on_row_enter(rec))
+            row_box.bind("<Leave>", lambda e: self._on_row_leave())
+            row_box.bind("<MouseWheel>", self._on_rows_mousewheel)
+            row_box.bind("<Shift-MouseWheel>", self._on_shift_mousewheel)
+
+            for c_idx, (txt, anch, col, is_b) in enumerate(cells):
+                col_w = ATTENDANCE_TABLE_COLUMNS[c_idx][2]
+                lbl = ctk.CTkLabel(
+                    row_box,
+                    text=txt,
+                    font=ctk.CTkFont(family=ui.FONT_FAMILY, size=9, weight="bold" if is_b else "normal"),
+                    text_color=col,
+                    width=col_w,
+                    height=20,
+                    anchor=anch,
+                )
+                lbl.grid(row=0, column=c_idx, sticky="nsew", padx=2, pady=1)
+                lbl.bind("<Enter>", lambda e, rec=b: self._on_row_enter(rec))
+                lbl.bind("<Leave>", lambda e: self._on_row_leave())
+                lbl.bind("<MouseWheel>", self._on_rows_mousewheel)
+                lbl.bind("<Shift-MouseWheel>", self._on_shift_mousewheel)
+
+    def _render_total(self):
+        for child in self.total_frame.winfo_children():
+            child.destroy()
+
+        if not self._bu_total:
+            return
+
+        self._configure_frame_columns(self.total_frame)
+        tot = self._bu_total
+        tot_hc = tot.get("observed_headcount", 0)
+        tot_rec = tot.get("recorded_employee_days", 0)
+        tot_pres_d = tot.get("present_days", 0.0)
+        tot_pres_pct = tot.get("present_pct", 0.0)
+        tot_ab_d = tot.get("absent_days", 0.0)
+        tot_ab_pct = tot.get("absent_pct", 0.0)
+        tot_ms_d = tot.get("missing_swipe_days", 0)
+        tot_ms_rate = tot.get("missing_swipe_rate_pct", 0.0)
+        tot_reg_d = tot.get("regularized_days", tot.get("exception_days", 0))
+        tot_reg_rate = tot.get("regularized_rate_pct", tot.get("exception_rate_pct", 0.0))
+
+        cells = [
+            ("Total (Organization-Wide)", "w", "#F1F5F9"),
+            (f"{tot_hc:,}", "e", "#F1F5F9"),
+            (f"{tot_rec:,}", "e", "#F1F5F9"),
+            (_fmt_days(tot_pres_d), "e", "#F1F5F9"),
+            (f"{tot_pres_pct:.1f}%", "e", "#10B981"),
+            (_fmt_days(tot_ab_d), "e", ui.COLOR_ERROR if tot_ab_d > 0 else "#94A3B8"),
+            (f"{tot_ab_pct:.1f}%", "e", ui.COLOR_ERROR if tot_ab_pct > 0 else "#94A3B8"),
+            (f"{tot_ms_d:,}", "e", "#F59E0B" if tot_ms_d > 0 else "#94A3B8"),
+            (f"{tot_ms_rate:.1f}%", "e", "#F59E0B" if tot_ms_d > 0 else "#94A3B8"),
+            (f"{tot_reg_d:,}", "e", "#F43F5E" if tot_reg_d > 0 else "#94A3B8"),
+            (f"{tot_reg_rate:.1f}%", "e", "#F43F5E" if tot_reg_d > 0 else "#94A3B8"),
+        ]
+
+        for c_idx, (txt, anch, col) in enumerate(cells):
+            col_w = ATTENDANCE_TABLE_COLUMNS[c_idx][2]
+            lbl = ctk.CTkLabel(
+                self.total_frame,
+                text=txt,
+                font=ctk.CTkFont(family=ui.FONT_FAMILY, size=9, weight="bold"),
+                text_color=col,
+                width=col_w,
+                height=20,
+                anchor=anch,
+            )
+            lbl.grid(row=0, column=c_idx, sticky="nsew", padx=2, pady=3)
+            lbl.bind("<Shift-MouseWheel>", self._on_shift_mousewheel)
+
+    def _configure_frame_columns(self, frame: ctk.CTkFrame):
+        for idx, (col_id, _, min_w, _) in enumerate(ATTENDANCE_TABLE_COLUMNS):
+            weight = 2 if col_id == "bu" else 1
+            frame.grid_columnconfigure(idx, weight=weight, minsize=min_w)
+
+    def _on_grid_box_configure(self, event):
+        self._sync_table_geometry()
+
+    def _sync_table_geometry(self):
+        """Synchronize widths, scrollable bounds, and DPI scaling across all three canvases."""
+        if not self._bu_data:
+            return
+
+        visible_w = self.rows_canvas.winfo_width()
+        if visible_w <= 10:
+            return
+
+        scaling = self._get_widget_scaling() if hasattr(self, "_get_widget_scaling") else 1.0
+        unscaled_vis_w = visible_w / (scaling if scaling > 0 else 1.0)
+        table_w = max(TOTAL_ATTENDANCE_TABLE_WIDTH, int(unscaled_vis_w))
+
+        # Update inner frames
+        self.table_hdr_frame.configure(width=table_w)
+        self.rows_inner_frame.configure(width=table_w)
+        self.total_frame.configure(width=table_w)
+
+        # Update canvas window widths
+        self.header_canvas.itemconfigure(self.header_window, width=table_w)
+        self.rows_canvas.itemconfigure(self.rows_window, width=table_w)
+        self.total_canvas.itemconfigure(self.total_window, width=table_w)
+
+        self.rows_inner_frame.update_idletasks()
+        rows_h = self.rows_inner_frame.winfo_reqheight()
+
+        self.rows_canvas.configure(scrollregion=(0, 0, table_w, rows_h))
+        self.header_canvas.configure(scrollregion=(0, 0, table_w, 26))
+        self.total_canvas.configure(scrollregion=(0, 0, table_w, 28))
+
+        if table_w > unscaled_vis_w + 2:
+            self.h_scrollbar.grid(row=3, column=0, sticky="ew", pady=(3, 2))
+            self.h_scrollbar_spacer.grid(row=3, column=1, sticky="ns")
+        else:
+            self.h_scrollbar.grid_remove()
+            self.h_scrollbar_spacer.grid_remove()
+            self.header_canvas.xview_moveto(0.0)
+            self.rows_canvas.xview_moveto(0.0)
+            self.total_canvas.xview_moveto(0.0)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # WorkforceDashboardView Component
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -1902,6 +2949,7 @@ class WorkforceDashboardView(ctk.CTkFrame):
         self._last_metrics_bundle: Optional[Dict[str, Any]] = None
         self._metrics_queue: queue.Queue = queue.Queue()
         self.kpi_cards: Dict[str, ExecutiveKPICard] = {}
+        self.att_kpi_cards: Dict[str, ExecutiveKPICard] = {}
 
         # Global Filter state & debounce tracking
         self._filter_state: Dict[str, Any] = {
@@ -2540,9 +3588,14 @@ class WorkforceDashboardView(ctk.CTkFrame):
             scope_desc = f"Complete Active Population ({parts[0]})"
         else:
             scope_desc = " • ".join(parts)
-        self.lbl_active_scope.configure(
-            text=f"Executive Overview • {scope_desc}"
-        )
+        if hasattr(self, "lbl_active_scope"):
+            self.lbl_active_scope.configure(
+                text=f"Executive Overview • {scope_desc}"
+            )
+        if hasattr(self, "lbl_att_active_scope"):
+            self.lbl_att_active_scope.configure(
+                text=f"Attendance Intelligence • Active Filtered Scope: {scope_desc}"
+            )
 
     # ─────────────────────────────────────────────────────────────────────────
     # C. Horizontal Navigation Bar (6 Views)
@@ -2594,6 +3647,8 @@ class WorkforceDashboardView(ctk.CTkFrame):
             container.grid_columnconfigure(0, weight=1)
             if key == "overview":
                 self._build_overview_content(container)
+            elif key == "attendance":
+                self._build_attendance_content(container)
             else:
                 self._populate_view_placeholder(container, key)
             self.view_containers[key] = container
@@ -2905,6 +3960,7 @@ class WorkforceDashboardView(ctk.CTkFrame):
 
     def _set_overview_state(self, state: str, message: str = ""):
         """Switch visibility between empty, loading, error, and ready states."""
+        self._set_attendance_state(state, message)
         if state != "ready":
             if hasattr(self, "comp_widget"):
                 self.comp_widget.reset()
@@ -3012,6 +4068,7 @@ class WorkforceDashboardView(ctk.CTkFrame):
         self._current_dataset_id = dataset_id
         self._last_metrics_bundle = bundle
         self._render_overview_kpis(bundle)
+        self._render_attendance_intelligence(bundle)
         self._set_overview_state("ready")
 
     def _on_metrics_calc_error(self, error_msg: str, job_id: int):
@@ -3233,7 +4290,289 @@ class WorkforceDashboardView(ctk.CTkFrame):
         )
 
     # ─────────────────────────────────────────────────────────────────────────
-    # F. Navigation State & View Switching
+    # F. Attendance Intelligence: Live 6 KPI Cards, Charts & BU Comparison (Step 31)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _build_attendance_content(self, parent: ctk.CTkScrollableFrame):
+        """Construct the live Attendance Intelligence view structure."""
+        # 1. Compact Scope Indicator Strip
+        self.att_scope_strip = ctk.CTkFrame(parent, fg_color="transparent")
+        self.att_scope_strip.grid(row=0, column=0, sticky="ew", pady=(2, 4))
+        self.att_scope_strip.grid_columnconfigure(0, weight=1)
+
+        self.lbl_att_active_scope = ctk.CTkLabel(
+            self.att_scope_strip,
+            text="Attendance Intelligence • Complete Active Population (All Business Units • All Dates)",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12, weight="bold"),
+            text_color=ui.COLOR_TEXT_SEC,
+            anchor="w",
+        )
+        self.lbl_att_active_scope.grid(row=0, column=0, sticky="w", padx=2)
+
+        # 2A. Empty State Container
+        self.attendance_empty_frame = ui.create_card(parent)
+        self.attendance_empty_frame.grid_columnconfigure(0, weight=1)
+        e_inner = ctk.CTkFrame(self.attendance_empty_frame, fg_color="transparent")
+        e_inner.grid(row=0, column=0, sticky="ew", padx=16, pady=16)
+        e_inner.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            e_inner, text="⚠️", font=ctk.CTkFont(size=22), text_color=ui.COLOR_WARNING
+        ).pack(anchor="w", pady=(0, 4))
+        ctk.CTkLabel(
+            e_inner,
+            text="No workforce dataset loaded. Upload a dataset to view Attendance Intelligence metrics.",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=13, weight="bold"),
+            text_color=ui.COLOR_TEXT,
+            anchor="w",
+        ).pack(anchor="w", pady=(0, 2))
+        ctk.CTkLabel(
+            e_inner,
+            text="Attendance metrics require an ingested performance dataset or attendance logs.",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11),
+            text_color=ui.COLOR_TEXT_SEC,
+            anchor="w",
+        ).pack(anchor="w", pady=(0, 10))
+
+        ui.create_secondary_button(
+            e_inner,
+            "📂 Go to Upload Section",
+            command=self._on_go_to_upload,
+            width=160,
+            height=28,
+        ).pack(anchor="w")
+
+        # 2B. Loading State Container
+        self.attendance_loading_frame = ui.create_card(parent)
+        self.attendance_loading_frame.grid_columnconfigure(0, weight=1)
+        l_inner = ctk.CTkFrame(self.attendance_loading_frame, fg_color="transparent")
+        l_inner.grid(row=0, column=0, sticky="ew", padx=16, pady=16)
+        l_inner.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            l_inner,
+            text="⏳ Calculating Attendance Intelligence metrics...",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12, weight="bold"),
+            text_color=ui.COLOR_TEXT,
+            anchor="w",
+        ).pack(anchor="w", pady=(0, 6))
+        self.attendance_prog = ctk.CTkProgressBar(
+            l_inner, mode="indeterminate", height=3, corner_radius=2,
+            fg_color=ui.COLOR_INPUT_BG, progress_color=ui.COLOR_ACCENT,
+        )
+        self.attendance_prog.pack(fill="x")
+        self.attendance_prog.set(0)
+
+        # 2C. Error State Container
+        self.attendance_error_frame = ui.create_card(parent)
+        self.attendance_error_frame.grid_columnconfigure(0, weight=1)
+        err_inner = ctk.CTkFrame(self.attendance_error_frame, fg_color="transparent")
+        err_inner.grid(row=0, column=0, sticky="ew", padx=16, pady=16)
+        err_inner.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            err_inner,
+            text="❌ Failed to calculate Attendance Intelligence metrics",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12, weight="bold"),
+            text_color=ui.COLOR_ERROR,
+            anchor="w",
+        ).pack(anchor="w", pady=(0, 2))
+        self.lbl_att_error_msg = ctk.CTkLabel(
+            err_inner,
+            text="",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11),
+            text_color=ui.COLOR_TEXT_SEC,
+            anchor="w",
+        )
+        self.lbl_att_error_msg.pack(anchor="w")
+
+        # 2D. Live Content Frame
+        self.attendance_content_frame = ctk.CTkFrame(parent, fg_color="transparent")
+        self.attendance_content_frame.grid_columnconfigure(0, weight=1)
+
+        # ── KPI Cards Frame: 6 Cards in Uniform Columns 0–5 ──
+        self.att_kpi_frame = ctk.CTkFrame(self.attendance_content_frame, fg_color="transparent")
+        self.att_kpi_frame.grid(row=0, column=0, sticky="ew", pady=(0, 5))
+        self.att_kpi_frame.grid_columnconfigure((0, 1, 2, 3, 4, 5), weight=1, uniform="att_kpis")
+        self.att_kpi_frame.grid_rowconfigure(0, weight=1)
+
+        att_card_configs = [
+            ("att_kpi_emp_hc", "1. OBSERVED EMPLOYEES", "#3B82F6", "employees", "Distinct employees with eligible records in active scope"),
+            ("att_kpi_rec_days", "2. RECORDED EMPLOYEE-DAYS", "#06B6D4", "days", "Distinct employee-calendar-days in scope"),
+            ("att_kpi_present", "3. PRESENT DAYS", "#10B981", "days", "Quantity-weighted Present day equivalents"),
+            ("att_kpi_absent", "4. ABSENT DAYS", "#EF4444", "days", "Quantity-weighted Absent day equivalents"),
+            ("att_kpi_missing_swipes", "5. MISSING SWIPE DAYS", "#F59E0B", "days", "Distinct employee-calendar-days with Missing Swipes"),
+            ("att_kpi_regularized", "6. REGULARIZED EXCEPTION DAYS", "#F43F5E", "days", "Distinct employee-calendar-days with Regularized status"),
+        ]
+
+        for col, (cid, title, color, unit, tip) in enumerate(att_card_configs):
+            card = ExecutiveKPICard(
+                self.att_kpi_frame,
+                card_id=cid,
+                title=title,
+                accent_color=color,
+                default_unit=unit,
+                tooltip_text=tip,
+            )
+            card.grid(row=0, column=col, sticky="nsew", padx=2, pady=2)
+            self.att_kpi_cards[cid] = card
+
+        # ── Charts Row: Daily Attendance Trend (Left) & Attendance Status Breakdown (Right) ──
+        self.att_charts_row_frame = ctk.CTkFrame(self.attendance_content_frame, fg_color="transparent")
+        self.att_charts_row_frame.grid(row=1, column=0, sticky="nsew", pady=(0, 5))
+        self.att_charts_row_frame.grid_columnconfigure((0, 1), weight=1, uniform="att_charts")
+        self.att_charts_row_frame.grid_rowconfigure(0, weight=1)
+
+        self.att_trend_widget = AttendanceDailyTrendWidget(self.att_charts_row_frame)
+        self.att_trend_widget.grid(row=0, column=0, sticky="nsew", padx=(0, 3), pady=0)
+
+        self.att_breakdown_widget = AttendanceStatusBreakdownWidget(self.att_charts_row_frame)
+        self.att_breakdown_widget.grid(row=0, column=1, sticky="nsew", padx=(3, 0), pady=0)
+
+        # ── Business Unit Attendance Comparison Table (Full Width) ──
+        self.att_bu_table_frame = ctk.CTkFrame(self.attendance_content_frame, fg_color="transparent")
+        self.att_bu_table_frame.grid(row=2, column=0, sticky="nsew", pady=(0, 6))
+        self.att_bu_table_frame.grid_columnconfigure(0, weight=1)
+
+        self.att_bu_table_widget = AttendanceBUComparisonWidget(self.att_bu_table_frame)
+        self.att_bu_table_widget.grid(row=0, column=0, sticky="nsew")
+
+        # Initial state: Empty
+        self._set_attendance_state("empty")
+
+    def _set_attendance_state(self, state: str, message: str = ""):
+        """Switch visibility between empty, loading, error, and ready states for Attendance tab."""
+        if not hasattr(self, "attendance_empty_frame"):
+            return
+
+        if state != "ready":
+            if hasattr(self, "att_trend_widget"):
+                self.att_trend_widget.reset()
+            if hasattr(self, "att_breakdown_widget"):
+                self.att_breakdown_widget.reset()
+            if hasattr(self, "att_bu_table_widget"):
+                self.att_bu_table_widget.reset()
+
+        if state == "empty":
+            self.attendance_empty_frame.grid(row=1, column=0, sticky="ew", pady=(0, 6))
+            self.attendance_loading_frame.grid_remove()
+            self.attendance_error_frame.grid_remove()
+            self.attendance_content_frame.grid_remove()
+            if hasattr(self, "attendance_prog"):
+                self.attendance_prog.stop()
+        elif state == "loading":
+            self.attendance_loading_frame.grid(row=1, column=0, sticky="ew", pady=(0, 6))
+            self.attendance_empty_frame.grid_remove()
+            self.attendance_error_frame.grid_remove()
+            self.attendance_content_frame.grid_remove()
+            if hasattr(self, "attendance_prog"):
+                self.attendance_prog.start()
+        elif state == "error":
+            self.attendance_error_frame.grid(row=1, column=0, sticky="ew", pady=(0, 6))
+            if hasattr(self, "lbl_att_error_msg"):
+                self.lbl_att_error_msg.configure(text=message)
+            self.attendance_empty_frame.grid_remove()
+            self.attendance_loading_frame.grid_remove()
+            self.attendance_content_frame.grid_remove()
+            if hasattr(self, "attendance_prog"):
+                self.attendance_prog.stop()
+        elif state == "ready":
+            self.attendance_content_frame.grid(row=1, column=0, sticky="nsew", pady=(0, 6))
+            self.attendance_empty_frame.grid_remove()
+            self.attendance_loading_frame.grid_remove()
+            self.attendance_error_frame.grid_remove()
+            if hasattr(self, "attendance_prog"):
+                self.attendance_prog.stop()
+
+    def _render_attendance_intelligence(self, bundle: Dict[str, Any]):
+        """Populate the 6 Attendance KPI cards, trend, status breakdown, and BU table from bundle."""
+        if not bundle or not hasattr(self, "att_kpi_cards") or not self.att_kpi_cards:
+            return
+
+        # 1. OBSERVED EMPLOYEES
+        emp_hc = bundle.get("att_kpi_observed_employees", bundle.get("kpi_1_emp_hc", 0))
+        hc_unit = "employee" if emp_hc == 1 else "employees"
+        if "att_kpi_emp_hc" in self.att_kpi_cards:
+            self.att_kpi_cards["att_kpi_emp_hc"].update_values(
+                primary=f"{emp_hc:,}",
+                secondary="Observed Headcount",
+                note=f"Distinct observed {hc_unit} (active scope)",
+            )
+
+        # 2. RECORDED EMPLOYEE-DAYS
+        rec_days = bundle.get("att_kpi_recorded_employee_days", bundle.get("kpi_2_attendance_days", 0))
+        rec_unit = "day" if rec_days == 1 else "days"
+        if "att_kpi_rec_days" in self.att_kpi_cards:
+            self.att_kpi_cards["att_kpi_rec_days"].update_values(
+                primary=f"{rec_days:,} {rec_unit}",
+                secondary="100.0% of recorded period",
+                note="Distinct employee-calendar-days",
+            )
+
+        # 3. PRESENT DAYS
+        q_pres = bundle.get("att_kpi_present_days", bundle.get("kpi_3_present_days", 0.0))
+        pct_pres = bundle.get("att_kpi_present_pct", bundle.get("kpi_3_present_pct", 0.0))
+        if "att_kpi_present" in self.att_kpi_cards:
+            self.att_kpi_cards["att_kpi_present"].update_values(
+                primary=_fmt_days(q_pres),
+                secondary=f"{pct_pres:.1f}% of composition days",
+                note="Quantity-weighted Present days",
+            )
+
+        # 4. ABSENT DAYS
+        q_ab = bundle.get("att_kpi_absent_days", bundle.get("kpi_absent_days", 0.0))
+        pct_ab = bundle.get("att_kpi_absent_pct", bundle.get("kpi_absent_pct", 0.0))
+        if "att_kpi_absent" in self.att_kpi_cards:
+            self.att_kpi_cards["att_kpi_absent"].update_values(
+                primary=_fmt_days(q_ab),
+                secondary=f"{pct_ab:.1f}% of composition days",
+                note="Quantity-weighted Absent days",
+            )
+
+        # 5. MISSING SWIPE DAYS
+        ms_days = bundle.get("att_kpi_missing_swipe_days", 0)
+        ms_rate = bundle.get("att_kpi_missing_swipe_rate_pct", 0.0)
+        ms_affected = bundle.get("att_kpi_missing_swipe_affected_emps", 0)
+        ms_day_unit = "day" if ms_days == 1 else "days"
+        ms_emp_unit = "employee" if ms_affected == 1 else "employees"
+        if "att_kpi_missing_swipes" in self.att_kpi_cards:
+            self.att_kpi_cards["att_kpi_missing_swipes"].update_values(
+                primary=f"{ms_days:,} {ms_day_unit}",
+                secondary=f"{ms_rate:.1f}% of recorded days",
+                note=f"{ms_affected:,} affected {ms_emp_unit}",
+            )
+
+        # 6. REGULARIZED EXCEPTION DAYS
+        reg_days = bundle.get("att_kpi_regularized_days", bundle.get("kpi_9_attendance_exceptions_days", 0))
+        reg_rate = bundle.get("att_kpi_regularized_rate_pct", bundle.get("kpi_9_attendance_exceptions_rate_pct", 0.0))
+        reg_affected = bundle.get("att_kpi_regularized_affected_emps", bundle.get("kpi_9_attendance_exceptions_affected_emps", 0))
+        reg_day_unit = "day" if reg_days == 1 else "days"
+        reg_emp_unit = "employee" if reg_affected == 1 else "employees"
+        if "att_kpi_regularized" in self.att_kpi_cards:
+            self.att_kpi_cards["att_kpi_regularized"].update_values(
+                primary=f"{reg_days:,} {reg_day_unit}",
+                secondary=f"{reg_rate:.1f}% of recorded days",
+                note=f"{reg_affected:,} affected {reg_emp_unit}",
+            )
+
+        # Analytical Visualizations
+        trend_data = bundle.get("daily_attendance_trend", [])
+        period_str = self.lbl_period.cget("text") if hasattr(self, "lbl_period") else ""
+        if hasattr(self, "att_trend_widget"):
+            self.att_trend_widget.update_data(trend_data, reporting_period=period_str)
+
+        denom = bundle.get("attendance_composition_denominator", float(rec_days))
+        comp_data = bundle.get("attendance_composition", [])
+        if hasattr(self, "att_breakdown_widget"):
+            self.att_breakdown_widget.update_data(comp_data, denom)
+
+        bu_data = bundle.get("bu_attendance_comparison", [])
+        bu_total = bundle.get("bu_comparison_total", {})
+        if hasattr(self, "att_bu_table_widget"):
+            self.att_bu_table_widget.update_data(bu_data, bu_total)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # G. Navigation State & View Switching
     # ─────────────────────────────────────────────────────────────────────────
 
     def select_view(self, view_key: str):
@@ -3270,17 +4609,24 @@ class WorkforceDashboardView(ctk.CTkFrame):
             else:
                 container.grid_remove()
 
-        # If switching to overview and metrics haven't loaded yet for active snapshot, trigger load
-        if view_key == "overview":
+        # If switching to overview or attendance and metrics haven't loaded yet for active snapshot, trigger load
+        if view_key in ("overview", "attendance"):
             snap = snapshot_service.get_active_snapshot()
             if snap and snap.is_valid():
                 dataset_id = getattr(snap, "dataset_id", snap.key)
                 if dataset_id != self._current_dataset_id or self._last_metrics_bundle is None:
                     if not self._is_loading_metrics:
                         self._load_overview_metrics()
+                elif self._last_metrics_bundle is not None:
+                    if view_key == "attendance":
+                        self._render_attendance_intelligence(self._last_metrics_bundle)
+                        self._set_attendance_state("ready")
+                    elif view_key == "overview":
+                        self._render_overview_kpis(self._last_metrics_bundle)
+                        self._set_overview_state("ready")
 
     # ─────────────────────────────────────────────────────────────────────────
-    # G. Snapshot Metadata Synchronization & Metric Refresh
+    # H. Snapshot Metadata Synchronization & Metric Refresh
     # ─────────────────────────────────────────────────────────────────────────
 
     def sync_snapshot_state(self, snap: Optional[AnalyticalSnapshot] = None):
@@ -3336,6 +4682,7 @@ class WorkforceDashboardView(ctk.CTkFrame):
                 self._load_overview_metrics()
             else:
                 self._render_overview_kpis(self._last_metrics_bundle)
+                self._render_attendance_intelligence(self._last_metrics_bundle)
                 self._set_overview_state("ready")
         else:
             self._full_dataset_name = "No dataset loaded"

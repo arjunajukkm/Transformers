@@ -1,0 +1,13 @@
+pandas
+openpyxl
+slack-sdk
+requests
+pillow
+reportlab
+python-dotenv
+rembg
+onnxruntime
+opencv-python-headless
+pypdf
+pypdfium2
+customtkinter

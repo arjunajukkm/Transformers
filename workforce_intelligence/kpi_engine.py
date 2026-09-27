@@ -606,6 +606,27 @@ def _is_regularized_series(df: pd.DataFrame) -> pd.Series:
     return matched
 
 
+def _is_missing_swipe_series(df: pd.DataFrame) -> pd.Series:
+    """
+    Return boolean Series matching rows qualifying under source-backed Missing Swipes:
+    - Attendance Type contains 'missing swipe' (case-insensitive, singular or plural)
+    - Status is 'ms', 'p(ms)', or starts with 'p(ms)'
+    """
+    if df is None or len(df) == 0:
+        return pd.Series(dtype=bool)
+
+    matched = pd.Series(False, index=df.index)
+    for col in ["_att_type", "Attendance Type", "attendance_type"]:
+        if col in df.columns:
+            s_clean = df[col].astype(str).str.strip().str.lower()
+            matched = matched | s_clean.str.contains("missing swipe", case=False, na=False)
+    for col in ["_status", "Status", "status"]:
+        if col in df.columns:
+            st_clean = df[col].astype(str).str.strip().str.lower()
+            matched = matched | st_clean.isin(["ms", "p(ms)"]) | st_clean.str.startswith("p(ms)")
+    return matched
+
+
 def compute_repeated_exceptions(
     df: pd.DataFrame,
     threshold: int = 3,
@@ -867,10 +888,7 @@ def compute_workforce_intelligence_bundle(
         filtered["_att_type"].str.contains("week off|weekly off|off", case=False, na=False) |
         filtered["_status"].str.lower().isin(["wo", "w/o", "off", "week off"])
     ) & (~is_wfh) & (~is_leave) & (~is_od) & (~is_hol)
-    is_ms = (
-        filtered["_att_type"].str.contains("missing swipes", case=False, na=False) |
-        filtered["_status"].str.lower().isin(["ms", "p(ms)"])
-    )
+    is_ms = _is_missing_swipe_series(filtered)
     is_ab = (
         filtered["_att_type"].str.contains("absent", case=False, na=False) |
         filtered["_status"].str.lower().isin(["ab", "absent", "a"])
@@ -925,6 +943,7 @@ def compute_workforce_intelligence_bundle(
                 "absent": 0.0,
                 "unclassified": 0.0,
                 "reg_days": 0,
+                "ms_days": 0,
             }
         return bu_dict[bu_name]
 
@@ -932,9 +951,12 @@ def compute_workforce_intelligence_bundle(
         if d_val not in daily_att_dict:
             daily_att_dict[d_val] = {
                 "present": 0.0,
+                "absent": 0.0,
                 "wfh": 0.0,
                 "leave": 0.0,
                 "recorded_days": 0,
+                "missing_swipe_days": 0,
+                "regularized_days": 0,
             }
         return daily_att_dict[d_val]
 
@@ -964,6 +986,8 @@ def compute_workforce_intelligence_bundle(
             d_rec = _ensure_daily(d_val)
             if cat == "PRESENT":
                 d_rec["present"] += qty
+            elif cat == "ABSENT":
+                d_rec["absent"] += qty
             elif cat == "WFH":
                 d_rec["wfh"] += qty
             elif cat == "LEAVE":
@@ -1015,9 +1039,16 @@ def compute_workforce_intelligence_bundle(
             bu_rec["observed_emps"].add(emp_key)
             bu_rec["recorded_days"] += 1
 
+            # Check if this employee-date has at least one Missing Swipe record
+            has_ms_day = bool(_is_missing_swipe_series(grp).any())
+            if has_ms_day:
+                d_rec["missing_swipe_days"] += 1
+                bu_rec["ms_days"] += 1
+
             # Check if this employee-date has at least one Regularized record
             has_reg = bool(_is_regularized_series(grp).any())
             if has_reg:
+                d_rec["regularized_days"] += 1
                 bu_rec["reg_days"] += 1
 
             n_rows = len(grp)
@@ -1101,6 +1132,8 @@ def compute_workforce_intelligence_bundle(
                 bu_rec["absent"] += q_r
             else:
                 bu_rec["unclassified"] += q_r
+            if _is_missing_swipe_series(pd.DataFrame([row])).any():
+                bu_rec["ms_days"] += 1
             if _is_regularized_series(pd.DataFrame([row])).any():
                 bu_rec["reg_days"] += 1
 
@@ -1140,6 +1173,28 @@ def compute_workforce_intelligence_bundle(
         excp_affected_emps = len(set(reg_df["Employee Number"].dropna().unique()) - {"", "nan"})
     else:
         excp_affected_emps = 0
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Missing Swipes: Distinct employee-calendar-days qualifying under source
+    # ─────────────────────────────────────────────────────────────────────────
+    ms_df = filtered[is_ms].copy()
+    total_ms_recs = len(ms_df)
+
+    if "_date" in ms_df.columns and "_emp_num" in ms_df.columns:
+        ms_days_count = len(ms_df.drop_duplicates(subset=["_emp_num", "_date"]))
+    elif "_date" in ms_df.columns:
+        ms_days_count = len(ms_df.drop_duplicates(subset=["_date"]))
+    else:
+        ms_days_count = total_ms_recs
+
+    ms_rate_pct = round((ms_days_count / recorded_employee_days) * 100.0, 1) if recorded_employee_days > 0 else 0.0
+
+    if "_emp_num" in ms_df.columns:
+        ms_affected_emps = len(set(ms_df["_emp_num"].unique()) - {"", "nan"})
+    elif "Employee Number" in ms_df.columns:
+        ms_affected_emps = len(set(ms_df["Employee Number"].dropna().unique()) - {"", "nan"})
+    else:
+        ms_affected_emps = 0
 
     # Approval Status breakdown for Regularized records
     appr_series = None
@@ -1294,6 +1349,9 @@ def compute_workforce_intelligence_bundle(
             "date_str": d_str,
             "date_iso": d_iso,
             "present_days": round(d_item["present"], 1),
+            "absent_days": round(d_item.get("absent", 0.0), 1),
+            "missing_swipe_days": d_item.get("missing_swipe_days", 0),
+            "regularized_days": d_item.get("regularized_days", 0),
             "wfh_days": round(d_item["wfh"], 1),
             "leave_days": round(d_item["leave"], 1),
             "recorded_days": d_item["recorded_days"],
@@ -1315,6 +1373,7 @@ def compute_workforce_intelligence_bundle(
         ab_d = round(b["absent"], 1)
         unclass_d = round(b["unclassified"], 1)
         excp_d = b["reg_days"]
+        ms_d = b.get("ms_days", 0)
 
         bu_denom = pres_d + od_d + lv_d + wfh_d + hol_d + wo_d + ab_d + unclass_d
         if bu_denom <= 0:
@@ -1330,6 +1389,7 @@ def compute_workforce_intelligence_bundle(
         unclass_pct = round((unclass_d / bu_denom) * 100.0, 1) if bu_denom > 0 else 0.0
 
         excp_rate = round((excp_d / rec_days) * 100.0, 1) if rec_days > 0 else 0.0
+        ms_rate = round((ms_d / rec_days) * 100.0, 1) if rec_days > 0 else 0.0
 
         bu_attendance_comparison.append({
             "business_unit": bu_name,
@@ -1353,6 +1413,10 @@ def compute_workforce_intelligence_bundle(
             "unclass_pct": unclass_pct,
             "exception_days": excp_d,
             "exception_rate_pct": excp_rate,
+            "regularized_days": excp_d,
+            "regularized_rate_pct": excp_rate,
+            "missing_swipe_days": ms_d,
+            "missing_swipe_rate_pct": ms_rate,
             "composition_denominator": round(bu_denom, 1),
         })
 
@@ -1378,6 +1442,10 @@ def compute_workforce_intelligence_bundle(
         "unclass_pct": pct_unclassified,
         "exception_days": excp_days_count,
         "exception_rate_pct": excp_rate_pct,
+        "regularized_days": excp_days_count,
+        "regularized_rate_pct": excp_rate_pct,
+        "missing_swipe_days": ms_days_count,
+        "missing_swipe_rate_pct": ms_rate_pct,
         "composition_denominator": round(attendance_composition_denom, 1),
     }
 
@@ -1655,6 +1723,20 @@ def compute_workforce_intelligence_bundle(
         "bu_attendance_comparison": bu_attendance_comparison,
         "bu_comparison_total": bu_comparison_total,
 
+        # Attendance Intelligence (Step 31 Specific KPI Bundle Keys)
+        "att_kpi_observed_employees": unique_employees,
+        "att_kpi_recorded_employee_days": recorded_employee_days,
+        "att_kpi_present_days": round(q_total_present, 1),
+        "att_kpi_present_pct": pct_pres,
+        "att_kpi_absent_days": round(q_absent, 1),
+        "att_kpi_absent_pct": pct_absent,
+        "att_kpi_missing_swipe_days": ms_days_count,
+        "att_kpi_missing_swipe_rate_pct": ms_rate_pct,
+        "att_kpi_missing_swipe_affected_emps": ms_affected_emps,
+        "att_kpi_regularized_days": excp_days_count,
+        "att_kpi_regularized_rate_pct": excp_rate_pct,
+        "att_kpi_regularized_affected_emps": excp_affected_emps,
+
         # Section 2: Leave Intelligence
         "total_leave_days": round(q_leave, 1),
         "employees_taking_leave": leave_emps,
@@ -1829,8 +1911,24 @@ def _empty_bundle(threshold: int = 3, allowance: float = 3.0) -> Dict[str, Any]:
             "unclass_pct": 0.0,
             "exception_days": 0,
             "exception_rate_pct": 0.0,
+            "regularized_days": 0,
+            "regularized_rate_pct": 0.0,
+            "missing_swipe_days": 0,
+            "missing_swipe_rate_pct": 0.0,
             "composition_denominator": 0.0,
         },
+        "att_kpi_observed_employees": 0,
+        "att_kpi_recorded_employee_days": 0,
+        "att_kpi_present_days": 0.0,
+        "att_kpi_present_pct": 0.0,
+        "att_kpi_absent_days": 0.0,
+        "att_kpi_absent_pct": 0.0,
+        "att_kpi_missing_swipe_days": 0,
+        "att_kpi_missing_swipe_rate_pct": 0.0,
+        "att_kpi_missing_swipe_affected_emps": 0,
+        "att_kpi_regularized_days": 0,
+        "att_kpi_regularized_rate_pct": 0.0,
+        "att_kpi_regularized_affected_emps": 0,
         "total_leave_days": 0.0,
         "employees_taking_leave": 0,
         "leave_penetration_pct": 0.0,

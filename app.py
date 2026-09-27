@@ -2,6 +2,9 @@ import threading
 import traceback
 import sys
 import os
+import re
+import json
+import subprocess
 import ctypes
 from datetime import datetime
 from pathlib import Path
@@ -15,6 +18,8 @@ from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 import ui_components as ui
 import time_series_analysis as tsa
 from storage import snapshot_service
+import id_card_module as id_card
+import generate_id_cards as gen
 
 ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
@@ -58,6 +63,31 @@ class App(ctk.CTk):
         self.att_summary_file = ctk.StringVar()
         self.analyse_upload_file = ctk.StringVar()
 
+        # ID Card Generator state
+        self.id_card_mode_var = ctk.StringVar(value="Instant Email Sync")
+        self.id_card_emails_var = ctk.StringVar(value="kanupriya.rathore@finbox.in; vinoth.kumar@finbox.in")
+        self.id_card_excel_file = ctk.StringVar(value=id_card.get_default_excel_file())
+        self.id_card_photos_dir = ctk.StringVar(value="")
+        self.id_card_photo_match_mode = ctk.StringVar(value="Auto-Detect")
+        self.id_card_preview_email = ctk.StringVar(value="kanupriya.rathore@finbox.in")
+        self.id_card_design = ctk.StringVar(value="Modern")
+        self.id_card_address_config_visible = False
+        self.office_addresses_data = id_card.get_office_addresses()
+        self.is_id_card_generating = False
+        self.last_preview_pdf_path = None
+        self.last_report_path = None
+        self.last_id_card_output_dir = None
+
+        # Connectors state (Slack & Keka)
+        self.connector_active_tab = ctk.StringVar(value="Slack")
+        default_slack_val = os.getenv("SLACK_BOT_TOKEN") or os.getenv("SLACK_BOT_ID", "")
+        self.slack_bot_token_var = ctk.StringVar(value=default_slack_val)
+        self.keka_subdomain_var = ctk.StringVar(value=os.getenv("KEKA_SUBDOMAIN", "finbox"))
+        self.keka_client_id_var = ctk.StringVar(value=os.getenv("KEKA_CLIENT_ID", ""))
+        self.keka_client_secret_var = ctk.StringVar(value=os.getenv("KEKA_CLIENT_SECRET", ""))
+        self.keka_api_key_var = ctk.StringVar(value=os.getenv("KEKA_API_KEY", ""))
+
+
         # Time Series Analysis state
         self.ts_dataset = None
         self.ts_file_path = ctk.StringVar()
@@ -85,6 +115,7 @@ class App(ctk.CTk):
         # Navigation state
         self.transform_menu_expanded = False
         self.analyse_menu_expanded = False
+        self.settings_menu_expanded = False
         self.menu_expanded = False
         self.sidebar_collapsed = True
         self.current_active_frame = "dashboard"
@@ -92,6 +123,8 @@ class App(ctk.CTk):
         self.nav_chevron = None
         self.analyse_parent_btn = None
         self.analyse_chevron = None
+        self.settings_parent_btn = None
+        self.settings_chevron = None
         self.sub_nav_btns = {}
         self.floating_nav_popup = None
         self.floating_nav_group = None
@@ -101,7 +134,32 @@ class App(ctk.CTk):
 
         self._setup_window()
         self._build_layout()
-        self.select_frame_by_name("dashboard")
+
+        # Check initial requested tab (CLI flag, environment, or persistent .last_tab)
+        initial_tab = "dashboard"
+        if len(sys.argv) > 1:
+            for i, arg in enumerate(sys.argv[:-1]):
+                if arg == "--tab" and i + 1 < len(sys.argv):
+                    initial_tab = sys.argv[i + 1]
+        elif os.getenv("APP_INITIAL_TAB"):
+            initial_tab = os.getenv("APP_INITIAL_TAB")
+            os.environ.pop("APP_INITIAL_TAB", None)
+        else:
+            try:
+                tab_file = Path(__file__).resolve().parent / "local_data" / ".last_tab"
+                if tab_file.exists():
+                    saved_tab = tab_file.read_text(encoding="utf-8").strip()
+                    if saved_tab and saved_tab in self.frames:
+                        initial_tab = saved_tab
+            except Exception:
+                pass
+
+        # Global hot-reload keybinds: F5 or Ctrl+R
+        self.bind_all("<F5>", lambda e: self.restart_app())
+        self.bind_all("<Control-r>", lambda e: self.restart_app())
+        self.bind_all("<Control-R>", lambda e: self.restart_app())
+
+        self.select_frame_by_name(initial_tab if initial_tab in self.frames else "dashboard")
 
     def _setup_window(self):
         self.grid_rowconfigure(0, weight=1)
@@ -180,6 +238,7 @@ class App(ctk.CTk):
             ("absent", "Absent Management", ui.ICON_ABSENT),
             ("att_summary", "Attendance Summary", ui.ICON_ATTENDANCE),
             ("time_leave", "Time and Leave Master", ui.ICON_TIME_LEAVE),
+            ("id_card", "ID Card Generator", ui.ICON_IDCARD),
         ]
         for idx, (name, text, icon) in enumerate(transform_sub_items):
             btn = ui.create_sub_nav_button(
@@ -230,6 +289,60 @@ class App(ctk.CTk):
             )
             self.sub_nav_btns[name] = btn
 
+        # ── Compact Settings Navigation Rail Button (Row 4) ────────────────────
+        self.settings_parent_frame = self.sidebar
+        self.settings_chevron = ctk.CTkLabel(self.sidebar, text="▸")
+        self.settings_parent_btn = ctk.CTkButton(
+            self.sidebar,
+            text=ui.ICON_SETTINGS,
+            width=46,
+            height=42,
+            corner_radius=8,
+            anchor="center",
+            fg_color="transparent",
+            hover_color=ui.COLOR_NAV_HOVER,
+            text_color=ui.COLOR_TEXT_SEC,
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=18),
+            command=self._on_settings_parent_clicked,
+        )
+        self.settings_parent_btn.grid(row=4, column=0, padx=6, pady=4)
+        ui.create_tooltip(self.settings_parent_btn, "Settings")
+
+        self.settings_parent_btn.bind("<Enter>", lambda e: self._on_nav_btn_enter("settings"), add="+")
+        self.settings_parent_btn.bind("<Leave>", lambda e: self._on_nav_btn_leave("settings"), add="+")
+
+        # Quick Reload Button at bottom of sidebar (Row 11)
+        self.reload_btn = ctk.CTkButton(
+            self.sidebar,
+            text="🔄",
+            width=42,
+            height=42,
+            corner_radius=8,
+            anchor="center",
+            fg_color="transparent",
+            hover_color=ui.COLOR_NAV_HOVER,
+            text_color=ui.COLOR_TEXT_DIM,
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=16),
+            command=self.restart_app,
+        )
+        self.reload_btn.grid(row=11, column=0, padx=6, pady=(0, 10))
+        ui.create_tooltip(self.reload_btn, "Reload App (F5 / Ctrl+R)")
+
+        # Offscreen child buttons container for Settings backward compatibility
+        self.settings_sub_menu_frame = ctk.CTkFrame(self._offscreen_compat, fg_color="transparent")
+        settings_sub_items = [
+            ("settings_connectors", "Connectors", "🔌"),
+        ]
+        for idx, (name, text, icon) in enumerate(settings_sub_items):
+            btn = ui.create_sub_nav_button(
+                self.settings_sub_menu_frame,
+                text=text,
+                icon=icon,
+                command=lambda n=name: self.select_frame_by_name(n),
+                row=idx,
+            )
+            self.sub_nav_btns[name] = btn
+
         # Main Content (Takes all remaining width permanently)
         self.main_content = ctk.CTkFrame(self, fg_color="transparent", corner_radius=0)
         self.main_content.grid(row=0, column=1, sticky="nsew", padx=30, pady=30)
@@ -244,9 +357,30 @@ class App(ctk.CTk):
         self._build_absent_frame()
         self._build_att_summary_frame()
         self._build_time_leave_frame()
+        self._build_id_card_frame()
         self._build_time_series_frame()
         self._build_analyse_upload_frame()
         self._build_workforce_intelligence_frame()
+        self._build_settings_connectors_frame()
+
+    def restart_app(self, target_tab=None):
+        """Restarts the application immediately preserving the current active tab."""
+        tab = target_tab or getattr(self, "current_active_frame", "dashboard")
+        os.environ["APP_INITIAL_TAB"] = tab
+        try:
+            tab_file = Path(__file__).resolve().parent / "local_data" / ".last_tab"
+            tab_file.parent.mkdir(parents=True, exist_ok=True)
+            tab_file.write_text(tab, encoding="utf-8")
+        except Exception:
+            pass
+
+        cmd = [sys.executable, sys.argv[0], "--tab", tab]
+        try:
+            subprocess.Popen(cmd)
+            self.destroy()
+            sys.exit(0)
+        except Exception as e:
+            print(f"Error restarting app: {e}")
 
     def toggle_sidebar(self, force_state=None):
         """Preserves permanent compact icon rail navigation (width 60-64px)."""
@@ -303,7 +437,12 @@ class App(ctk.CTk):
             ph = self.floating_nav_popup.winfo_height()
             inside_popup = (px <= x <= px + pw) and (py <= y <= py + ph)
 
-            parent_btn = self.nav_parent_btn if self.floating_nav_group == "transform" else self.analyse_parent_btn
+            if self.floating_nav_group == "transform":
+                parent_btn = self.nav_parent_btn
+            elif self.floating_nav_group == "analyse":
+                parent_btn = self.analyse_parent_btn
+            else:
+                parent_btn = getattr(self, "settings_parent_btn", self.nav_parent_btn)
             bx = parent_btn.winfo_rootx()
             by = parent_btn.winfo_rooty()
             bw = parent_btn.winfo_width()
@@ -321,7 +460,7 @@ class App(ctk.CTk):
             self.close_floating_nav()
         else:
             self._show_floating_nav("transform")
-            if self.current_active_frame not in ("dashboard", "transform", "generate", "absent", "att_summary", "time_leave"):
+            if self.current_active_frame not in ("dashboard", "transform", "generate", "absent", "att_summary", "time_leave", "id_card"):
                 self.select_frame_by_name("dashboard")
 
     def toggle_transform_menu(self, force_state=None):
@@ -376,6 +515,36 @@ class App(ctk.CTk):
                 self.close_floating_nav()
         self._refresh_nav_active_states()
 
+    def _on_settings_parent_clicked(self):
+        """Clicking Settings opens/toggles its floating submenu."""
+        if self.floating_nav_popup and self.floating_nav_popup.winfo_exists() and self.floating_nav_group == "settings":
+            self.close_floating_nav()
+        else:
+            self._show_floating_nav("settings")
+            if self.current_active_frame not in ("settings_connectors",):
+                self.select_frame_by_name("settings_connectors")
+
+    def toggle_settings_menu(self, force_state=None):
+        """Toggle Settings floating submenu."""
+        if force_state is not None:
+            self.settings_menu_expanded = force_state
+        else:
+            self.settings_menu_expanded = not self.settings_menu_expanded
+        if self.settings_menu_expanded:
+            if hasattr(self, "settings_chevron") and self.settings_chevron:
+                self.settings_chevron.configure(text="▾")
+            self._show_floating_nav("settings")
+            if hasattr(self, "settings_sub_menu_frame") and self.settings_sub_menu_frame:
+                self.settings_sub_menu_frame.grid()
+        else:
+            if hasattr(self, "settings_chevron") and self.settings_chevron:
+                self.settings_chevron.configure(text="▸")
+            if hasattr(self, "settings_sub_menu_frame") and self.settings_sub_menu_frame:
+                self.settings_sub_menu_frame.grid_remove()
+            if self.floating_nav_group == "settings":
+                self.close_floating_nav()
+        self._refresh_nav_active_states()
+
     def _show_floating_nav(self, group: str):
         if self._nav_hover_timer:
             try:
@@ -393,7 +562,12 @@ class App(ctk.CTk):
                 pass
 
         self.update_idletasks()
-        parent_btn = self.nav_parent_btn if group == "transform" else self.analyse_parent_btn
+        if group == "transform":
+            parent_btn = self.nav_parent_btn
+        elif group == "analyse":
+            parent_btn = self.analyse_parent_btn
+        else:
+            parent_btn = getattr(self, "settings_parent_btn", self.nav_parent_btn)
 
         rx = self.sidebar.winfo_rootx() + self.sidebar.winfo_width() + 1
         ry = parent_btn.winfo_rooty()
@@ -412,12 +586,13 @@ class App(ctk.CTk):
                 ("absent", "Absent Management", ui.ICON_ABSENT),
                 ("att_summary", "Attendance Summary", ui.ICON_ATTENDANCE),
                 ("time_leave", "Time and Leave Master", ui.ICON_TIME_LEAVE),
+                ("id_card", "ID Card Generator", ui.ICON_IDCARD),
             ]
             title = "TRANSFORM"
             self.transform_menu_expanded = True
             if hasattr(self, "nav_chevron") and self.nav_chevron:
                 self.nav_chevron.configure(text="▾")
-        else:
+        elif group == "analyse":
             items = [
                 ("workforce_intelligence", "Workforce Intelligence", ui.ICON_ANALYSE),
                 ("analyse_time_series", "Time Series Analysis", ui.ICON_DASHBOARD),
@@ -427,6 +602,14 @@ class App(ctk.CTk):
             self.analyse_menu_expanded = True
             if hasattr(self, "analyse_chevron") and self.analyse_chevron:
                 self.analyse_chevron.configure(text="▾")
+        else:
+            items = [
+                ("settings_connectors", "Connectors", "🔌"),
+            ]
+            title = "SETTINGS"
+            self.settings_menu_expanded = True
+            if hasattr(self, "settings_chevron") and self.settings_chevron:
+                self.settings_chevron.configure(text="▾")
 
         import tkinter as tk
         top = tk.Toplevel(self)
@@ -532,7 +715,12 @@ class App(ctk.CTk):
         self.close_floating_nav()
 
     def _on_flyout_escape(self):
-        parent_btn = self.nav_parent_btn if self.floating_nav_group == "transform" else self.analyse_parent_btn
+        if self.floating_nav_group == "transform":
+            parent_btn = self.nav_parent_btn
+        elif self.floating_nav_group == "analyse":
+            parent_btn = self.analyse_parent_btn
+        else:
+            parent_btn = getattr(self, "settings_parent_btn", self.nav_parent_btn)
         self.close_floating_nav()
         parent_btn.focus_set()
 
@@ -561,7 +749,12 @@ class App(ctk.CTk):
             ph = self.floating_nav_popup.winfo_height()
             inside_popup = (px <= x <= px + pw) and (py <= y <= py + ph)
 
-            parent_btn = self.nav_parent_btn if self.floating_nav_group == "transform" else self.analyse_parent_btn
+            if self.floating_nav_group == "transform":
+                parent_btn = self.nav_parent_btn
+            elif self.floating_nav_group == "analyse":
+                parent_btn = self.analyse_parent_btn
+            else:
+                parent_btn = getattr(self, "settings_parent_btn", self.nav_parent_btn)
             bx = parent_btn.winfo_rootx()
             by = parent_btn.winfo_rooty()
             bw = parent_btn.winfo_width()
@@ -602,29 +795,38 @@ class App(ctk.CTk):
         self.floating_nav_group = None
         self.transform_menu_expanded = False
         self.analyse_menu_expanded = False
+        self.settings_menu_expanded = False
         self.menu_expanded = False
         if hasattr(self, "nav_chevron") and self.nav_chevron:
             self.nav_chevron.configure(text="▸")
         if hasattr(self, "analyse_chevron") and self.analyse_chevron:
             self.analyse_chevron.configure(text="▸")
+        if hasattr(self, "settings_chevron") and self.settings_chevron:
+            self.settings_chevron.configure(text="▸")
         if hasattr(self, "sub_menu_frame") and self.sub_menu_frame:
             self.sub_menu_frame.grid_remove()
         if hasattr(self, "analyse_sub_menu_frame") and self.analyse_sub_menu_frame:
             self.analyse_sub_menu_frame.grid_remove()
+        if hasattr(self, "settings_sub_menu_frame") and self.settings_sub_menu_frame:
+            self.settings_sub_menu_frame.grid_remove()
 
     def _refresh_nav_active_states(self):
         """Update parent navigation highlight on the rail based on current screen."""
         name = getattr(self, "current_active_frame", "dashboard")
-        transform_children = ("dashboard", "transform", "generate", "absent", "att_summary", "time_leave")
+        transform_children = ("dashboard", "transform", "generate", "absent", "att_summary", "time_leave", "id_card")
         analyse_children = ("workforce_intelligence", "analyse_time_series", "analyse_dashboard", "analyse_upload")
+        settings_children = ("settings_connectors", "settings")
 
         is_transform_parent = name in transform_children
         is_analyse_parent = name in analyse_children
+        is_settings_parent = name in settings_children
 
         if hasattr(self, "nav_parent_btn") and self.nav_parent_btn:
             ui.set_nav_active(self.nav_parent_btn, is_transform_parent)
         if hasattr(self, "analyse_parent_btn") and self.analyse_parent_btn:
             ui.set_nav_active(self.analyse_parent_btn, is_analyse_parent)
+        if hasattr(self, "settings_parent_btn") and self.settings_parent_btn:
+            ui.set_nav_active(self.settings_parent_btn, is_settings_parent)
 
         for n, btn in self.sub_nav_btns.items():
             is_active = (n == name) or (name == "generate" and n == "transform")
@@ -634,6 +836,13 @@ class App(ctk.CTk):
         if name == "analyse_dashboard":
             name = "analyse_time_series"
         self.current_active_frame = name
+
+        try:
+            tab_file = Path(__file__).resolve().parent / "local_data" / ".last_tab"
+            tab_file.parent.mkdir(parents=True, exist_ok=True)
+            tab_file.write_text(name, encoding="utf-8")
+        except Exception:
+            pass
 
         self._refresh_nav_active_states()
 
@@ -662,6 +871,8 @@ class App(ctk.CTk):
         ui.create_dashboard_card(f, ui.ICON_ABSENT, "Absent Management", "Process employee data to generate Absent Intimation Reports.", "Active", lambda: self.select_frame_by_name("absent"), 1, 1)
         ui.create_dashboard_card(f, ui.ICON_ATTENDANCE, "Attendance Summary", "Generate summarized attendance reports from raw portal data.", "Active", lambda: self.select_frame_by_name("att_summary"), 2, 0)
         ui.create_dashboard_card(f, ui.ICON_TIME_LEAVE, "Time and Leave Master", "Manage and process time and leave records.", "Active", lambda: self.select_frame_by_name("time_leave"), 2, 1)
+        ui.create_dashboard_card(f, ui.ICON_IDCARD, "ID Card Generator", "Bulk generate employee ID cards with photo verification & barcodes.", "Active", lambda: self.select_frame_by_name("id_card"), 3, 0)
+        ui.create_dashboard_card(f, ui.ICON_SETTINGS, "Connectors & Settings", "Configure Slack & Keka HRMS API keys, OAuth credentials & environments.", "Active", lambda: self.select_frame_by_name("settings_connectors"), 3, 1)
 
     # ---------------------------------------------------------
     # KRA Management
@@ -929,6 +1140,706 @@ class App(ctk.CTk):
 
         self.btn_tl = ui.create_primary_button(row7, "Process & Update Report", self.start_process_time_leave, width=170)
         self.btn_tl.pack(side="right")
+
+    # ---------------------------------------------------------
+    # FinBox ID Card Generator
+    # ---------------------------------------------------------
+    def _build_id_card_frame(self):
+        f = ctk.CTkScrollableFrame(self.main_content, fg_color="transparent")
+        self.frames["id_card"] = f
+        f.grid_columnconfigure(0, weight=1)
+
+        hdr = ui.create_page_header(
+            f, "ID Card Generator",
+            "Ultra-fast dual-method ID card generation: Instant Keka Email Sync or Bulk Excel Upload."
+        )
+        hdr.grid(row=0, column=0, sticky="ew", pady=(0, 14))
+
+        # Top-right quick actions
+        top_actions = ctk.CTkFrame(hdr, fg_color="transparent")
+        top_actions.grid(row=0, column=1, sticky="e")
+        self.btn_toggle_addresses = ui.create_secondary_button(
+            top_actions, "Configure Addresses 🏢", self.toggle_office_addresses_card, 175
+        )
+        self.btn_toggle_addresses.pack(side="left", padx=(0, 8))
+        ui.create_secondary_button(top_actions, "Open Output Folder 📁", self.open_id_card_output_folder, 160).pack(side="left", padx=(0, 8))
+        ui.create_secondary_button(top_actions, "Open Audit Report 📊", self.open_id_card_report_file, 160).pack(side="left")
+
+        # 1. Global Preferences & Connectors Status Card
+        pref_card = ui.create_card(f)
+        pref_card.grid(row=1, column=0, sticky="nsew", pady=(0, 10))
+        pref_card.grid_columnconfigure(0, weight=1)
+
+        settings_row = ctk.CTkFrame(pref_card, fg_color="transparent")
+        settings_row.grid(row=0, column=0, sticky="ew", padx=16, pady=12)
+        settings_row.grid_columnconfigure(0, weight=1)
+        settings_row.grid_columnconfigure(1, weight=1)
+
+        # Template selection box
+        design_box = ctk.CTkFrame(settings_row, fg_color=ui.COLOR_INPUT_BG, corner_radius=8, border_width=1, border_color=ui.COLOR_BORDER)
+        design_box.grid(row=0, column=0, sticky="nsew", padx=(0, 6), pady=0)
+
+        ctk.CTkLabel(
+            design_box, text="Card Design Template:",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12, weight="bold"),
+            text_color=ui.COLOR_TEXT_SEC
+        ).pack(anchor="w", padx=12, pady=(6, 4))
+
+        self.id_card_seg_btn = ctk.CTkSegmentedButton(
+            design_box, values=["Modern", "Classic"],
+            variable=self.id_card_design,
+            command=self._on_id_card_design_changed,
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12, weight="bold"),
+            selected_color=ui.COLOR_ACCENT,
+            selected_hover_color=ui.COLOR_ACCENT_HOVER,
+            unselected_color=ui.COLOR_BTN_SEC,
+            unselected_hover_color=ui.COLOR_BTN_SEC_HOV
+        )
+        self.id_card_seg_btn.pack(fill="x", padx=12, pady=(0, 4))
+
+        self.lbl_id_card_design_desc = ctk.CTkLabel(
+            design_box,
+            text="FinBox Modern format (Navy & Cyan with Slack Photo & QR)",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11),
+            text_color=ui.COLOR_TEXT_DIM,
+            anchor="w"
+        )
+        self.lbl_id_card_design_desc.pack(fill="x", padx=12, pady=(0, 6))
+
+        # Photo Connectors Status Summary
+        connectors_box = ctk.CTkFrame(settings_row, fg_color=ui.COLOR_INPUT_BG, corner_radius=8, border_width=1, border_color=ui.COLOR_BORDER)
+        connectors_box.grid(row=0, column=1, sticky="nsew", padx=(6, 0), pady=0)
+
+        conn_hdr = ctk.CTkFrame(connectors_box, fg_color="transparent")
+        conn_hdr.pack(fill="x", padx=12, pady=(6, 4))
+
+        ctk.CTkLabel(
+            conn_hdr, text="🔌 Photo Sources Status:",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12, weight="bold"),
+            text_color=ui.COLOR_TEXT_SEC
+        ).pack(side="left")
+
+        btn_manage_conn = ui.create_secondary_button(
+            conn_hdr, "Manage in Settings ⚙",
+            lambda: self.select_frame_by_name("settings_connectors"),
+            width=150, height=24
+        )
+        btn_manage_conn.pack(side="right")
+
+        chips_row = ctk.CTkFrame(connectors_box, fg_color="transparent")
+        chips_row.pack(fill="x", padx=12, pady=(6, 8))
+
+        # Slack status badge
+        slack_chip_box = ctk.CTkFrame(chips_row, fg_color="transparent")
+        slack_chip_box.pack(side="left", padx=(0, 16))
+        ctk.CTkLabel(slack_chip_box, text="Slack:", font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11, weight="bold"), text_color=ui.COLOR_TEXT_DIM).pack(side="left", padx=(0, 4))
+        self.id_card_slack_dot = ctk.CTkLabel(slack_chip_box, text=ui.ICON_DOT, font=ctk.CTkFont(size=10), text_color=ui.COLOR_TEXT_DIM)
+        self.id_card_slack_dot.pack(side="left", padx=(0, 4))
+        self.id_card_slack_lbl = ctk.CTkLabel(slack_chip_box, text="Checking...", font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11), text_color=ui.COLOR_TEXT_DIM)
+        self.id_card_slack_lbl.pack(side="left")
+
+        # Keka status badge
+        keka_chip_box = ctk.CTkFrame(chips_row, fg_color="transparent")
+        keka_chip_box.pack(side="left")
+        ctk.CTkLabel(keka_chip_box, text="Keka:", font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11, weight="bold"), text_color=ui.COLOR_TEXT_DIM).pack(side="left", padx=(0, 4))
+        self.id_card_keka_dot = ctk.CTkLabel(keka_chip_box, text=ui.ICON_DOT, font=ctk.CTkFont(size=10), text_color=ui.COLOR_TEXT_DIM)
+        self.id_card_keka_dot.pack(side="left", padx=(0, 4))
+        self.id_card_keka_lbl = ctk.CTkLabel(keka_chip_box, text="Not connected", font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11), text_color=ui.COLOR_TEXT_DIM)
+        self.id_card_keka_lbl.pack(side="left")
+
+        # 2. Office Locations & Addresses Configuration Card (Collapsible)
+        self.card_office_addresses = ui.create_card(f)
+        self.card_office_addresses.grid(row=2, column=0, sticky="nsew", pady=(0, 10))
+        self.card_office_addresses.grid_columnconfigure(0, weight=1)
+        self.card_office_addresses.grid_remove()  # Hidden by default
+
+        addr_hdr = ctk.CTkFrame(self.card_office_addresses, fg_color="transparent")
+        addr_hdr.pack(fill="x", padx=16, pady=(12, 4))
+
+        ctk.CTkLabel(
+            addr_hdr, text="🏢 Office Locations & Addresses Configuration",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=15, weight="bold"),
+            text_color=ui.COLOR_TEXT
+        ).pack(side="left")
+
+        ui.create_secondary_button(
+            addr_hdr, "Done / Hide ✕", self.toggle_office_addresses_card, width=110, height=28
+        ).pack(side="right")
+
+        ui.create_primary_button(
+            addr_hdr, "Save All Addresses 💾", self.save_office_addresses_ui, width=160, height=28
+        ).pack(side="right", padx=(0, 8))
+
+        ctk.CTkLabel(
+            self.card_office_addresses,
+            text="Pre-configure and save physical office addresses mapped to employee location cities in Keka/Excel. When an employee is processed, their card automatically prints the exact address configured for their location.",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11),
+            text_color=ui.COLOR_TEXT_SEC, anchor="w", justify="left"
+        ).pack(fill="x", padx=16, pady=(0, 10))
+
+        # Container for address rows
+        self.address_rows_container = ctk.CTkFrame(self.card_office_addresses, fg_color="transparent")
+        self.address_rows_container.pack(fill="x", padx=16, pady=(0, 8))
+
+        # Add new location bar
+        add_loc_bar = ctk.CTkFrame(self.card_office_addresses, fg_color=ui.COLOR_INPUT_BG, corner_radius=6, border_width=1, border_color=ui.COLOR_BORDER)
+        add_loc_bar.pack(fill="x", padx=16, pady=(4, 14))
+        add_loc_bar.grid_columnconfigure(1, weight=1)
+
+        self.entry_new_loc_name = ctk.CTkEntry(
+            add_loc_bar, placeholder_text="Location City (e.g. Pune, Chennai)...",
+            width=170, height=32, font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12),
+            fg_color=ui.COLOR_CARD, border_color=ui.COLOR_BORDER, border_width=1
+        )
+        self.entry_new_loc_name.grid(row=0, column=0, padx=8, pady=8)
+
+        self.entry_new_loc_addr = ctk.CTkEntry(
+            add_loc_bar, placeholder_text="Full Office Address (Street, Building, City, PIN)...",
+            height=32, font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12),
+            fg_color=ui.COLOR_CARD, border_color=ui.COLOR_BORDER, border_width=1
+        )
+        self.entry_new_loc_addr.grid(row=0, column=1, padx=(0, 8), pady=8, sticky="ew")
+
+        ui.create_primary_button(
+            add_loc_bar, "+ Add Location", self.add_office_address, width=120, height=32
+        ).grid(row=0, column=2, padx=(0, 8), pady=8)
+
+        # 3. Workflow Mode Switcher Card
+        mode_card = ui.create_card(f)
+        mode_card.grid(row=3, column=0, sticky="nsew", pady=(0, 10))
+        mode_card.grid_columnconfigure(0, weight=1)
+
+        mode_hdr = ctk.CTkFrame(mode_card, fg_color="transparent")
+        mode_hdr.pack(fill="x", padx=16, pady=(10, 10))
+
+        ctk.CTkLabel(
+            mode_hdr, text="Choose Generation Workflow:",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=13, weight="bold"),
+            text_color=ui.COLOR_TEXT_SEC
+        ).pack(side="left", padx=(0, 14))
+
+        self.id_card_mode_seg = ctk.CTkSegmentedButton(
+            mode_hdr,
+            values=["⚡ Method 1: Instant Email Sync (Auto-Fetch)", "📁 Method 2: Bulk Excel Upload"],
+            variable=self.id_card_mode_var,
+            command=self._on_id_card_mode_changed,
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12, weight="bold"),
+            selected_color=ui.COLOR_ACCENT,
+            selected_hover_color=ui.COLOR_ACCENT_HOVER,
+            unselected_color=ui.COLOR_BTN_SEC,
+            unselected_hover_color=ui.COLOR_BTN_SEC_HOV,
+            height=34
+        )
+        self.id_card_mode_seg.set("⚡ Method 1: Instant Email Sync (Auto-Fetch)")
+        self.id_card_mode_seg.pack(side="left", fill="x", expand=True)
+
+        # 4. Method 1: Instant Email Sync Container
+        self.card_mode_email_sync = ui.create_card(f)
+        self.card_mode_email_sync.grid(row=4, column=0, sticky="nsew", pady=(0, 10))
+        self.card_mode_email_sync.grid_columnconfigure(0, weight=1)
+
+        m1_hdr = ctk.CTkFrame(self.card_mode_email_sync, fg_color="transparent")
+        m1_hdr.pack(fill="x", padx=16, pady=(12, 2))
+        ctk.CTkLabel(
+            m1_hdr, text="⚡ Method 1: Instant Email Sync (Auto-Fetch from Keka & Slack)",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=15, weight="bold"),
+            text_color=ui.COLOR_TEXT
+        ).pack(side="left")
+
+        ctk.CTkLabel(
+            self.card_mode_email_sync,
+            text="Enter employee email IDs separated by ';' (or commas / newlines). The generator automatically queries Keka HRMS for Display Name, Designation, EMP ID, Blood Group, Mobile, DOB, and Emergency Contacts. Profile photos are retrieved with automatic fallback (Local Folder ➔ Keka ➔ Slack). Office address is dynamically matched from your configured locations.",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11),
+            text_color=ui.COLOR_TEXT_SEC, anchor="w", justify="left"
+        ).pack(fill="x", padx=16, pady=(0, 10))
+
+        # Email input box
+        ctk.CTkLabel(
+            self.card_mode_email_sync, text="Employee Email ID(s) — separated by semicolon (;):",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12, weight="bold"),
+            text_color=ui.COLOR_TEXT_SEC
+        ).pack(anchor="w", padx=16, pady=(2, 4))
+
+        self.id_card_emails_box = ctk.CTkTextbox(
+            self.card_mode_email_sync, height=75,
+            font=ctk.CTkFont(family="Consolas", size=12),
+            fg_color=ui.COLOR_INPUT_BG, border_color=ui.COLOR_BORDER,
+            border_width=1, corner_radius=6, text_color=ui.COLOR_TEXT
+        )
+        self.id_card_emails_box.pack(fill="x", padx=16, pady=(0, 10))
+        self.id_card_emails_box.insert("0.0", "kanupriya.rathore@finbox.in; vinoth.kumar@finbox.in")
+
+        # Optional Local Photos Folder Row
+        m1_photo_frame = ctk.CTkFrame(self.card_mode_email_sync, fg_color="transparent")
+        m1_photo_frame.pack(fill="x", padx=16, pady=(0, 10))
+        m1_photo_frame.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            m1_photo_frame, text="Local Photos Folder (Optional — overrides Keka/Slack if employee photo found locally):",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11, weight="bold"),
+            text_color=ui.COLOR_TEXT_DIM
+        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 2))
+
+        ctk.CTkEntry(
+            m1_photo_frame, textvariable=self.id_card_photos_dir,
+            placeholder_text="No local photos folder selected (Keka & Slack will be used automatically)...",
+            height=32, font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12),
+            fg_color=ui.COLOR_INPUT_BG, border_color=ui.COLOR_BORDER, border_width=1
+        ).grid(row=1, column=0, sticky="ew", padx=(0, 8))
+
+        ctk.CTkButton(
+            m1_photo_frame, text="Browse Folder", width=120, height=32, corner_radius=6,
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12, weight="bold"),
+            fg_color=ui.COLOR_BTN_SEC, hover_color=ui.COLOR_BTN_SEC_HOV,
+            command=self.browse_photos_directory
+        ).grid(row=1, column=1)
+
+        # Method 1 Action Row
+        m1_actions = ctk.CTkFrame(self.card_mode_email_sync, fg_color="transparent")
+        m1_actions.pack(fill="x", padx=16, pady=(4, 14))
+
+        self.btn_id_card_email_gen = ui.create_primary_button(
+            m1_actions, "Generate ID Cards 🚀", self.start_id_card_email_batch, width=190
+        )
+        self.btn_id_card_email_gen.pack(side="left", padx=(0, 10))
+
+        self.btn_id_card_email_prev = ui.create_secondary_button(
+            m1_actions, "Preview First Card 👁️", self.start_id_card_preview_from_email_mode, width=165
+        )
+        self.btn_id_card_email_prev.pack(side="left", padx=(0, 10))
+
+        self.btn_id_card_email_view = ui.create_secondary_button(
+            m1_actions, "View Preview PDF 📄", self.open_id_card_preview_pdf, width=150
+        )
+        self.btn_id_card_email_view.pack(side="left")
+
+        # 5. Method 2: Bulk Excel Upload Container (Initially hidden)
+        self.card_mode_bulk_excel = ui.create_card(f)
+        self.card_mode_bulk_excel.grid(row=4, column=0, sticky="nsew", pady=(0, 10))
+        self.card_mode_bulk_excel.grid_columnconfigure(0, weight=1)
+        self.card_mode_bulk_excel.grid_remove()
+
+        m2_hdr = ctk.CTkFrame(self.card_mode_bulk_excel, fg_color="transparent")
+        m2_hdr.pack(fill="x", padx=16, pady=(12, 2))
+        ctk.CTkLabel(
+            m2_hdr, text="📁 Method 2: Bulk Excel Data Upload",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=15, weight="bold"),
+            text_color=ui.COLOR_TEXT
+        ).pack(side="left")
+
+        ctk.CTkLabel(
+            self.card_mode_bulk_excel,
+            text="Upload an employee roster spreadsheet in Excel format. You can also specify a local folder containing employee photos and pick how photo files are matched (by Employee ID or Email ID). If photos are missing from the folder, Keka and Slack will be used automatically as fallback.",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11),
+            text_color=ui.COLOR_TEXT_SEC, anchor="w", justify="left"
+        ).pack(fill="x", padx=16, pady=(0, 10))
+
+        # Excel File Browse Row
+        m2_excel_frame = ctk.CTkFrame(self.card_mode_bulk_excel, fg_color="transparent")
+        m2_excel_frame.pack(fill="x", padx=16, pady=(0, 10))
+        m2_excel_frame.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            m2_excel_frame, text="Employee Data Sheet (Excel .xlsx):",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12, weight="bold"),
+            text_color=ui.COLOR_TEXT_DIM
+        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 2))
+
+        ctk.CTkEntry(
+            m2_excel_frame, textvariable=self.id_card_excel_file,
+            placeholder_text="No Excel file selected...",
+            height=32, font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12),
+            fg_color=ui.COLOR_INPUT_BG, border_color=ui.COLOR_BORDER, border_width=1
+        ).grid(row=1, column=0, sticky="ew", padx=(0, 8))
+
+        ctk.CTkButton(
+            m2_excel_frame, text="Browse File", width=120, height=32, corner_radius=6,
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12, weight="bold"),
+            fg_color=ui.COLOR_BTN_SEC, hover_color=ui.COLOR_BTN_SEC_HOV,
+            command=lambda: ui._browse_file(self.id_card_excel_file)
+        ).grid(row=1, column=1)
+
+        # Local Photos Folder Browse Row
+        m2_photo_frame = ctk.CTkFrame(self.card_mode_bulk_excel, fg_color="transparent")
+        m2_photo_frame.pack(fill="x", padx=16, pady=(0, 10))
+        m2_photo_frame.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            m2_photo_frame, text="Employee Photos Folder (Optional):",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12, weight="bold"),
+            text_color=ui.COLOR_TEXT_DIM
+        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 2))
+
+        ctk.CTkEntry(
+            m2_photo_frame, textvariable=self.id_card_photos_dir,
+            placeholder_text="No local photos folder selected (will use Keka / Slack)...",
+            height=32, font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12),
+            fg_color=ui.COLOR_INPUT_BG, border_color=ui.COLOR_BORDER, border_width=1
+        ).grid(row=1, column=0, sticky="ew", padx=(0, 8))
+
+        ctk.CTkButton(
+            m2_photo_frame, text="Browse Folder", width=120, height=32, corner_radius=6,
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12, weight="bold"),
+            fg_color=ui.COLOR_BTN_SEC, hover_color=ui.COLOR_BTN_SEC_HOV,
+            command=self.browse_photos_directory
+        ).grid(row=1, column=1)
+
+        # Photo Matching Rule
+        rule_row = ctk.CTkFrame(self.card_mode_bulk_excel, fg_color=ui.COLOR_INPUT_BG, corner_radius=6, border_width=1, border_color=ui.COLOR_BORDER)
+        rule_row.pack(fill="x", padx=16, pady=(0, 12))
+
+        ctk.CTkLabel(
+            rule_row, text="Local Photo Naming Rule:",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12, weight="bold"),
+            text_color=ui.COLOR_TEXT_SEC
+        ).pack(side="left", padx=12, pady=8)
+
+        self.seg_photo_rule = ctk.CTkSegmentedButton(
+            rule_row,
+            values=["Auto-Detect", "Employee ID (e.g. FINBP200.jpg)", "Email ID (e.g. name@finbox.in)"],
+            variable=self.id_card_photo_match_mode,
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11, weight="bold"),
+            selected_color=ui.COLOR_ACCENT, selected_hover_color=ui.COLOR_ACCENT_HOVER,
+            unselected_color=ui.COLOR_CARD, unselected_hover_color=ui.COLOR_BTN_SEC_HOV
+        )
+        self.seg_photo_rule.set("Auto-Detect")
+        self.seg_photo_rule.pack(side="left", fill="x", expand=True, padx=(0, 12), pady=8)
+
+        # Preview and Bulk Actions Row
+        m2_actions = ctk.CTkFrame(self.card_mode_bulk_excel, fg_color="transparent")
+        m2_actions.pack(fill="x", padx=16, pady=(4, 14))
+
+        # Left preview section
+        prev_sub = ctk.CTkFrame(m2_actions, fg_color="transparent")
+        prev_sub.pack(side="left", fill="x", expand=True)
+
+        ctk.CTkLabel(prev_sub, text="Preview Single Employee:", font=ctk.CTkFont(size=11, weight="bold"), text_color=ui.COLOR_TEXT_DIM).pack(anchor="w", pady=(0, 2))
+        prev_row = ctk.CTkFrame(prev_sub, fg_color="transparent")
+        prev_row.pack(fill="x")
+
+        ctk.CTkEntry(
+            prev_row, textvariable=self.id_card_preview_email,
+            placeholder_text="Enter employee email...", width=220, height=32,
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12),
+            fg_color=ui.COLOR_INPUT_BG, border_color=ui.COLOR_BORDER, border_width=1
+        ).pack(side="left", padx=(0, 8))
+
+        self.btn_id_card_preview = ui.create_secondary_button(
+            prev_row, "Generate Preview 👁", self.start_id_card_preview, width=145
+        )
+        self.btn_id_card_preview.pack(side="left", padx=(0, 8))
+
+        self.btn_id_card_view_pdf = ui.create_secondary_button(
+            prev_row, "View PDF 📄", self.open_id_card_preview_pdf, width=110
+        )
+        self.btn_id_card_view_pdf.pack(side="left")
+
+        # Right bulk generation button
+        self.btn_id_card_bulk = ui.create_primary_button(
+            m2_actions, "Run Bulk Generation 📇", self.start_id_card_bulk, width=200, height=34
+        )
+        self.btn_id_card_bulk.pack(side="right", padx=(16, 0), pady=(14, 0))
+
+        # 6. Live Activity & Generation Audit Trail Console Card
+        log_card = ui.create_card(f)
+        log_card.grid(row=5, column=0, sticky="nsew", pady=(0, 10))
+        log_card.grid_columnconfigure(0, weight=1)
+
+        log_hdr = ctk.CTkFrame(log_card, fg_color="transparent")
+        log_hdr.grid(row=0, column=0, sticky="ew", padx=16, pady=(10, 4))
+        log_hdr.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkLabel(
+            log_hdr, text="Live Activity & Generation Audit Trail",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=13, weight="bold"),
+            text_color=ui.COLOR_TEXT
+        ).grid(row=0, column=0, sticky="w")
+
+        stat_frame = ctk.CTkFrame(log_hdr, fg_color="transparent")
+        stat_frame.grid(row=0, column=1, sticky="w", padx=16)
+        _, self.id_card_dot, self.id_card_lbl = ui.create_status_badge(stat_frame, "Ready")
+        self.id_card_lbl.master.pack(side="left")
+
+        ui.create_secondary_button(log_hdr, "Clear Log", self.clear_id_card_console, width=75, height=24).grid(row=0, column=2, sticky="e")
+
+        self.id_card_prog = ctk.CTkProgressBar(
+            log_card, mode="indeterminate", height=4, corner_radius=2,
+            fg_color=ui.COLOR_INPUT_BG, progress_color=ui.COLOR_ACCENT
+        )
+        self.id_card_prog.grid(row=1, column=0, sticky="ew", padx=16, pady=(2, 6))
+        self.id_card_prog.set(0)
+        self.id_card_prog.grid_remove()
+
+        self.id_card_log_text = ctk.CTkTextbox(
+            log_card, height=170, font=ctk.CTkFont(family="Consolas", size=11),
+            fg_color=ui.COLOR_INPUT_BG, border_color=ui.COLOR_BORDER,
+            border_width=1, text_color=ui.COLOR_TEXT, corner_radius=6
+        )
+        self.id_card_log_text.grid(row=2, column=0, sticky="nsew", padx=16, pady=(0, 12))
+        self.id_card_log_text.insert("0.0", "FinBox ID Card Generator ready.\nChoose 'Method 1: Instant Email Sync' or 'Method 2: Bulk Excel Upload', and click Generate.\n")
+        self.id_card_log_text.configure(state="disabled")
+
+        # Initial connectors health check
+        self.after(300, self.refresh_slack_status)
+        if os.getenv("KEKA_API_KEY") or (os.getenv("KEKA_CLIENT_ID") and os.getenv("KEKA_CLIENT_SECRET")):
+            self.after(600, self.refresh_keka_status)
+
+
+    # ---------------------------------------------------------
+    # Settings & Workspace Connectors
+    # ---------------------------------------------------------
+    def _build_settings_connectors_frame(self):
+        f = ctk.CTkScrollableFrame(self.main_content, fg_color="transparent")
+        self.frames["settings_connectors"] = f
+        self.frames["settings"] = f  # backwards-compatible alias
+        f.grid_columnconfigure(0, weight=1)
+
+        # 1. Page Header
+        hdr = ui.create_page_header(
+            f, "Settings & Connectors",
+            "Configure workspace API integrations, OAuth credentials, and persistent environment configuration."
+        )
+        hdr.grid(row=0, column=0, sticky="ew", pady=(0, 14))
+
+        top_actions = ctk.CTkFrame(hdr, fg_color="transparent")
+        top_actions.grid(row=0, column=1, sticky="e")
+        ui.create_primary_button(
+            top_actions, "Save All Credentials 💾",
+            lambda: self.save_connectors_credentials("all"),
+            width=180
+        ).pack(side="left", padx=(0, 8))
+        ui.create_secondary_button(
+            top_actions, "Refresh Statuses 🔄",
+            self._refresh_all_connectors,
+            width=150
+        ).pack(side="left")
+
+        # 2. Main Two-Column Integration Cards
+        cards_grid = ctk.CTkFrame(f, fg_color="transparent")
+        cards_grid.grid(row=1, column=0, sticky="nsew", pady=(0, 14))
+        cards_grid.grid_columnconfigure((0, 1), weight=1)
+
+        # ── Card 1: Keka HRMS Connector (Primary) ──
+        keka_card = ui.create_card(cards_grid)
+        keka_card.grid(row=0, column=0, sticky="nsew", padx=(0, 8), pady=0)
+        keka_card.grid_columnconfigure(0, weight=1)
+
+        keka_hdr = ctk.CTkFrame(keka_card, fg_color="transparent")
+        keka_hdr.pack(fill="x", padx=16, pady=(12, 4))
+        ctk.CTkLabel(
+            keka_hdr, text="🏢 Keka HRMS Integration",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=15, weight="bold"),
+            text_color=ui.COLOR_TEXT
+        ).pack(side="left")
+
+        # Primary Badge
+        keka_badge = ctk.CTkLabel(
+            keka_hdr, text="PRIMARY (1ST)",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=10, weight="bold"),
+            text_color=ui.COLOR_ACCENT, fg_color=ui.COLOR_NAV_ACTIVE,
+            corner_radius=4, padx=6, pady=2
+        )
+        keka_badge.pack(side="right")
+
+        ctk.CTkLabel(
+            keka_card,
+            text="Primary photo source. Generates 24-hour OAuth Bearer tokens via login.keka.com and downloads high-res employee profile pictures.",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11),
+            text_color=ui.COLOR_TEXT_SEC, anchor="w", justify="left", wraplength=480
+        ).pack(fill="x", padx=16, pady=(0, 10))
+
+        # Fields container
+        keka_fields = ctk.CTkFrame(keka_card, fg_color="transparent")
+        keka_fields.pack(fill="x", padx=16, pady=(0, 6))
+
+        # Subdomain
+        ctk.CTkLabel(
+            keka_fields, text="Company Subdomain (.keka.com):",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11, weight="bold"),
+            text_color=ui.COLOR_TEXT_SEC, anchor="w"
+        ).pack(fill="x", pady=(2, 2))
+        self.entry_keka_subdomain = ctk.CTkEntry(
+            keka_fields, textvariable=self.keka_subdomain_var,
+            placeholder_text="e.g. finbox", height=32,
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12),
+            fg_color=ui.COLOR_INPUT_BG, border_color=ui.COLOR_BORDER,
+            border_width=1, corner_radius=6, text_color=ui.COLOR_TEXT
+        )
+        self.entry_keka_subdomain.pack(fill="x", pady=(0, 8))
+
+        # Client ID
+        ctk.CTkLabel(
+            keka_fields, text="Keka Client ID:",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11, weight="bold"),
+            text_color=ui.COLOR_TEXT_SEC, anchor="w"
+        ).pack(fill="x", pady=(2, 2))
+        self.entry_keka_client_id = ctk.CTkEntry(
+            keka_fields, textvariable=self.keka_client_id_var,
+            placeholder_text="Enter Keka OAuth Client ID...", height=32,
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12),
+            fg_color=ui.COLOR_INPUT_BG, border_color=ui.COLOR_BORDER,
+            border_width=1, corner_radius=6, text_color=ui.COLOR_TEXT
+        )
+        self.entry_keka_client_id.pack(fill="x", pady=(0, 8))
+
+        # Client Secret
+        ctk.CTkLabel(
+            keka_fields, text="Keka Client Secret:",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11, weight="bold"),
+            text_color=ui.COLOR_TEXT_SEC, anchor="w"
+        ).pack(fill="x", pady=(2, 2))
+        self.entry_keka_client_secret = ctk.CTkEntry(
+            keka_fields, textvariable=self.keka_client_secret_var,
+            placeholder_text="Enter Keka OAuth Client Secret...", show="*", height=32,
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12),
+            fg_color=ui.COLOR_INPUT_BG, border_color=ui.COLOR_BORDER,
+            border_width=1, corner_radius=6, text_color=ui.COLOR_TEXT
+        )
+        self.entry_keka_client_secret.pack(fill="x", pady=(0, 8))
+
+        # API Key / Bearer Token
+        ctk.CTkLabel(
+            keka_fields, text="Keka API Key (or direct Bearer token):",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11, weight="bold"),
+            text_color=ui.COLOR_TEXT_SEC, anchor="w"
+        ).pack(fill="x", pady=(2, 2))
+        self.entry_keka_key = ctk.CTkEntry(
+            keka_fields, textvariable=self.keka_api_key_var,
+            placeholder_text="Enter Keka API Key (required for OAuth exchange)...", height=32,
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12),
+            fg_color=ui.COLOR_INPUT_BG, border_color=ui.COLOR_BORDER,
+            border_width=1, corner_radius=6, text_color=ui.COLOR_TEXT
+        )
+        self.entry_keka_key.pack(fill="x", pady=(0, 10))
+
+        # Status & Action Buttons
+        keka_footer = ctk.CTkFrame(keka_card, fg_color="transparent")
+        keka_footer.pack(fill="x", padx=16, pady=(4, 14))
+
+        _, self.settings_keka_dot, self.settings_keka_lbl = ui.create_status_badge(keka_footer, "Not connected", pack_side="left")
+
+        self.settings_btn_connect_keka = ui.create_primary_button(
+            keka_footer, "Connect & Test", self.connect_keka_now, width=125, height=32
+        )
+        self.settings_btn_connect_keka.pack(side="right", padx=(8, 0))
+
+        ui.create_secondary_button(
+            keka_footer, "Save Keka API 💾",
+            lambda: self.save_connectors_credentials("keka"),
+            width=125, height=32
+        ).pack(side="right")
+
+        # ── Card 2: Slack Workspace Connector (Fallback) ──
+        slack_card = ui.create_card(cards_grid)
+        slack_card.grid(row=0, column=1, sticky="nsew", padx=(8, 0), pady=0)
+        slack_card.grid_columnconfigure(0, weight=1)
+
+        slack_hdr = ctk.CTkFrame(slack_card, fg_color="transparent")
+        slack_hdr.pack(fill="x", padx=16, pady=(12, 4))
+        ctk.CTkLabel(
+            slack_hdr, text="💬 Slack Workspace Integration",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=15, weight="bold"),
+            text_color=ui.COLOR_TEXT
+        ).pack(side="left")
+
+        # Fallback Badge
+        slack_badge = ctk.CTkLabel(
+            slack_hdr, text="FALLBACK (2ND)",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=10, weight="bold"),
+            text_color=ui.COLOR_WARNING, fg_color="#2A2000",
+            corner_radius=4, padx=6, pady=2
+        )
+        slack_badge.pack(side="right")
+
+        ctk.CTkLabel(
+            slack_card,
+            text="Secondary fallback source. Automatically queried via Slack users.lookupByEmail when Keka has no profile image.",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11),
+            text_color=ui.COLOR_TEXT_SEC, anchor="w", justify="left", wraplength=480
+        ).pack(fill="x", padx=16, pady=(0, 10))
+
+        # Slack Fields container
+        slack_fields = ctk.CTkFrame(slack_card, fg_color="transparent")
+        slack_fields.pack(fill="x", padx=16, pady=(0, 6))
+
+        # Slack Bot Token
+        ctk.CTkLabel(
+            slack_fields, text="Slack Bot Token (xoxb-...) or Bot ID (B...):",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11, weight="bold"),
+            text_color=ui.COLOR_TEXT_SEC, anchor="w"
+        ).pack(fill="x", pady=(2, 2))
+        self.entry_slack_token = ctk.CTkEntry(
+            slack_fields, textvariable=self.slack_bot_token_var,
+            placeholder_text="xoxb-your-slack-bot-token or Bot ID B0BE6TGNB09...", height=32,
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12),
+            fg_color=ui.COLOR_INPUT_BG, border_color=ui.COLOR_BORDER,
+            border_width=1, corner_radius=6, text_color=ui.COLOR_TEXT
+        )
+        self.entry_slack_token.pack(fill="x", pady=(0, 8))
+
+        # Permissions Note Box
+        perm_box = ctk.CTkFrame(slack_fields, fg_color=ui.COLOR_CARD, corner_radius=6, border_width=1, border_color=ui.COLOR_BORDER)
+        perm_box.pack(fill="x", pady=(4, 12))
+        ctk.CTkLabel(
+            perm_box,
+            text="Required OAuth Scopes:\n • users:read — Read user profiles and avatars\n • users:read.email — Match employees by corporate email\n\nFallback behavior:\n • Default generic Slack avatars are automatically rejected to prevent invalid ID cards.",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11),
+            text_color=ui.COLOR_TEXT_DIM, justify="left", anchor="w"
+        ).pack(fill="x", padx=10, pady=8)
+
+        # Slack Status & Action Buttons
+        slack_footer = ctk.CTkFrame(slack_card, fg_color="transparent")
+        slack_footer.pack(fill="x", padx=16, pady=(4, 14))
+
+        _, self.settings_slack_dot, self.settings_slack_lbl = ui.create_status_badge(slack_footer, "Checking...", pack_side="left")
+
+        self.settings_btn_connect_slack = ui.create_primary_button(
+            slack_footer, "Connect & Test", self.connect_slack_now, width=125, height=32
+        )
+        self.settings_btn_connect_slack.pack(side="right", padx=(8, 0))
+
+        ui.create_secondary_button(
+            slack_footer, "Save Slack API 💾",
+            lambda: self.save_connectors_credentials("slack"),
+            width=125, height=32
+        ).pack(side="right")
+
+        # ── Card 3: Secure Environment Persistence & Live Diagnostics Console ──
+        log_card = ui.create_card(f)
+        log_card.grid(row=2, column=0, sticky="nsew", pady=(0, 10))
+        log_card.grid_columnconfigure(0, weight=1)
+
+        log_hdr = ctk.CTkFrame(log_card, fg_color="transparent")
+        log_hdr.grid(row=0, column=0, sticky="ew", padx=16, pady=(10, 4))
+
+        ctk.CTkLabel(
+            log_hdr, text="🔐 Persistent Configuration & Live Diagnostic Console",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=13, weight="bold"),
+            text_color=ui.COLOR_TEXT
+        ).pack(side="left")
+
+        ctk.CTkLabel(
+            log_hdr, text="Auto-loads from .env on startup",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11),
+            text_color=ui.COLOR_TEXT_DIM
+        ).pack(side="right")
+
+        ctk.CTkLabel(
+            log_card,
+            text="Whenever you click 'Save API' or 'Save All Credentials', your tokens are securely written to the local project .env file. The application re-reads and validates them on every startup, eliminating the need to enter your API keys again.",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11),
+            text_color=ui.COLOR_TEXT_SEC, justify="left", anchor="w"
+        ).grid(row=1, column=0, sticky="w", padx=16, pady=(0, 6))
+
+        self.settings_log_text = ctk.CTkTextbox(
+            log_card, height=130, font=ctk.CTkFont(family="Consolas", size=11),
+            fg_color=ui.COLOR_INPUT_BG, border_color=ui.COLOR_BORDER,
+            border_width=1, text_color=ui.COLOR_TEXT, corner_radius=6
+        )
+        self.settings_log_text.grid(row=2, column=0, sticky="nsew", padx=16, pady=(0, 10))
+        self.settings_log_text.insert("0.0", "Workspace Connectors Console ready.\nConfigure Slack and Keka credentials above, test connectivity, and save permanently to .env.\n")
+        self.settings_log_text.configure(state="disabled")
+
 
     # ---------------------------------------------------------
     # Workforce Intelligence Dashboard
@@ -1641,6 +2552,649 @@ class App(ctk.CTk):
         self.analyse_prog.grid_remove()
         ui.update_status(self.analyse_dot, self.analyse_lbl, "Analysis Failed", "error")
         messagebox.showerror("Analysis Error", f"Failed to analyze file:\n{err}")
+
+    # =========================================================
+    # FinBox ID Card Generator Handlers
+    # =========================================================
+
+    def _append_id_card_log(self, text: str):
+        """Thread-safe write to the ID Card console textbox."""
+        def _update():
+            try:
+                self.id_card_log_text.configure(state="normal")
+                self.id_card_log_text.insert("end", text)
+                self.id_card_log_text.see("end")
+                self.id_card_log_text.configure(state="disabled")
+            except Exception:
+                pass
+        try:
+            self.after(0, _update)
+        except Exception:
+            pass
+
+    def _on_id_card_design_changed(self, choice: str):
+        """Updates helper description when template changes."""
+        if hasattr(self, "lbl_id_card_design_desc"):
+            if choice == "Modern":
+                self.lbl_id_card_design_desc.configure(
+                    text="FinBox Modern format (Navy & Cyan with Slack Photo & QR)"
+                )
+            else:
+                self.lbl_id_card_design_desc.configure(
+                    text="FinBox Classic format (Deep Navy with Full Back Details & QR)"
+                )
+
+    def _on_connector_tab_changed(self, choice: str):
+        """Switches between Slack and Keka connector views (compatibility)."""
+        if hasattr(self, "panel_keka") and hasattr(self, "panel_slack"):
+            if choice == "Slack":
+                self.panel_keka.pack_forget()
+                self.panel_slack.pack(fill="x")
+            else:
+                self.panel_slack.pack_forget()
+                self.panel_keka.pack(fill="x")
+
+    def _append_settings_log(self, text: str):
+        """Thread-safe write to the Settings console textbox."""
+        def _update():
+            try:
+                if hasattr(self, "settings_log_text") and self.settings_log_text:
+                    self.settings_log_text.configure(state="normal")
+                    self.settings_log_text.insert("end", text)
+                    self.settings_log_text.see("end")
+                    self.settings_log_text.configure(state="disabled")
+            except Exception:
+                pass
+        try:
+            self.after(0, _update)
+        except Exception:
+            pass
+
+    def _append_connector_log(self, text: str):
+        """Thread-safe write to both Settings and ID Card consoles."""
+        self._append_settings_log(text)
+        self._append_id_card_log(text)
+
+    def _update_slack_badge(self, msg: str, status_type: str):
+        """Updates Slack status badges across Settings and ID Card screens."""
+        for dot, lbl in [
+            (getattr(self, "settings_slack_dot", None), getattr(self, "settings_slack_lbl", None)),
+            (getattr(self, "id_card_slack_dot", None), getattr(self, "id_card_slack_lbl", None)),
+            (getattr(self, "slack_dot", None), getattr(self, "slack_lbl", None)),
+        ]:
+            if dot and lbl:
+                try:
+                    ui.update_status(dot, lbl, msg, status_type)
+                except Exception:
+                    pass
+
+    def _update_keka_badge(self, msg: str, status_type: str):
+        """Updates Keka status badges across Settings and ID Card screens."""
+        for dot, lbl in [
+            (getattr(self, "settings_keka_dot", None), getattr(self, "settings_keka_lbl", None)),
+            (getattr(self, "id_card_keka_dot", None), getattr(self, "id_card_keka_lbl", None)),
+            (getattr(self, "keka_dot", None), getattr(self, "keka_lbl", None)),
+        ]:
+            if dot and lbl:
+                try:
+                    ui.update_status(dot, lbl, msg, status_type)
+                except Exception:
+                    pass
+
+    def save_connectors_credentials(self, which="all"):
+        """
+        Saves current entered credentials to .env file permanently.
+        Allows users to store API keys and tokens so they never have to enter them each time.
+        """
+        saved_items = []
+        if which in ("all", "slack"):
+            slack_val = self.slack_bot_token_var.get().strip()
+            if slack_val:
+                if slack_val.startswith("xoxb-"):
+                    id_card.save_env_variable("SLACK_BOT_TOKEN", slack_val)
+                    saved_items.append("SLACK_BOT_TOKEN")
+                elif slack_val.startswith("B") or slack_val.startswith("U"):
+                    id_card.save_env_variable("SLACK_BOT_ID", slack_val)
+                    saved_items.append("SLACK_BOT_ID")
+                else:
+                    id_card.save_env_variable("SLACK_BOT_TOKEN", slack_val)
+                    saved_items.append("SLACK_BOT_TOKEN")
+
+        if which in ("all", "keka"):
+            sub = self.keka_subdomain_var.get().strip()
+            cid = self.keka_client_id_var.get().strip()
+            csec = self.keka_client_secret_var.get().strip()
+            key = self.keka_api_key_var.get().strip()
+
+            if sub:
+                id_card.save_env_variable("KEKA_SUBDOMAIN", sub)
+                saved_items.append("KEKA_SUBDOMAIN")
+            if cid:
+                id_card.save_env_variable("KEKA_CLIENT_ID", cid)
+                saved_items.append("KEKA_CLIENT_ID")
+            if csec:
+                id_card.save_env_variable("KEKA_CLIENT_SECRET", csec)
+                saved_items.append("KEKA_CLIENT_SECRET")
+            if key:
+                id_card.save_env_variable("KEKA_API_KEY", key)
+                saved_items.append("KEKA_API_KEY")
+
+        item_str = ", ".join(saved_items) if saved_items else "No credentials specified"
+        log_msg = f"[SETTINGS] ✓ Saved to .env: {item_str}\n"
+        self._append_connector_log(log_msg)
+        messagebox.showinfo(
+            "API Credentials Saved",
+            f"Saved the following keys to your project .env file:\n\n{item_str}\n\n"
+            "These credentials will be loaded automatically on every app startup, so you don't need to re-enter them."
+        )
+
+    def connect_slack_now(self):
+        """Validates Slack token or Bot ID from entry and updates status in background."""
+        token_or_id = self.slack_bot_token_var.get().strip()
+        for btn in [getattr(self, "btn_connect_slack", None), getattr(self, "settings_btn_connect_slack", None)]:
+            if btn:
+                try:
+                    btn.configure(text="...", state="disabled")
+                except Exception:
+                    pass
+        self._update_slack_badge("Connecting to Slack...", "processing")
+        self._append_connector_log("\n[CONNECTORS] Connecting to Slack Workspace API...\n")
+
+        def _worker():
+            is_conn, msg, user, *rest = id_card.check_slack_status(token_or_id)
+            def _finish():
+                try:
+                    for btn in [getattr(self, "btn_connect_slack", None), getattr(self, "settings_btn_connect_slack", None)]:
+                        if btn:
+                            try:
+                                btn.configure(text="Connect & Test", state="normal")
+                            except Exception:
+                                pass
+                    if is_conn:
+                        self._update_slack_badge(msg, "success")
+                        self._append_connector_log(f"[CONNECTORS] ✓ Slack connected: {msg}\n")
+                    else:
+                        self._update_slack_badge(msg, "error")
+                        self._append_connector_log(f"[CONNECTORS] ✕ Slack connection failed: {msg}\n")
+                except Exception:
+                    pass
+            try:
+                self.after(0, _finish)
+            except Exception:
+                pass
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def connect_keka_now(self):
+        """Validates Keka API credentials from entry fields and updates status in background."""
+        client_id = self.keka_client_id_var.get().strip()
+        client_secret = self.keka_client_secret_var.get().strip()
+        api_key = self.keka_api_key_var.get().strip()
+        subdomain = self.keka_subdomain_var.get().strip()
+        for btn in [getattr(self, "btn_connect_keka", None), getattr(self, "settings_btn_connect_keka", None)]:
+            if btn:
+                try:
+                    btn.configure(text="...", state="disabled")
+                except Exception:
+                    pass
+        self._update_keka_badge("Connecting to Keka...", "processing")
+        self._append_connector_log(f"\n[CONNECTORS] Connecting to Keka HRMS ({subdomain}.keka.com)...\n")
+
+        def _worker():
+            is_conn, msg, details = id_card.check_keka_status(
+                api_key=api_key, client_id=client_id, client_secret=client_secret, subdomain=subdomain
+            )
+            def _finish():
+                try:
+                    for btn in [getattr(self, "btn_connect_keka", None), getattr(self, "settings_btn_connect_keka", None)]:
+                        if btn:
+                            try:
+                                btn.configure(text="Connect & Test", state="normal")
+                            except Exception:
+                                pass
+                    if is_conn:
+                        self._update_keka_badge(msg, "success")
+                        self._append_connector_log(f"[CONNECTORS] ✓ Keka connected: {msg}\n")
+                    else:
+                        self._update_keka_badge(msg, "error")
+                        self._append_connector_log(f"[CONNECTORS] ✕ Keka connection failed: {msg}\n")
+                except Exception:
+                    pass
+            try:
+                self.after(0, _finish)
+            except Exception:
+                pass
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def refresh_slack_status(self):
+        """Checks Slack connection in background."""
+        self.connect_slack_now()
+
+    def refresh_keka_status(self):
+        """Checks Keka connection in background."""
+        self.connect_keka_now()
+
+    def _refresh_all_connectors(self):
+        """Refreshes both Slack and Keka connections."""
+        self.connect_slack_now()
+        self.connect_keka_now()
+
+    def toggle_office_addresses_card(self):
+        """Toggles visibility of the Office Address Configuration card."""
+        self.id_card_address_config_visible = not self.id_card_address_config_visible
+        if self.id_card_address_config_visible:
+            self.card_office_addresses.grid()
+            self._refresh_address_list_ui()
+            if hasattr(self, "btn_toggle_addresses"):
+                self.btn_toggle_addresses.configure(text="Hide Addresses ✕")
+        else:
+            self.card_office_addresses.grid_remove()
+            if hasattr(self, "btn_toggle_addresses"):
+                self.btn_toggle_addresses.configure(text="Configure Addresses 🏢")
+
+    def _refresh_address_list_ui(self):
+        """Rebuilds the interactive list of configured office addresses."""
+        if not hasattr(self, "address_rows_container"):
+            return
+        for widget in self.address_rows_container.winfo_children():
+            widget.destroy()
+
+        self.address_entries_map = {}
+        for loc, addr in sorted(self.office_addresses_data.items(), key=lambda x: (x[0].lower() != "default", x[0].lower())):
+            row_frame = ctk.CTkFrame(self.address_rows_container, fg_color=ui.COLOR_INPUT_BG, corner_radius=6, border_width=1, border_color=ui.COLOR_BORDER)
+            row_frame.pack(fill="x", padx=4, pady=3)
+            row_frame.grid_columnconfigure(1, weight=1)
+
+            # Location badge
+            loc_lbl = ctk.CTkLabel(
+                row_frame, text=loc, width=120,
+                font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11, weight="bold"),
+                text_color=ui.COLOR_ACCENT, fg_color=ui.COLOR_NAV_ACTIVE,
+                corner_radius=4, padx=6, pady=4
+            )
+            loc_lbl.grid(row=0, column=0, padx=8, pady=6, sticky="w")
+
+            # Address text entry (editable)
+            addr_var = ctk.StringVar(value=addr)
+            self.address_entries_map[loc] = addr_var
+            addr_entry = ctk.CTkEntry(
+                row_frame, textvariable=addr_var,
+                font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11),
+                fg_color=ui.COLOR_CARD, border_color=ui.COLOR_BORDER,
+                border_width=1, height=28, text_color=ui.COLOR_TEXT
+            )
+            addr_entry.grid(row=0, column=1, padx=(0, 8), pady=6, sticky="ew")
+
+            # Delete button (cannot delete Default, but can edit)
+            if loc.lower() != "default":
+                del_btn = ctk.CTkButton(
+                    row_frame, text="🗑", width=30, height=28, corner_radius=4,
+                    font=ctk.CTkFont(size=12),
+                    fg_color=ui.COLOR_CARD, hover_color="#441111",
+                    text_color="#FF6B6B",
+                    command=lambda k=loc: self.delete_office_address(k)
+                )
+                del_btn.grid(row=0, column=2, padx=(0, 8), pady=6)
+
+    def add_office_address(self):
+        """Adds a new location mapping to office_addresses_data."""
+        loc = self.entry_new_loc_name.get().strip()
+        addr = self.entry_new_loc_addr.get().strip()
+        if not loc or not addr:
+            messagebox.showwarning("Incomplete Data", "Please enter both Location City and Office Address.")
+            return
+        self.office_addresses_data[loc] = addr
+        self.entry_new_loc_name.delete(0, "end")
+        self.entry_new_loc_addr.delete(0, "end")
+        self._refresh_address_list_ui()
+
+    def delete_office_address(self, loc_key):
+        """Removes a location from office_addresses_data."""
+        if loc_key in self.office_addresses_data:
+            del self.office_addresses_data[loc_key]
+            self._refresh_address_list_ui()
+
+    def save_office_addresses_ui(self):
+        """Saves current address entries to local_data/office_addresses.json."""
+        if hasattr(self, "address_entries_map"):
+            for loc, var in self.address_entries_map.items():
+                self.office_addresses_data[loc] = var.get().strip()
+        id_card.save_office_addresses(self.office_addresses_data)
+        count = len(self.office_addresses_data)
+        self._append_id_card_log(f"\n[ADDRESSES] ✓ Saved {count} office locations to local_data/office_addresses.json\n")
+        messagebox.showinfo(
+            "Office Addresses Saved",
+            f"Successfully saved {count} location addresses.\n\n"
+            "Future ID card generations will automatically match employee city locations to these addresses."
+        )
+
+    def _on_id_card_mode_changed(self, choice=None):
+        """Toggles view between Instant Email Sync and Bulk Excel Upload."""
+        val = self.id_card_mode_seg.get()
+        if "Instant Email Sync" in val:
+            self.card_mode_email_sync.grid()
+            self.card_mode_bulk_excel.grid_remove()
+        else:
+            self.card_mode_email_sync.grid_remove()
+            self.card_mode_bulk_excel.grid()
+
+    def browse_photos_directory(self):
+        """Opens folder dialog to pick local photos directory."""
+        d = filedialog.askdirectory(title="Select Local Photos Directory")
+        if d:
+            self.id_card_photos_dir.set(d)
+            self._append_id_card_log(f"[PHOTOS] Selected local photos directory: {d}\n")
+
+    def start_id_card_email_batch(self):
+        """Runs Method 1: Instant Email Sync ID Card Generation."""
+        if self.is_id_card_generating:
+            messagebox.showwarning("In Progress", "An ID card generation job is already running.")
+            return
+
+        raw_emails = self.id_card_emails_box.get("0.0", "end").strip()
+        if not raw_emails:
+            messagebox.showerror("Error", "Please enter at least one employee email address.")
+            return
+
+        design = self.id_card_design.get().strip()
+        photos_dir = self.id_card_photos_dir.get().strip() or None
+        if photos_dir and not os.path.exists(photos_dir):
+            messagebox.showwarning("Warning", f"Specified photos folder does not exist:\n{photos_dir}\nFalling back to Keka & Slack.")
+            photos_dir = None
+
+        m_str = self.id_card_photo_match_mode.get().lower()
+        match_mode = "auto" if "auto" in m_str else ("emp_no" if "emp" in m_str else "email")
+
+        self.is_id_card_generating = True
+        self.btn_id_card_email_gen.configure(state="disabled")
+        if hasattr(self, "btn_id_card_bulk"):
+            self.btn_id_card_bulk.configure(state="disabled")
+        self.id_card_prog.grid()
+        self.id_card_prog.start()
+        ui.update_status(self.id_card_dot, self.id_card_lbl, f"Syncing with Keka & generating ({design})...", "processing")
+        self._append_id_card_log(f"\n{'='*60}\n[EMAIL SYNC] Starting Instant Email Sync ({design})\n{'='*60}\n")
+
+        def _job():
+            try:
+                res = id_card.run_email_batch_job(
+                    emails_input=raw_emails,
+                    design_name=design,
+                    photos_dir=photos_dir,
+                    photo_match_mode=match_mode,
+                    log_callback=self._append_id_card_log,
+                    address_mapping=self.office_addresses_data
+                )
+                ok, report_path, msg = res[0], res[1], res[2]
+                out_folder = res[3] if len(res) > 3 else (str(Path(report_path).parent.parent) if report_path else "")
+
+                def _finish():
+                    self.is_id_card_generating = False
+                    self.btn_id_card_email_gen.configure(state="normal")
+                    if hasattr(self, "btn_id_card_bulk"):
+                        self.btn_id_card_bulk.configure(state="normal")
+                    self.id_card_prog.stop()
+                    self.id_card_prog.grid_remove()
+                    if out_folder:
+                        self.last_id_card_output_dir = out_folder
+                    if ok:
+                        self.last_report_path = report_path
+                        ui.update_status(self.id_card_dot, self.id_card_lbl, "Email sync completed!", "success")
+                        self._append_id_card_log(f"\n[✓] SUCCESS: Email batch generation finished!\n[📁] Output Folder: {out_folder}\n[📊] Report: {report_path}\n")
+                        messagebox.showinfo(
+                            "ID Cards Generated",
+                            f"ID cards generated successfully via Instant Email Sync!\n\n"
+                            f"📁 Output Folder in Downloads:\n{out_folder}\n\n"
+                            f"📊 Audit Report:\n{report_path}"
+                        )
+                    else:
+                        ui.update_status(self.id_card_dot, self.id_card_lbl, f"Finished: {msg}", "warning")
+                        self._append_id_card_log(f"\n[!] Finished with warnings/errors: {msg}\n")
+                self.after(0, _finish)
+            except Exception as e:
+                def _err():
+                    self.is_id_card_generating = False
+                    self.btn_id_card_email_gen.configure(state="normal")
+                    if hasattr(self, "btn_id_card_bulk"):
+                        self.btn_id_card_bulk.configure(state="normal")
+                    self.id_card_prog.stop()
+                    self.id_card_prog.grid_remove()
+                    ui.update_status(self.id_card_dot, self.id_card_lbl, f"Error: {e}", "error")
+                    self._append_id_card_log(f"\n[!] Unexpected Exception: {e}\n")
+                self.after(0, _err)
+
+        threading.Thread(target=_job, daemon=True).start()
+
+    def start_id_card_preview_from_email_mode(self):
+        """Picks the first email from the Email Sync text box and previews it."""
+        raw_emails = self.id_card_emails_box.get("0.0", "end").strip()
+        candidates = [e.strip() for e in re.split(r'[;,\n\r\t]+', raw_emails) if e.strip() and "@" in e]
+        if not candidates:
+            messagebox.showerror("Error", "Please enter at least one valid email address in the Email Sync box.")
+            return
+        target_email = candidates[0]
+        self.start_id_card_preview(email_override=target_email)
+
+    def start_id_card_preview(self, email_override=None):
+        """Generates a single ID card preview PDF for testing."""
+        if self.is_id_card_generating:
+            messagebox.showwarning("In Progress", "An ID card generation job is already running.")
+            return
+
+        email = (email_override or self.id_card_preview_email.get()).strip()
+        if not email:
+            messagebox.showerror("Error", "Please enter an employee email for preview.")
+            return
+
+        excel_file = self.id_card_excel_file.get().strip() or None
+        photos_dir = self.id_card_photos_dir.get().strip() or None
+        m_str = self.id_card_photo_match_mode.get().lower()
+        match_mode = "auto" if "auto" in m_str else ("emp_no" if "emp" in m_str else "email")
+
+        design = self.id_card_design.get().strip()
+        self.is_id_card_generating = True
+        if hasattr(self, "btn_id_card_email_gen"):
+            self.btn_id_card_email_gen.configure(state="disabled")
+        if hasattr(self, "btn_id_card_bulk"):
+            self.btn_id_card_bulk.configure(state="disabled")
+        self.id_card_prog.grid()
+        self.id_card_prog.start()
+        ui.update_status(self.id_card_dot, self.id_card_lbl, f"Generating preview ({design})...", "processing")
+        self._append_id_card_log(f"\n{'='*60}\n[PREVIEW] Starting {design} ID card preview for: {email}\n{'='*60}\n")
+
+        def _job():
+            try:
+                res = id_card.run_preview_job(
+                    preview_email=email,
+                    design_name=design,
+                    excel_path=excel_file,
+                    photos_dir=photos_dir,
+                    photo_match_mode=match_mode,
+                    log_callback=self._append_id_card_log,
+                    address_mapping=self.office_addresses_data
+                )
+                ok, pdf_path, msg = res[0], res[1], res[2]
+                out_folder = res[3] if len(res) > 3 else (str(Path(pdf_path).parent) if pdf_path else "")
+
+                def _finish():
+                    self.is_id_card_generating = False
+                    if hasattr(self, "btn_id_card_email_gen"):
+                        self.btn_id_card_email_gen.configure(state="normal")
+                    if hasattr(self, "btn_id_card_bulk"):
+                        self.btn_id_card_bulk.configure(state="normal")
+                    self.id_card_prog.stop()
+                    self.id_card_prog.grid_remove()
+                    if out_folder:
+                        self.last_id_card_output_dir = out_folder
+                    if ok:
+                        self.last_preview_pdf_path = pdf_path
+                        ui.update_status(self.id_card_dot, self.id_card_lbl, "Preview ready!", "success")
+                        self._append_id_card_log(f"\n[✓] SUCCESS: Preview PDF generated: {pdf_path}\n[📁] Folder: {out_folder}\n")
+                    else:
+                        ui.update_status(self.id_card_dot, self.id_card_lbl, f"Preview failed: {msg}", "error")
+                        self._append_id_card_log(f"\n[!] FAILED: {msg}\n")
+                self.after(0, _finish)
+            except Exception as e:
+                def _err():
+                    self.is_id_card_generating = False
+                    if hasattr(self, "btn_id_card_email_gen"):
+                        self.btn_id_card_email_gen.configure(state="normal")
+                    if hasattr(self, "btn_id_card_bulk"):
+                        self.btn_id_card_bulk.configure(state="normal")
+                    self.id_card_prog.stop()
+                    self.id_card_prog.grid_remove()
+                    ui.update_status(self.id_card_dot, self.id_card_lbl, f"Error: {e}", "error")
+                    self._append_id_card_log(f"\n[!] Unexpected Exception: {e}\n")
+                self.after(0, _err)
+
+        threading.Thread(target=_job, daemon=True).start()
+
+    def start_id_card_bulk(self):
+        """Runs bulk ID card generation for all employees in Excel."""
+        if self.is_id_card_generating:
+            messagebox.showwarning("In Progress", "An ID card generation job is already running.")
+            return
+
+        excel_file = self.id_card_excel_file.get().strip()
+        if excel_file and not os.path.exists(excel_file):
+            messagebox.showerror("Error", f"Selected Excel file does not exist:\n{excel_file}")
+            return
+
+        photos_dir = self.id_card_photos_dir.get().strip() or None
+        m_str = self.id_card_photo_match_mode.get().lower()
+        match_mode = "auto" if "auto" in m_str else ("emp_no" if "emp" in m_str else "email")
+
+        design = self.id_card_design.get().strip()
+        confirm = messagebox.askyesno(
+            "Confirm Bulk Generation",
+            f"Run Bulk ID Card Generation for design '{design}'?\n\n"
+            f"Excel Source: {Path(excel_file).name if excel_file else 'Default'}\n"
+            f"Photos Folder: {Path(photos_dir).name if photos_dir else 'Keka / Slack (Auto-Fetch)'}\n\n"
+            f"This will validate all records, download photos, and create a new timestamped folder in Downloads."
+        )
+        if not confirm:
+            return
+
+        self.is_id_card_generating = True
+        if hasattr(self, "btn_id_card_email_gen"):
+            self.btn_id_card_email_gen.configure(state="disabled")
+        if hasattr(self, "btn_id_card_bulk"):
+            self.btn_id_card_bulk.configure(state="disabled")
+        self.id_card_prog.grid()
+        self.id_card_prog.start()
+        ui.update_status(self.id_card_dot, self.id_card_lbl, f"Running Bulk Generation ({design})...", "processing")
+        self._append_id_card_log(f"\n{'='*60}\n[BULK] Starting Bulk ID Card Generation ({design})\n{'='*60}\n")
+
+        def _job():
+            try:
+                res = id_card.run_bulk_job(
+                    design_name=design,
+                    excel_path=excel_file,
+                    photos_dir=photos_dir,
+                    photo_match_mode=match_mode,
+                    log_callback=self._append_id_card_log,
+                    address_mapping=self.office_addresses_data
+                )
+                ok, report_path, summary, msg = res[0], res[1], res[2], res[3]
+                out_folder = res[4] if len(res) > 4 else (str(Path(report_path).parent.parent) if report_path else "")
+
+                def _finish():
+                    self.is_id_card_generating = False
+                    if hasattr(self, "btn_id_card_email_gen"):
+                        self.btn_id_card_email_gen.configure(state="normal")
+                    if hasattr(self, "btn_id_card_bulk"):
+                        self.btn_id_card_bulk.configure(state="normal")
+                    self.id_card_prog.stop()
+                    self.id_card_prog.grid_remove()
+                    if out_folder:
+                        self.last_id_card_output_dir = out_folder
+                    if ok:
+                        self.last_report_path = report_path
+                        ui.update_status(self.id_card_dot, self.id_card_lbl, "Bulk generation completed!", "success")
+                        self._append_id_card_log(f"\n[✓] SUCCESS: Bulk generation finished!\n[📁] Output Folder: {out_folder}\n[📊] Report: {report_path}\n")
+                        messagebox.showinfo(
+                            "Bulk Generation Complete",
+                            f"ID cards generated successfully!\n\n"
+                            f"📁 Output Folder in Downloads:\n{out_folder}\n\n"
+                            f"📊 Audit Report:\n{report_path}"
+                        )
+                    else:
+                        ui.update_status(self.id_card_dot, self.id_card_lbl, f"Finished: {msg}", "warning")
+                        self._append_id_card_log(f"\n[!] Finished with warnings/errors: {msg}\n")
+                self.after(0, _finish)
+            except Exception as e:
+                def _err():
+                    self.is_id_card_generating = False
+                    if hasattr(self, "btn_id_card_email_gen"):
+                        self.btn_id_card_email_gen.configure(state="normal")
+                    if hasattr(self, "btn_id_card_bulk"):
+                        self.btn_id_card_bulk.configure(state="normal")
+                    self.id_card_prog.stop()
+                    self.id_card_prog.grid_remove()
+                    ui.update_status(self.id_card_dot, self.id_card_lbl, f"Error: {e}", "error")
+                    self._append_id_card_log(f"\n[!] Unexpected Exception: {e}\n")
+                self.after(0, _err)
+
+        threading.Thread(target=_job, daemon=True).start()
+
+    def open_id_card_preview_pdf(self):
+        """Opens the generated single preview PDF."""
+        target = self.last_preview_pdf_path
+        if not target or not Path(target).exists():
+            latest_dir = self.last_id_card_output_dir or id_card.get_latest_output_dir()
+            if latest_dir and Path(latest_dir).exists():
+                design = self.id_card_design.get().strip()
+                out_name = "Modern" if design.lower() == "modern" else "Classic"
+                fallback = Path(latest_dir) / out_name / f"IDCard_Preview_{out_name}.pdf"
+                if fallback.exists():
+                    target = str(fallback.resolve())
+
+        if not target or not Path(target).exists():
+            messagebox.showinfo("Preview Not Found", "No preview PDF found. Generate a preview card first.")
+            return
+
+        ok, err = id_card.open_system_path(target)
+        if not ok:
+            messagebox.showerror("Error", f"Could not open preview PDF:\n{err}")
+
+    def open_id_card_output_folder(self):
+        """Opens the latest generated output directory in Downloads."""
+        target_dir = self.last_id_card_output_dir
+        if not target_dir or not Path(target_dir).exists():
+            target_dir = id_card.get_latest_output_dir()
+        ok, err = id_card.open_system_path(str(target_dir))
+        if not ok:
+            messagebox.showerror("Error", f"Could not open folder:\n{err}")
+
+    def open_id_card_report_file(self):
+        """Opens the Excel generation audit report."""
+        target = self.last_report_path
+        if not target or not Path(target).exists():
+            latest_dir = self.last_id_card_output_dir or id_card.get_latest_output_dir()
+            if latest_dir and Path(latest_dir).exists():
+                reports_dir = Path(latest_dir) / "Reports"
+                if reports_dir.exists():
+                    candidates = list(reports_dir.glob("*.xlsx"))
+                    if candidates:
+                        target = str(candidates[0].resolve())
+                if not target:
+                    candidates = list(Path(latest_dir).rglob("*Report*.xlsx"))
+                    if candidates:
+                        target = str(candidates[0].resolve())
+
+        if not target or not Path(target).exists():
+            messagebox.showinfo("Report Not Found", "No audit report found yet. Run bulk generation first.")
+            return
+
+        ok, err = id_card.open_system_path(str(target))
+        if not ok:
+            messagebox.showerror("Error", f"Could not open report:\n{err}")
+
+    def clear_id_card_console(self):
+        """Clears the live log console."""
+        self.id_card_log_text.configure(state="normal")
+        self.id_card_log_text.delete("0.0", "end")
+        self.id_card_log_text.configure(state="disabled")
 
 
     def start_transform(self):
