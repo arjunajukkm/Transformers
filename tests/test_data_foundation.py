@@ -283,12 +283,11 @@ def test_organizational_mapping(sample_foundation_df):
     backend_members = org.get_department_members("Backend")
     assert "EMP001" in backend_members
 
-    # Lending rule: EMP003 raw BU is 'Lending', Department is 'Collections'
-    # effective_business_unit must be 'Collections', raw BU preserved as 'Lending'
+    # EMP003 raw BU is 'Lending', Department is 'Collections'
     emp3 = foundation.get_employee("EMP003")
     assert emp3.business_unit == "Lending"
-    assert emp3.effective_business_unit == "Collections"
-    assert "EMP003" in org.get_business_unit_members("Collections")
+    assert emp3.effective_business_unit == "Lending"
+    assert "EMP003" in org.get_business_unit_members("Lending")
 
 
 # =========================================================================
@@ -841,10 +840,10 @@ def test_historical_organizational_relationship_preservation():
 
 
 # =========================================================================
-# 18. Lending Business Unit preserves raw BU and maps effective BU
+# 18. Lending Business Unit preserves pure BU mapping
 # =========================================================================
 def test_lending_business_unit_preserves_raw_bu():
-    """Lending BU preserves raw BU as 'Lending' while setting effective BU to Department."""
+    """Lending BU preserves Business Unit cleanly."""
     df = pd.DataFrame([
         {
             "Employee Number": "EMP060",
@@ -862,12 +861,12 @@ def test_lending_business_unit_preserves_raw_bu():
     fact = foundation.get_fact("EMP060", date(2026, 9, 1))
 
     assert fact.raw_business_unit == "Lending"
-    assert fact.effective_business_unit == "Underwriting"
-    assert fact.business_unit == "Underwriting"
+    assert fact.effective_business_unit == "Lending"
+    assert fact.business_unit == "Lending"
 
     emp = foundation.get_employee("EMP060")
     assert emp.business_unit == "Lending"
-    assert emp.effective_business_unit == "Underwriting"
+    assert emp.effective_business_unit == "Lending"
 
 
 # =========================================================================

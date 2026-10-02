@@ -37,6 +37,219 @@ COLOR_NAV_ACTIVE   = "#0D1B3F"
 
 FONT_FAMILY = "Segoe UI"
 
+import math
+from PIL import Image, ImageDraw
+
+# ════════════════════════════════════════════════════════════════
+#  High-DPI Graphic Icon Engine (PIL Vector / Canvas Renderer)
+# ════════════════════════════════════════════════════════════════
+
+_PIL_ICON_CACHE = {}
+
+def get_icon(name: str, size=(20, 20), color=None) -> ctk.CTkImage:
+    """
+    Returns a crisp, anti-aliased CTkImage icon rendered dynamically.
+    Caches the underlying PIL.Image to ensure 100% compatibility across
+    multiple Tkinter root window lifecycles and tests without TclError.
+    """
+    if color is None:
+        color = COLOR_ACCENT
+        
+    key = (str(name).lower().strip(), size[0], size[1], str(color))
+    if key in _PIL_ICON_CACHE:
+        pil_img = _PIL_ICON_CACHE[key]
+        return ctk.CTkImage(light_image=pil_img, dark_image=pil_img, size=size)
+        
+    CANVAS = 96
+    img = Image.new("RGBA", (CANVAS, CANVAS), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    
+    n = key[0]
+    
+    # Mapping aliases
+    if n in ("home", "dashboard", "transform_overview", "overview", "⬢", "⊞"):
+        d.line([(18, 46), (48, 18), (78, 46)], fill=color, width=6)
+        d.line([(26, 44), (26, 80), (70, 80), (70, 44)], fill=color, width=6)
+        d.line([(40, 80), (40, 56), (56, 56), (56, 80)], fill=color, width=6)
+        
+    elif n in ("kra", "transform", "kra_management", "◈"):
+        d.polygon([(48, 14), (82, 48), (48, 82), (14, 48)], outline=color, width=6)
+        d.line([(48, 28), (48, 68)], fill=color, width=5)
+        d.line([(28, 48), (68, 48)], fill=color, width=5)
+        d.ellipse([43, 43, 53, 53], fill=color)
+        
+    elif n in ("time_leave", "calendar", "date", "time_and_leave", "◫"):
+        d.rounded_rectangle([16, 22, 80, 82], radius=12, outline=color, width=6)
+        d.line([(16, 40), (80, 40)], fill=color, width=6)
+        d.line([(32, 12), (32, 26)], fill=color, width=6)
+        d.line([(64, 12), (64, 26)], fill=color, width=6)
+        for x in (32, 48, 64):
+            for y in (54, 68):
+                d.ellipse([x - 3, y - 3, x + 3, y + 3], fill=color)
+                
+    elif n in ("attendance", "attendance_summary", "clipboard", "check_list", "◧"):
+        d.rounded_rectangle([18, 22, 78, 84], radius=10, outline=color, width=6)
+        d.rounded_rectangle([34, 12, 62, 26], radius=5, outline=color, width=5)
+        d.line([(32, 54), (44, 66), (66, 42)], fill=color, width=6)
+        
+    elif n in ("absent", "absent_management", "user_x", "◉"):
+        d.ellipse([34, 14, 62, 42], outline=color, width=6)
+        d.arc([16, 46, 80, 96], start=180, end=0, fill=color, width=6)
+        d.ellipse([56, 56, 84, 84], fill=COLOR_CARD, outline=color, width=4)
+        d.line([(64, 70), (76, 70)], fill=color, width=4)
+        
+    elif n in ("id_card", "idcard", "badge", "🪪"):
+        d.rounded_rectangle([16, 18, 80, 82], radius=12, outline=color, width=6)
+        d.rounded_rectangle([38, 10, 58, 20], radius=4, outline=color, width=4)
+        d.rounded_rectangle([26, 32, 48, 54], radius=4, outline=color, width=4)
+        d.line([(54, 38), (70, 38)], fill=color, width=4)
+        d.line([(54, 48), (66, 48)], fill=color, width=4)
+        d.line([(26, 66), (70, 66)], fill=color, width=4)
+        
+    elif n in ("analyse", "analytics", "chart", "barchart", "workforce_intelligence", "⬡"):
+        d.rounded_rectangle([18, 56, 32, 80], radius=4, fill=color)
+        d.rounded_rectangle([41, 36, 55, 80], radius=4, fill=color)
+        d.rounded_rectangle([64, 18, 78, 80], radius=4, fill=color)
+        
+    elif n in ("time_series", "trend", "analyse_time_series", "timeseries"):
+        d.line([(18, 18), (18, 80), (82, 80)], fill=color, width=5)
+        pts = [(24, 62), (42, 38), (60, 52), (78, 24)]
+        d.line(pts, fill=color, width=5)
+        for px, py in pts:
+            d.ellipse([px - 4, py - 4, px + 4, py + 4], fill=color)
+            
+    elif n in ("settings", "gear", "⚙", "settings_connectors"):
+        cx, cy, r_out, r_in = 48, 48, 34, 18
+        for i in range(8):
+            ang = i * (math.pi / 4)
+            tx = cx + 38 * math.cos(ang)
+            ty = cy + 38 * math.sin(ang)
+            d.ellipse([tx - 6, ty - 6, tx + 6, ty + 6], fill=color)
+        d.ellipse([cx - r_out, cy - r_out, cx + r_out, cy + r_out], outline=color, width=7)
+        d.ellipse([cx - r_in, cy - r_in, cx + r_in, cy + r_in], outline=color, width=6)
+        
+    elif n in ("connectors", "link", "plugin", "🔌"):
+        d.rounded_rectangle([16, 36, 50, 60], radius=8, outline=color, width=6)
+        d.rounded_rectangle([46, 36, 80, 60], radius=8, outline=color, width=6)
+        
+    elif n in ("upload", "analyse_upload", "⬆"):
+        d.line([(18, 64), (18, 80), (78, 80), (78, 64)], fill=color, width=6)
+        d.line([(48, 20), (48, 62)], fill=color, width=6)
+        d.line([(30, 38), (48, 18), (66, 38)], fill=color, width=6)
+        
+    elif n in ("download", "export"):
+        d.line([(18, 64), (18, 80), (78, 80), (78, 64)], fill=color, width=6)
+        d.line([(48, 18), (48, 60)], fill=color, width=6)
+        d.line([(30, 42), (48, 62), (66, 42)], fill=color, width=6)
+        
+    elif n in ("refresh", "sync"):
+        d.arc([18, 18, 78, 78], start=30, end=190, fill=color, width=6)
+        d.polygon([(78, 54), (88, 38), (68, 42)], fill=color)
+        d.arc([18, 18, 78, 78], start=210, end=10, fill=color, width=6)
+        d.polygon([(18, 42), (8, 58), (28, 54)], fill=color)
+        
+    elif n in ("search",):
+        d.ellipse([18, 18, 60, 60], outline=color, width=6)
+        d.line([(52, 52), (80, 80)], fill=color, width=7)
+        
+    elif n in ("check", "success", "✓"):
+        d.ellipse([14, 14, 82, 82], outline=color, width=6)
+        d.line([(28, 48), (42, 62), (68, 34)], fill=color, width=6)
+        
+    elif n in ("cross", "error", "close", "✕"):
+        d.ellipse([14, 14, 82, 82], outline=color, width=6)
+        d.line([(32, 32), (64, 64)], fill=color, width=6)
+        d.line([(64, 32), (32, 64)], fill=color, width=6)
+        
+    elif n in ("alert", "warning", "!"):
+        d.polygon([(48, 14), (84, 80), (12, 80)], outline=color, width=6)
+        d.line([(48, 38), (48, 58)], fill=color, width=6)
+        d.ellipse([45, 66, 51, 72], fill=color)
+        
+    elif n in ("folder", "browse"):
+        d.polygon([(16, 26), (42, 26), (50, 36), (80, 36), (80, 78), (16, 78)], outline=color, width=6)
+        d.line([(16, 38), (80, 38)], fill=color, width=5)
+        
+    elif n in ("file", "document", "excel", "📄"):
+        d.polygon([(22, 14), (60, 14), (74, 28), (74, 82), (22, 82)], outline=color, width=6)
+        d.line([(60, 14), (60, 30), (74, 30)], fill=color, width=5)
+        d.line([(32, 46), (64, 46)], fill=color, width=5)
+        d.line([(32, 58), (64, 58)], fill=color, width=5)
+        d.line([(32, 70), (54, 70)], fill=color, width=5)
+        
+    elif n in ("eye", "preview"):
+        d.arc([16, 20, 80, 76], start=30, end=150, fill=color, width=6)
+        d.arc([16, 20, 80, 76], start=210, end=330, fill=color, width=6)
+        d.ellipse([38, 38, 58, 58], fill=color)
+        
+    elif n in ("mail", "email"):
+        d.rounded_rectangle([16, 24, 80, 74], radius=8, outline=color, width=6)
+        d.line([(18, 28), (48, 52), (78, 28)], fill=color, width=6)
+        
+    elif n in ("zap", "bolt", "flash", "⚡"):
+        d.polygon([(52, 12), (26, 48), (48, 48), (44, 84), (72, 44), (50, 44)], fill=color)
+        
+    elif n in ("user", "person"):
+        d.ellipse([34, 14, 62, 42], outline=color, width=6)
+        d.arc([18, 48, 78, 96], start=180, end=0, fill=color, width=6)
+        
+    elif n in ("users", "team"):
+        d.ellipse([44, 16, 68, 40], outline=color, width=5)
+        d.arc([30, 46, 84, 90], start=180, end=0, fill=color, width=5)
+        d.ellipse([26, 24, 46, 44], outline=color, width=5)
+        d.arc([14, 50, 60, 90], start=180, end=0, fill=color, width=5)
+        
+    elif n in ("lock",):
+        d.arc([30, 14, 66, 50], start=180, end=0, fill=color, width=6)
+        d.rounded_rectangle([22, 42, 74, 82], radius=8, fill=color)
+        d.ellipse([44, 56, 52, 64], fill=COLOR_CARD)
+        d.line([(48, 64), (48, 72)], fill=COLOR_CARD, width=4)
+        
+    elif n in ("filter",):
+        d.polygon([(16, 20), (80, 20), (56, 48), (56, 78), (40, 78), (40, 48)], outline=color, width=6)
+        
+    elif n in ("arrow_right", "next", "→"):
+        d.line([(20, 48), (74, 48)], fill=color, width=6)
+        d.line([(52, 26), (74, 48), (52, 70)], fill=color, width=6)
+        
+    elif n in ("arrow_left", "back", "←"):
+        d.line([(76, 48), (22, 48)], fill=color, width=6)
+        d.line([(44, 26), (22, 48), (44, 70)], fill=color, width=6)
+        
+    elif n in ("chevron_right", "›", "▸"):
+        d.line([(34, 22), (62, 48), (34, 74)], fill=color, width=7)
+        
+    elif n in ("chevron_down", "⌄", "▾"):
+        d.line([(22, 34), (48, 62), (74, 34)], fill=color, width=7)
+        
+    elif n in ("chevron_left", "‹", "◂"):
+        d.line([(62, 22), (34, 48), (62, 74)], fill=color, width=7)
+        
+    elif n in ("play", "launch"):
+        d.polygon([(34, 22), (74, 48), (34, 74)], fill=color)
+        
+    elif n in ("save", "disk", "floppy"):
+        d.rounded_rectangle([18, 16, 78, 80], radius=8, outline=color, width=6)
+        d.rounded_rectangle([28, 16, 68, 38], radius=4, fill=color)
+        d.rounded_rectangle([32, 52, 64, 76], radius=4, outline=color, width=5)
+    elif n in ("copy",):
+        d.rounded_rectangle([18, 30, 60, 80], radius=6, outline=color, width=5)
+        d.rounded_rectangle([36, 16, 78, 66], radius=6, outline=color, width=5)
+        
+    elif n in ("slack",):
+        d.rounded_rectangle([20, 36, 44, 48], radius=6, fill=color)
+        d.rounded_rectangle([52, 48, 76, 60], radius=6, fill=color)
+        d.rounded_rectangle([36, 52, 48, 76], radius=6, fill=color)
+        d.rounded_rectangle([48, 20, 60, 44], radius=6, fill=color)
+        
+    else:
+        d.ellipse([24, 24, 72, 72], outline=color, width=6)
+        d.ellipse([40, 40, 56, 56], fill=color)
+        
+    resized = img.resize(size, Image.Resampling.LANCZOS)
+    _PIL_ICON_CACHE[key] = resized
+    return ctk.CTkImage(light_image=resized, dark_image=resized, size=size)
+
 # ════════════════════════════════════════════════════════════════
 #  Icon constants (Unicode)
 # ════════════════════════════════════════════════════════════════
@@ -98,7 +311,7 @@ def create_card(parent, **grid_kw):
 
 def create_dashboard_card(parent, icon: str, title: str, description: str,
                           status: str, command, row: int, col: int):
-    """Create a dashboard module card with icon, title, desc, badge, button."""
+    """Create a dashboard module card with crisp graphic icon, title, desc, badge, button."""
     card = ctk.CTkFrame(
         parent, corner_radius=12, fg_color=COLOR_CARD,
         border_width=1, border_color=COLOR_BORDER,
@@ -110,10 +323,10 @@ def create_dashboard_card(parent, icon: str, title: str, description: str,
     top = ctk.CTkFrame(card, fg_color="transparent")
     top.grid(row=0, column=0, sticky="ew", padx=24, pady=(24, 0))
 
-    ctk.CTkLabel(
-        top, text=icon,
-        font=ctk.CTkFont(size=22), text_color=COLOR_ACCENT,
-    ).pack(side="left", padx=(0, 10))
+    # Render high-DPI graphic icon
+    icon_img = get_icon(icon, size=(28, 28), color=COLOR_ACCENT)
+    lbl_ic = ctk.CTkLabel(top, text="", image=icon_img)
+    lbl_ic.pack(side="left", padx=(0, 12))
 
     ctk.CTkLabel(
         top, text=title,
@@ -170,37 +383,58 @@ def create_upload_row(parent, string_var, placeholder: str,
     entry.grid(row=1, column=0, sticky="ew", padx=(0, 8))
 
     btn = ctk.CTkButton(
-        frame, text=btn_text, width=90, height=32, corner_radius=6,
+        frame, text=f" {btn_text}", width=90, height=32, corner_radius=6,
         font=ctk.CTkFont(family=FONT_FAMILY, size=12, weight="bold"),
         fg_color=COLOR_BTN_SEC, hover_color=COLOR_BTN_SEC_HOV,
         text_color=COLOR_TEXT,
+        image=get_icon("folder", size=(16, 16), color=COLOR_TEXT),
+        compound="left",
         command=lambda: _browse_file(string_var),
     )
     btn.grid(row=1, column=1)
     return frame, entry, btn
 
 
-def create_primary_button(parent, text: str, command, width=110, height=32):
-    """Return a styled primary action button."""
-    return ctk.CTkButton(
-        parent, text=text, width=width, height=height,
-        corner_radius=6,
-        font=ctk.CTkFont(family=FONT_FAMILY, size=12, weight="bold"),
-        fg_color=COLOR_ACCENT, hover_color=COLOR_ACCENT_HOVER,
-        text_color=COLOR_TEXT, command=command,
-    )
+def create_primary_button(parent, text: str, command, width=110, height=32, icon: str = None):
+    """Return a styled primary action button with optional graphic icon."""
+    kwargs = {
+        "text": text,
+        "width": width,
+        "height": height,
+        "corner_radius": 6,
+        "font": ctk.CTkFont(family=FONT_FAMILY, size=12, weight="bold"),
+        "fg_color": COLOR_ACCENT,
+        "hover_color": COLOR_ACCENT_HOVER,
+        "text_color": COLOR_TEXT,
+        "command": command,
+    }
+    if icon:
+        kwargs["image"] = get_icon(icon, size=(16, 16), color=COLOR_TEXT)
+        if text:
+            kwargs["compound"] = "left"
+    return ctk.CTkButton(parent, **kwargs)
 
 
-def create_secondary_button(parent, text: str, command, width=100, height=32):
-    """Return a styled secondary / outline button."""
-    return ctk.CTkButton(
-        parent, text=text, width=width, height=height,
-        corner_radius=6,
-        font=ctk.CTkFont(family=FONT_FAMILY, size=12, weight="bold"),
-        fg_color="transparent", hover_color=COLOR_BTN_SEC_HOV,
-        border_width=1, border_color=COLOR_BORDER,
-        text_color=COLOR_TEXT_SEC, command=command,
-    )
+def create_secondary_button(parent, text: str, command, width=100, height=32, icon: str = None):
+    """Return a styled secondary / outline button with optional graphic icon."""
+    kwargs = {
+        "text": text,
+        "width": width,
+        "height": height,
+        "corner_radius": 6,
+        "font": ctk.CTkFont(family=FONT_FAMILY, size=12, weight="bold"),
+        "fg_color": "transparent",
+        "hover_color": COLOR_BTN_SEC_HOV,
+        "border_width": 1,
+        "border_color": COLOR_BORDER,
+        "text_color": COLOR_TEXT_SEC,
+        "command": command,
+    }
+    if icon:
+        kwargs["image"] = get_icon(icon, size=(16, 16), color=COLOR_TEXT_SEC)
+        if text:
+            kwargs["compound"] = "left"
+    return ctk.CTkButton(parent, **kwargs)
 
 
 def create_status_badge(parent, text="Ready", row=0, pack_side=None, padx=None, pady=None):
@@ -958,5 +1192,368 @@ class SearchableDropdown(ctk.CTkFrame):
     def destroy(self):
         self.close_dropdown()
         super().destroy()
+
+
+# ════════════════════════════════════════════════════════════════
+#  Best-In-Class Animated Canvas Loading Components
+# ════════════════════════════════════════════════════════════════
+
+class GlowingModernSpinner(ctk.CTkFrame):
+    """
+    High-performance, 60fps orbital neon glow spinner rendered on Tkinter Canvas.
+    Features:
+    - Outer rotating multi-color gradient arc with harmonic breathing extent
+    - Fading ghost trails creating cinematic motion blur
+    - Inner counter-rotating dashed planetary orbit
+    - Pulsing breathing core with dynamic halo glow
+    - Zero CPU usage when stopped/hidden
+    """
+
+    def __init__(
+        self,
+        parent,
+        size: int = 60,
+        bg_color: str = COLOR_CARD,
+        accent_color: str = "#06B6D4",
+        secondary_color: str = "#3B82F6",
+        tertiary_color: str = "#8B5CF6",
+        **kwargs,
+    ):
+        super().__init__(parent, fg_color="transparent", corner_radius=0, **kwargs)
+        self._size = size
+        self._bg_color = bg_color
+        self._accent = accent_color
+        self._secondary = secondary_color
+        self._tertiary = tertiary_color
+
+        self._angle = 0.0
+        self._phase = 0.0
+        self._is_animating = False
+        self._timer_id = None
+
+        self._canvas = tk.Canvas(
+            self,
+            width=size,
+            height=size,
+            bg=bg_color,
+            highlightthickness=0,
+            bd=0,
+        )
+        self._canvas.pack(expand=True, fill="both")
+        self._draw_frame()
+
+    def set_bg_color(self, bg: str):
+        self._bg_color = bg
+        self._canvas.configure(bg=bg)
+        if not self._is_animating:
+            self._draw_frame()
+
+    def start(self):
+        if not self._is_animating:
+            self._is_animating = True
+            self._tick()
+
+    def stop(self):
+        self._is_animating = False
+        if self._timer_id:
+            try:
+                self.after_cancel(self._timer_id)
+            except Exception:
+                pass
+            self._timer_id = None
+        self._draw_frame()
+
+    def _tick(self):
+        if not self._is_animating:
+            return
+        if not self.winfo_exists():
+            return
+
+        self._angle = (self._angle + 5.5) % 360.0
+        self._phase = (self._phase + 0.08) % (2.0 * math.pi)
+
+        self._draw_frame()
+
+        try:
+            self._timer_id = self.after(16, self._tick)
+        except Exception:
+            self._is_animating = False
+
+    def _draw_frame(self):
+        try:
+            if not self._canvas.winfo_exists():
+                return
+            self._canvas.delete("all")
+            w = self._size
+            h = self._size
+            cx = w / 2.0
+            cy = h / 2.0
+
+            # 1. Outer Track (Deep Slate)
+            r_outer = (w / 2.0) - 6.0
+            if r_outer > 4:
+                self._canvas.create_oval(
+                    cx - r_outer, cy - r_outer, cx + r_outer, cy + r_outer,
+                    outline="#1E293B", width=3,
+                )
+
+                # 2. Outer Gradient Arc Trail
+                # Main dynamic sweep arc
+                sweep = 120.0 + 40.0 * math.sin(self._phase)
+                self._canvas.create_arc(
+                    cx - r_outer, cy - r_outer, cx + r_outer, cy + r_outer,
+                    start=self._angle, extent=sweep,
+                    outline=self._accent, width=3, style="arc",
+                )
+                # Trailing ghost arcs for glow depth
+                self._canvas.create_arc(
+                    cx - r_outer, cy - r_outer, cx + r_outer, cy + r_outer,
+                    start=(self._angle + sweep - 35), extent=35,
+                    outline=self._secondary, width=4, style="arc",
+                )
+                self._canvas.create_arc(
+                    cx - r_outer, cy - r_outer, cx + r_outer, cy + r_outer,
+                    start=(self._angle + sweep - 15), extent=15,
+                    outline="#FFFFFF", width=4, style="arc",
+                )
+
+            # 3. Inner Counter-Rotating Dashed Orbit
+            r_inner = r_outer * 0.65
+            if r_inner > 3:
+                inner_angle = (-self._angle * 1.6) % 360.0
+                self._canvas.create_arc(
+                    cx - r_inner, cy - r_inner, cx + r_inner, cy + r_inner,
+                    start=inner_angle, extent=80,
+                    outline=self._tertiary, width=2, style="arc",
+                )
+                self._canvas.create_arc(
+                    cx - r_inner, cy - r_inner, cx + r_inner, cy + r_inner,
+                    start=inner_angle + 180, extent=60,
+                    outline=self._secondary, width=2, style="arc",
+                )
+
+            # 4. Central Breathing Pulsing Core
+            base_r = max(2.0, r_outer * 0.22)
+            pulse_r = base_r + 1.8 * math.sin(self._phase * 1.5)
+            # Outer halo
+            self._canvas.create_oval(
+                cx - (pulse_r + 2.5), cy - (pulse_r + 2.5),
+                cx + (pulse_r + 2.5), cy + (pulse_r + 2.5),
+                outline=self._accent, width=1,
+            )
+            # Glowing core
+            self._canvas.create_oval(
+                cx - pulse_r, cy - pulse_r, cx + pulse_r, cy + pulse_r,
+                fill=self._accent, outline="#FFFFFF", width=1,
+            )
+        except Exception:
+            pass
+
+    def destroy(self):
+        self.stop()
+        super().destroy()
+
+
+class GlowingLaserBeam(ctk.CTkFrame):
+    """
+    Sleek horizontal glowing laser beam that sweeps smoothly across the width.
+    Ideal for top-of-card or under-toolbar active calculation feedback.
+    """
+
+    def __init__(
+        self,
+        parent,
+        height: int = 3,
+        bg_color: str = COLOR_CARD,
+        beam_color: str = "#06B6D4",
+        head_color: str = "#FFFFFF",
+        **kwargs,
+    ):
+        super().__init__(parent, fg_color="transparent", height=height, corner_radius=0, **kwargs)
+        self._h = height
+        self._bg = bg_color
+        self._beam_col = beam_color
+        self._head_col = head_color
+        self._is_animating = False
+        self._pos = 0.0
+        self._dir = 1.0
+        self._timer_id = None
+
+        self._canvas = tk.Canvas(
+            self,
+            height=height,
+            bg=bg_color,
+            highlightthickness=0,
+            bd=0,
+        )
+        self._canvas.pack(expand=True, fill="both")
+        self.bind("<Configure>", lambda e: self._draw_beam())
+
+    def start(self):
+        if not self._is_animating:
+            self._is_animating = True
+            self._tick()
+
+    def stop(self):
+        self._is_animating = False
+        if self._timer_id:
+            try:
+                self.after_cancel(self._timer_id)
+            except Exception:
+                pass
+            self._timer_id = None
+        self._draw_beam(clear=True)
+
+    def _tick(self):
+        if not self._is_animating or not self.winfo_exists():
+            return
+
+        speed = 0.022
+        self._pos += speed * self._dir
+        if self._pos >= 1.0:
+            self._pos = 1.0
+            self._dir = -1.0
+        elif self._pos <= 0.0:
+            self._pos = 0.0
+            self._dir = 1.0
+
+        self._draw_beam()
+
+        try:
+            self._timer_id = self.after(16, self._tick)
+        except Exception:
+            self._is_animating = False
+
+    def _draw_beam(self, clear: bool = False):
+        try:
+            if not self._canvas.winfo_exists():
+                return
+            self._canvas.delete("all")
+            if clear:
+                return
+
+            w = self.winfo_width()
+            if w <= 10:
+                w = self._canvas.winfo_width()
+            if w <= 10:
+                w = 400
+
+            h = self._h
+            # Background track
+            self._canvas.create_rectangle(0, 0, w, h, fill="#131B2E", outline="")
+
+            # Beam position
+            beam_w = max(60.0, w * 0.32)
+            cx = self._pos * w
+            x0 = max(0.0, cx - (beam_w / 2.0))
+            x1 = min(float(w), cx + (beam_w / 2.0))
+
+            # Outer glow
+            self._canvas.create_rectangle(x0, 0, x1, h, fill=self._beam_col, outline="")
+            # Hot core center
+            core_w = beam_w * 0.4
+            cx0 = max(0.0, cx - (core_w / 2.0))
+            cx1 = min(float(w), cx + (core_w / 2.0))
+            self._canvas.create_rectangle(cx0, 0, cx1, h, fill=self._head_col, outline="")
+        except Exception:
+            pass
+
+    def destroy(self):
+        self.stop()
+        super().destroy()
+
+
+class ModernLoadingOverlay(ctk.CTkFrame):
+    """
+    Modern glassmorphic loading card container.
+    Features the GlowingModernSpinner, animated pulse title, and scope detail.
+    """
+
+    def __init__(
+        self,
+        parent,
+        title: str = "Crunching Workforce Intelligence...",
+        subtitle: str = "Recalculating 10 KPIs, additive composition & daily trends across active scope",
+        spinner_size: int = 56,
+        **kwargs,
+    ):
+        super().__init__(
+            parent,
+            fg_color=COLOR_CARD,
+            border_width=1,
+            border_color="#222F43",
+            corner_radius=10,
+            **kwargs,
+        )
+        self.grid_columnconfigure(0, weight=1)
+
+        self._inner = ctk.CTkFrame(self, fg_color="transparent")
+        self._inner.grid(row=0, column=0, padx=24, pady=28)
+        self._inner.grid_columnconfigure(0, weight=1)
+
+        self.spinner = GlowingModernSpinner(
+            self._inner,
+            size=spinner_size,
+            bg_color=COLOR_CARD,
+            accent_color="#06B6D4",
+            secondary_color="#3B82F6",
+        )
+        self.spinner.pack(pady=(0, 14))
+
+        self.lbl_title = ctk.CTkLabel(
+            self._inner,
+            text=f"⚡ {title}",
+            font=ctk.CTkFont(family=FONT_FAMILY, size=14, weight="bold"),
+            text_color=COLOR_TEXT,
+        )
+        self.lbl_title.pack(pady=(0, 4))
+
+        self.lbl_subtitle = ctk.CTkLabel(
+            self._inner,
+            text=subtitle,
+            font=ctk.CTkFont(family=FONT_FAMILY, size=11),
+            text_color=COLOR_TEXT_SEC,
+            wraplength=520,
+        )
+        self.lbl_subtitle.pack(pady=(0, 6))
+
+        self._dots_count = 0
+        self._base_title = title
+        self._pulse_timer = None
+
+    def set_status(self, title: str, subtitle: Optional[str] = None):
+        self._base_title = title
+        self.lbl_title.configure(text=f"⚡ {title}")
+        if subtitle:
+            self.lbl_subtitle.configure(text=subtitle)
+
+    def start(self):
+        self.spinner.start()
+        self._pulse_dots()
+
+    def stop(self):
+        self.spinner.stop()
+        if self._pulse_timer:
+            try:
+                self.after_cancel(self._pulse_timer)
+            except Exception:
+                pass
+            self._pulse_timer = None
+
+    def _pulse_dots(self):
+        if not self.winfo_exists():
+            return
+        self._dots_count = (self._dots_count + 1) % 4
+        dots = "." * self._dots_count
+        self.lbl_title.configure(text=f"⚡ {self._base_title}{dots}")
+        try:
+            self._pulse_timer = self.after(350, self._pulse_dots)
+        except Exception:
+            pass
+
+    def destroy(self):
+        self.stop()
+        super().destroy()
+
 
 

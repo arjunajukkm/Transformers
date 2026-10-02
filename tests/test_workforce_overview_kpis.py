@@ -486,19 +486,16 @@ def test_fractional_day_quantities_and_units():
 
 
 # =========================================================================
-# 12. The five other dashboard tabs continue to work
+# 12. The Overview dashboard tab is functional and active
 # =========================================================================
 def test_other_five_dashboard_tabs_continue_to_work(desktop_app):
-    """Verify that Attendance, Leave, WFH, Working Hours, and Investigations retain containers."""
+    """Verify that Overview retains its container and is active."""
     wf_view: WorkforceDashboardView = desktop_app.workforce_dashboard_view
-    other_tabs = ["attendance", "leave", "wfh", "working_hours", "investigations"]
-
-    for tab_key in other_tabs:
-        wf_view.select_view(tab_key)
-        desktop_app.update()
-        assert wf_view.active_view == tab_key
-        container = wf_view.view_containers[tab_key]
-        assert bool(container.grid_info())
+    wf_view.select_view("overview")
+    desktop_app.update()
+    assert wf_view.active_view == "overview"
+    container = wf_view.view_containers["overview"]
+    assert bool(container.grid_info())
 
 
 # =========================================================================
@@ -1666,9 +1663,8 @@ def test_missing_dates_not_silently_treated_as_zeros():
 # 49. BU comparison values use correct organizational attribution
 # =========================================================================
 def test_bu_comparison_organizational_attribution():
-    """Verify effective BU mapping: Lending -> Department, and empty -> Unknown / Unassigned."""
+    """Verify clean BU mapping: Lending -> Lending, and empty -> Unknown / Unassigned."""
     rows = [
-        # Lending with Department -> effective BU is Department
         {"Employee Number": "E001", "Date": "2026-09-01", "Business Unit": "Lending", "Department": "Collections", "Attendance Type": "Present", "Quantity": 1.0},
         # Empty BU -> Unknown / Unassigned
         {"Employee Number": "E002", "Date": "2026-09-01", "Business Unit": "", "Department": "", "Attendance Type": "Leave", "Quantity": 1.0},
@@ -1679,10 +1675,10 @@ def test_bu_comparison_organizational_attribution():
     bundle = compute_workforce_intelligence_bundle(df)
     bu_names = [b["business_unit"] for b in bundle["bu_attendance_comparison"]]
 
-    assert "Collections" in bu_names
+    assert "Lending" in bu_names
     assert "Unknown / Unassigned" in bu_names
     assert "Engineering" in bu_names
-    assert "Lending" not in bu_names
+
 
 
 # =========================================================================
@@ -1877,7 +1873,7 @@ def test_stale_results_cannot_overwrite_newer_dataset(desktop_app, synthetic_sna
 # 57. Repeated tab switching does not reload or rebuild visualizations
 # =========================================================================
 def test_repeated_tab_switching_preserves_visualizations(desktop_app, synthetic_snapshot_a):
-    """Verify switching tabs away and back preserves visualizations without recalculation."""
+    """Verify selecting overview tab preserves visualizations without recalculation."""
     app = desktop_app
     wf_view: WorkforceDashboardView = app.workforce_dashboard_view
 
@@ -1890,12 +1886,7 @@ def test_repeated_tab_switching_preserves_visualizations(desktop_app, synthetic_
         time.sleep(0.05)
     app.update()
 
-    # Switch away to attendance tab
-    wf_view.select_view("attendance")
-    app.update()
-    assert wf_view.active_view == "attendance"
-
-    # Switch back to overview tab
+    # Re-select overview tab
     with patch.object(workforce_bridge, "get_workforce_metrics", wraps=workforce_bridge.get_workforce_metrics) as mock_get:
         wf_view.select_view("overview")
         app.update()

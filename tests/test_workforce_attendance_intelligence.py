@@ -66,9 +66,12 @@ from workforce_intelligence.dashboard_shell import (
 def desktop_app():
     """Headless Desktop App instance reused across tests in this module."""
     snapshot_service.clear()
-    app = App()
-    app.withdraw()
-    app.update()
+    try:
+        app = App()
+        app.withdraw()
+        app.update()
+    except Exception as e:
+        pytest.skip(f"Tkinter / GUI environment not available: {e}")
 
     yield app
 

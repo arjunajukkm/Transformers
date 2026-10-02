@@ -278,20 +278,20 @@ def test_04_date_range_no_matching_records(transfer_and_lending_snapshot):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Test 5: Business Unit filtering (including Lending rules)
+# Test 5: Business Unit filtering
 # ─────────────────────────────────────────────────────────────────────────────
 
 def test_05_business_unit_filtering_and_lending_rule(transfer_and_lending_snapshot):
     df = transfer_and_lending_snapshot.fact_df
-    # Test effective BU mapping directly
-    assert get_effective_bu("Lending", "Retail Lending") == "Retail Lending"
-    assert get_effective_bu("Lending", "MSME") == "MSME"
+    # Test clean BU mapping directly
+    assert get_effective_bu("Lending", "Retail Lending") == "Lending"
+    assert get_effective_bu("Lending", "MSME") == "Lending"
     assert get_effective_bu("Technology", "Engineering") == "Technology"
 
-    # Filter by 'Retail Lending' (effective BU from Lending + Retail Lending)
-    bundle_rl = compute_workforce_intelligence_bundle(df, business_unit="Retail Lending")
-    assert bundle_rl["kpi_1_emp_hc"] == 1
-    assert bundle_rl["kpi_3_present_days"] == 1.0
+    # Filter by 'Lending'
+    bundle_lending = compute_workforce_intelligence_bundle(df, business_unit="Lending")
+    assert bundle_lending["kpi_1_emp_hc"] == 1
+    assert bundle_lending["kpi_3_present_days"] == 1.0
 
     # Filter by 'Operations'
     bundle_ops = compute_workforce_intelligence_bundle(df, business_unit="Operations")
@@ -718,7 +718,7 @@ def test_26_sidebar_collapse_does_not_recalculate_metrics():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Test 27: The five unfinished tabs remain navigable
+# Test 27: Executive Overview tab is navigable and configured
 # ─────────────────────────────────────────────────────────────────────────────
 
 def test_27_unfinished_tabs_remain_navigable():
@@ -726,12 +726,8 @@ def test_27_unfinished_tabs_remain_navigable():
         cfg = VIEW_CONFIGS[key]
         assert "title" in cfg
         assert "tab_title" in cfg
-    # Placeholder views 1..5 exist in VIEW_KEYS
-    assert "attendance" in VIEW_KEYS
-    assert "leave" in VIEW_KEYS
-    assert "wfh" in VIEW_KEYS
-    assert "working_hours" in VIEW_KEYS
-    assert "investigations" in VIEW_KEYS
+    assert "overview" in VIEW_KEYS
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────

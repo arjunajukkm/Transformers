@@ -606,10 +606,7 @@ class CanonicalWorkforceData:
         for emp_id, prof in emp_profiles.items():
             bu_val = prof["business_unit"]
             dept_val = prof["department"]
-            # Lending special business rule: If BU == 'Lending', Department acts as effective BU
-            eff_bu = bu_val
-            if bu_val and str(bu_val).strip().lower() == "lending" and dept_val:
-                eff_bu = dept_val
+            eff_bu = bu_val or "Unknown / Unassigned"
 
             employees[emp_id] = Employee(
                 employee_id=emp_id,
@@ -773,10 +770,7 @@ class CanonicalWorkforceData:
             sub_dept_val = emp_obj.sub_department if emp_obj else None
             loc_val = emp_obj.location if emp_obj else None
 
-            # Effective Business Unit logic: Lending BU -> Department
-            eff_bu = day_bu
-            if day_bu and str(day_bu).strip().lower() == "lending" and day_dept:
-                eff_bu = day_dept
+            eff_bu = day_bu or "Unknown / Unassigned"
 
             cats = {r.attendance_category for r in eval_recs}
             statuses = {str(r.attendance_status).upper() for r in eval_recs if r.attendance_status}

@@ -175,9 +175,14 @@ def load_time_series_dataset(file_path: Union[str, Path]) -> pd.DataFrame:
     if not p.exists():
         raise FileNotFoundError(f"File not found: {p}")
 
+    if p.name.startswith("~$") or p.name.startswith("."):
+        raise ValueError(f"Cannot read temporary or locked Excel file '{p.name}'. Please select the original workbook.")
+
     ext = p.suffix.lower()
     if ext in (".xlsx", ".xls"):
-        df = pd.read_excel(p, keep_default_na=False)
+        with pd.ExcelFile(p) as xl:
+            target_sheet = "Daily Performance" if "Daily Performance" in xl.sheet_names else xl.sheet_names[0]
+            df = xl.parse(target_sheet, keep_default_na=False)
     elif ext == ".csv":
         df = pd.read_csv(p, keep_default_na=False)
     else:

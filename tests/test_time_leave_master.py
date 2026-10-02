@@ -17,6 +17,7 @@ from time_leave_master import (
     compute_applied_by,
     compute_approved_by,
     expand_application_records,
+    format_date_str,
     load_and_combine_files,
     parse_date,
     reconcile_time_and_leave,
@@ -264,11 +265,11 @@ def test_reconciliation_end_to_end():
         res = pd.read_excel(out_file, keep_default_na=False)
         # Alice (E001):
         alice_row = res[res["Employee Number"] == "E001"].iloc[0]
-        assert alice_row["Date"] == "02-Sep-26"
+        assert format_date_str(alice_row["Date"]) == "02-Sep-26"
         assert alice_row["Applied By"] == "Admin"
-        assert alice_row["Applied On"] == "30-Aug-26"
+        assert format_date_str(alice_row["Applied On"]) == "30-Aug-26"
         assert alice_row["Approved By"] == "Admin"
-        assert alice_row["Approved On"] == "31-Aug-26"
+        assert format_date_str(alice_row["Approved On"]) == "31-Aug-26"
 
         # Bob (E002): 2 half days
         bob_rows = res[res["Employee Number"] == "E002"]
@@ -413,22 +414,23 @@ def test_attendance_type_filtering():
         assert stats["matched_wfh_count"] == 1
 
         res = pd.read_excel(out_file, keep_default_na=False)
+        res["_date_str"] = res["Date"].apply(format_date_str)
 
         # Row 0: Present on 2026-09-01 -> should NOT be merged, defaults to NA
-        row_0 = res[res["Date"] == "01-Sep-26"].iloc[0]
+        row_0 = res[res["_date_str"] == "01-Sep-26"].iloc[0]
         assert row_0["Applied By"] == "NA"
 
         # Row 1: Absent on 2026-09-02 -> should NOT be merged, defaults to NA
-        row_1 = res[res["Date"] == "02-Sep-26"].iloc[0]
+        row_1 = res[res["_date_str"] == "02-Sep-26"].iloc[0]
         assert row_1["Applied By"] == "NA"
 
         # Row 2: Leave on 2026-09-03 -> SHOULD be merged
-        row_2 = res[res["Date"] == "03-Sep-26"].iloc[0]
+        row_2 = res[res["_date_str"] == "03-Sep-26"].iloc[0]
         assert row_2["Applied By"] == "Employee"
         assert row_2["Approved By"] == "Admin"
 
         # Row 3: Work From Home on 2026-09-04 -> SHOULD be merged
-        row_3 = res[res["Date"] == "04-Sep-26"].iloc[0]
+        row_3 = res[res["_date_str"] == "04-Sep-26"].iloc[0]
         assert row_3["Applied By"] == "Employee"
         assert row_3["Approved By"] == "Admin"
 
@@ -653,6 +655,117 @@ def test_na_preservation_in_output():
         assert row0["Attendance Type"] == "NA"
         assert row0["Status"] == "NA"
         assert row0["Remarks"] == "NA"
+
+
+def test_expand_application_records_ignores_cancelled():
+    """Verify that cancelled, rejected, revoked, and withdrawn applications are completely ignored."""
+    df_apps = pd.DataFrame([
+        {
+            "Employee Number": "EMP101",
+            "Employee Name": "Alice",
+            "From Date": "2026-09-01",
+            "To Date": "2026-09-01",
+            "Total Duration": 1.0,
+            "Leave Status": "Approved",
+            "Leave Name": "Sick Leave"
+        },
+        {
+            "Employee Number": "EMP102",
+            "Employee Name": "Bob",
+            "From Date": "2026-09-02",
+            "To Date": "2026-09-03",
+            "Total Duration": 2.0,
+            "Request Status": "Cancelled",
+            "Leave Name": "Casual Leave"
+        },
+        {
+            "Employee Number": "EMP103",
+            "Employee Name": "Charlie",
+            "From Date": "2026-09-04",
+            "To Date": "2026-09-04",
+            "Total Duration": 1.0,
+            "Approval Status": "Rejected",
+            "Leave Name": "Casual Leave"
+        },
+        {
+            "Employee Number": "EMP104",
+            "Employee Name": "David",
+            "From Date": "2026-09-05",
+            "To Date": "2026-09-05",
+            "Total Duration": 1.0,
+            "Status": "Revoked",
+            "Leave Name": "Sick Leave"
+        },
+        {
+            "Employee Number": "EMP105",
+            "Employee Name": "Eve",
+            "From Date": "2026-09-06",
+            "To Date": "2026-09-06",
+            "Total Duration": 1.0,
+            "Status": "Withdrawn",
+            "Leave Name": "Casual Leave"
+        }
+    ])
+
+    expanded = expand_application_records(df_apps, app_type="leave")
+    # Only EMP101 (Approved) should be expanded; all others must be ignored
+    assert len(expanded) == 1
+    assert expanded[0]["emp_num"] == "EMP101"
+    assert expanded[0]["date"] == date(2026, 9, 1)
+
+
+def test_reconcile_ignores_cancelled_wfh_and_leave():
+    """Verify that cancelled applications do not match or generate unmatched warnings in final report."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp_p = Path(tmp_dir)
+        perf_file = tmp_p / "perf.xlsx"
+        leave_file = tmp_p / "leave.xlsx"
+        wfh_file = tmp_p / "wfh.xlsx"
+        out_file = tmp_p / "out.xlsx"
+
+        df_perf = pd.DataFrame([
+            {
+                "Employee Number": "EMP201",
+                "Employee Name": "Zack",
+                "Date": "2026-09-10",
+                "Attendance Type": "Leave",
+                "Status": "CL",
+                "Quantity": 1.0,
+            }
+        ])
+        df_perf.to_excel(perf_file, index=False)
+
+        # Cancelled leave on that date
+        df_leave = pd.DataFrame([
+            {
+                "Employee Number": "EMP201",
+                "Employee Name": "Zack",
+                "From Date": "2026-09-10",
+                "To Date": "2026-09-10",
+                "Total Duration": 1.0,
+                "Request Status": "Cancelled",
+                "Requester": "Zack",
+                "Last Action Taken by": "Arjun S"
+            }
+        ])
+        df_leave.to_excel(leave_file, index=False)
+
+        stats = reconcile_time_and_leave(
+            perf_files=[perf_file],
+            leave_active_files=[leave_file],
+            leave_inactive_files=[],
+            wfh_files=[],
+            output_path=out_file
+        )
+
+        assert stats["matched_leave_count"] == 0
+        assert stats["unmatched_applications_count"] == 0
+
+        res = pd.read_excel(out_file, keep_default_na=False)
+        # Applied By and Approved By should remain "NA" because the cancelled application was ignored
+        assert res.loc[0, "Applied By"] == "NA"
+        assert res.loc[0, "Approved By"] == "NA"
+
 
 
 

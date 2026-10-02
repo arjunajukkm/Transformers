@@ -51,15 +51,34 @@ ALIASES = {
         "approval date", "approved date", "action date"
     ],
     # Status / Type
-    "status": ["status", "request status", "approval status"],
+    "status": [
+        "status", "attendance status", "att status", "request status", "approval status", "leave status",
+        "application status", "wfh status", "od status", "action status"
+    ],
     "attendance type": ["attendance type", "attendancetype", "type"],
     "leave name": ["leave name", "leave type", "leavename"],
+    # Employee Master enrichment fields
+    "reporting manager": [
+        "reporting manager", "reporting manager name", "manager name", "reports to", "rm name"
+    ],
+    "reporting manager email": [
+        "reporting manager email", "rm mail id", "rm email", "manager email", "rm mail"
+    ],
+    "email": [
+        "work email", "email", "mail id", "employee email", "official email", "email id"
+    ],
+    "last working day": [
+        "last working day", "last working date", "lwd", "exit date", "relieving date"
+    ],
+    "location": [
+        "location", "work location", "branch", "city", "base location"
+    ],
 }
 
 
 def find_column(df: pd.DataFrame, alias_category: str) -> Optional[str]:
     """Find matching column name in DataFrame for a canonical alias category."""
-    candidates = ALIASES.get(alias_category.lower(), [])
+    candidates = ALIASES.get(alias_category.lower(), [alias_category.lower()])
     col_lookup = {str(c).strip().lower(): c for c in df.columns}
 
     # Direct match
@@ -130,6 +149,36 @@ def format_date_str(val: Any) -> Any:
     return s
 
 
+def to_excel_date(val: Any) -> Any:
+    """Convert value to python date object if possible, preserving 'NA' and empty values."""
+    if val is None or pd.isna(val):
+        return None
+    if isinstance(val, datetime):
+        return val.date()
+    if isinstance(val, date):
+        return val
+    s = str(val).strip()
+    if not s or s.upper() in ("NA", "N/A", "#N/A", "NONE", "NULL", "-", "NAN"):
+        return s
+    for fmt in (
+        "%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y", "%Y/%m/%d",
+        "%d-%b-%y", "%d-%b-%Y", "%d-%B-%Y", "%d-%m-%y",
+        "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S",
+        "%d/%m/%Y %H:%M:%S", "%d-%m-%Y %H:%M:%S"
+    ):
+        try:
+            return datetime.strptime(s, fmt).date()
+        except ValueError:
+            pass
+    try:
+        dt = pd.to_datetime(s, dayfirst=True, errors="coerce")
+        if pd.notna(dt):
+            return dt.date()
+    except Exception:
+        pass
+    return s
+
+
 # ════════════════════════════════════════════════════════════════
 # File Loader & Multi-File Aggregator
 # ════════════════════════════════════════════════════════════════
@@ -176,50 +225,146 @@ def load_and_combine_files(file_paths: List[Union[str, Path]]) -> pd.DataFrame:
 # Application Logic: Applied By and Approved By
 # ════════════════════════════════════════════════════════════════
 
-ADMIN_APPROVERS = {"arjun s", "e janani sri", "janani sri e"}
+ADMIN_USERS = {"arjun s", "e janani sri", "janani sri e", "janani sri"}
+ADMIN_APPROVERS = ADMIN_USERS  # alias for backwards-compatibility
 
 
-def compute_applied_by(requester_name: Any, employee_name: Any) -> str:
+def compute_applied_by(
+    requester_name: Any,
+    employee_name: Any,
+    leave_name: str = "",
+    requested_on: str = "",
+    action_taken_on: str = ""
+) -> str:
     """
     Applied By Logic:
-    If requester or requested by data is matching with Employee Name -> 'Employee', else 'Admin'.
+    Admin users are Arjun S and E Janani Sri.
+    If the leave or WFH applied by Admin and if it is not for themself, consider that the application is applied by Admin,
+    else applied by Employee.
+    If leave_name is Garden Leave, always Admin.
+    If requested_on and action_taken_on are identical (instant admin application/approval), consider Admin.
+    If requester is blank, default to 'Employee'.
     """
+    ln = str(leave_name or "").strip().lower()
+    if "garden" in ln:
+        return "Admin"
+
+    req_str = str(requested_on or "").strip()
+    act_str = str(action_taken_on or "").strip()
+    has_time = (":" in req_str or "T" in req_str)
+
     req = clean_emp_str(requester_name).lower()
     emp = clean_emp_str(employee_name).lower()
 
-    if not req:
-        # If requester is blank, default to Employee if employee name exists, else Admin
-        return "Employee" if emp else "Admin"
+    if req:
+        clean_r = re.sub(r'[^a-z0-9]', '', req)
+        clean_e = re.sub(r'[^a-z0-9]', '', emp)
+        if clean_r and clean_r == clean_e:
+            # If self-application but identical high-precision timestamp (instant admin approval), tag as Admin
+            if has_time and req_str and act_str and req_str == act_str:
+                return "Admin"
+            return "Employee"
 
-    if req == emp:
-        return "Employee"
+        is_admin = any(admin in req or clean_r == re.sub(r'[^a-z0-9]', '', admin) for admin in ADMIN_USERS)
+        if is_admin:
+            return "Admin"
+        return "Admin"
 
-    # Also handle partial clean match if names have minor whitespace differences
-    clean_r = re.sub(r'[^a-z0-9]', '', req)
-    clean_e = re.sub(r'[^a-z0-9]', '', emp)
-    if clean_r and clean_r == clean_e:
-        return "Employee"
+    # If requester not provided, check identical timestamps
+    if req_str and act_str and req_str == act_str and req_str.upper() not in ("", "NA", "NONE"):
+        return "Admin"
 
-    return "Admin"
+    return "Employee"
 
 
-def compute_approved_by(action_taken_by: Any) -> str:
+def compute_approved_by(action_taken_by: Any, reporting_manager: Any = "", is_admin_applied: bool = False) -> str:
     """
     Approved By Logic:
-    If Last Action Taken by or Action Taken By name is 'Arjun S' or 'E Janani Sri' -> 'Admin',
-    else -> 'Manager'.
-    Approved By should NEVER come as 'Employee', it must always be 'Manager'.
+    If the leave is approved by Name matching with the name under Reporting Manager column -> 'Manager'.
+    Else if the approved by is Arjun S or E Janani Sri (or if admin applied) -> 'Admin'.
+    Approved By should NEVER come as 'Employee', it must always be 'Manager' or 'Admin'.
+    If action_taken_by is empty/unknown:
+      If is_admin_applied or reporting_manager is Admin -> 'Admin'.
+      Else -> 'Manager'.
     """
     act = clean_emp_str(action_taken_by).lower()
+    rm = clean_emp_str(reporting_manager).lower()
+
     if not act:
+        if is_admin_applied:
+            return "Admin"
+        if rm and any(admin in rm for admin in ADMIN_USERS):
+            return "Admin"
         return "Manager"
 
-    # Check against admin approvers
-    for admin in ADMIN_APPROVERS:
-        if admin in act or act == admin:
+    clean_act = re.sub(r'[^a-z0-9]', '', act)
+    clean_rm = re.sub(r'[^a-z0-9]', '', rm)
+
+    # 1. Match against Reporting Manager -> Manager
+    if clean_rm and (clean_act == clean_rm or clean_rm in clean_act or clean_act in clean_rm):
+        return "Manager"
+
+    # 2. Check against admin approvers -> Admin
+    for admin in ADMIN_USERS:
+        clean_adm = re.sub(r'[^a-z0-9]', '', admin)
+        if clean_adm and (clean_act == clean_adm or admin in act):
             return "Admin"
 
+    if is_admin_applied:
+        return "Admin"
+
+    # 3. Default to Manager (never Employee)
     return "Manager"
+
+
+def get_leave_status_code(leave_name: str, fallback: str = "CL/SL") -> str:
+    """Maps leave type name to its correct status abbreviation."""
+    name_clean = str(leave_name or "").strip()
+    nl = name_clean.lower()
+    if not nl or nl == "-":
+        return fallback
+    if "casual" in nl and "sick" in nl:
+        return "CL/SL"
+    if "casual" in nl:
+        return "CL"
+    if "sick" in nl:
+        return "SL"
+    if "earned" in nl:
+        return "EL"
+    if "privilege" in nl:
+        return "PL"
+    if "annual" in nl:
+        return "AL"
+    if "maternity" in nl:
+        return "ML"
+    if "paternity" in nl:
+        return "PT"
+    if "compensatory" in nl or "comp" in nl:
+        return "CO"
+    if "bereavement" in nl:
+        return "BL"
+    if "wedding" in nl:
+        return "WL"
+    if "marriage" in nl:
+        return "ML"
+    if "garden" in nl:
+        return "GL"
+    if "wellness" in nl:
+        return "WL"
+    if "happiness" in nl:
+        return "HL"
+    if "loss of pay" in nl or "unpaid" in nl or "without pay" in nl or "lwp" in nl:
+        return "LWP"
+    if "floating" in nl or "optional" in nl:
+        return "FL"
+    if re.match(r'^[A-Z]{1,4}(?:/[A-Z]{1,4})?$', name_clean):
+        return name_clean
+    words = [w for w in re.split(r'[^a-zA-Z]', name_clean) if w and w.lower() != "leave"]
+    if words:
+        abbr = "".join(w[0].upper() for w in words[:3])
+        if abbr:
+            return abbr
+    return fallback
 
 
 # ════════════════════════════════════════════════════════════════
@@ -227,7 +372,7 @@ def compute_approved_by(action_taken_by: Any) -> str:
 # ════════════════════════════════════════════════════════════════
 
 def expand_application_records(
-    df_apps: pd.DataFrame, app_type: str = "leave"
+    df_apps: pd.DataFrame, app_type: str = "leave", emp_rm_map: Optional[Dict[str, str]] = None
 ) -> List[Dict[str, Any]]:
     """
     Splits multi-day applications where duration > 1 into individual date records.
@@ -240,7 +385,7 @@ def expand_application_records(
         'duration': float,
         'applied_by': 'Employee' | 'Admin',
         'applied_on': str (YYYY-MM-DD or formatted),
-        'approved_by': 'Admin' | 'Employee',
+        'approved_by': 'Admin' | 'Manager',
         'approved_on': str,
         'leave_name': str,
         'app_type': 'leave' | 'wfh',
@@ -261,6 +406,7 @@ def expand_application_records(
     col_approved_on = find_column(df_apps, "approved on")
     col_leave_name = find_column(df_apps, "leave name")
     col_status = find_column(df_apps, "status")
+    col_rm = find_column(df_apps, "reporting manager") or find_column(df_apps, "manager")
 
     expanded_records = []
 
@@ -270,21 +416,67 @@ def expand_application_records(
         req_name = clean_emp_str(row.get(col_requester)) if col_requester else ""
         action_by = clean_emp_str(row.get(col_action_by)) if col_action_by else ""
 
-        applied_by_val = compute_applied_by(req_name, emp_name)
-        approved_by_val = compute_approved_by(action_by)
-
-        applied_on_raw = row.get(col_applied_on) if col_applied_on else None
-        approved_on_raw = row.get(col_approved_on) if col_approved_on else None
-
-        applied_on_val = format_date_str(applied_on_raw)
-        approved_on_val = format_date_str(approved_on_raw)
+        # Retrieve reporting manager for matching
+        rm_val = ""
+        if col_rm and pd.notna(row.get(col_rm)):
+            rm_val = clean_emp_str(row.get(col_rm))
+        elif emp_rm_map and emp_num in emp_rm_map:
+            rm_val = emp_rm_map.get(emp_num, "")
 
         leave_name_val = clean_emp_str(row.get(col_leave_name)) if col_leave_name else ""
         status_val = clean_emp_str(row.get(col_status)) if col_status else ""
+        applied_on_raw = row.get(col_applied_on) if col_applied_on else ""
+        approved_on_raw = row.get(col_approved_on) if col_approved_on else ""
+
+        applied_by_val = compute_applied_by(
+            req_name, emp_name,
+            leave_name=leave_name_val,
+            requested_on=str(applied_on_raw or ""),
+            action_taken_on=str(approved_on_raw or "")
+        )
+        applied_on_val = format_date_str(applied_on_raw)
+
+        # Strictly ignore any Cancelled, Rejected, Revoked, or Withdrawn applications
+        # Such requests must never be brought to the final report or unmatched applications
+        st_lower = status_val.lower()
+        if any(term in st_lower for term in ["cancel", "reject", "revok", "withdraw"]) or status_val in ["2", "3", "4", "5"]:
+            continue
+
+        is_invalid_status = False
+        for c in df_apps.columns:
+            c_low = str(c).strip().lower()
+            if any(k in c_low for k in ["status", "cancel", "state"]):
+                val_s = str(row.get(c) or "").strip().lower()
+                if any(term in val_s for term in ["cancel", "reject", "revok", "withdraw"]):
+                    is_invalid_status = True
+                    break
+        if is_invalid_status:
+            continue
+
+        # Check approval status: only if approved, populate approved_by and approved_on
+        if col_status and str(status_val).strip():
+            is_approved = (str(status_val).strip().lower() == "approved")
+        else:
+            # If no status column in file, treat as approved if approver/action_by exists
+            is_approved = bool(action_by and str(action_by).strip().upper() not in ("NA", "N/A", ""))
+            if is_approved and not status_val:
+                status_val = "Approved"
+
+        if is_approved:
+            approved_by_val = compute_approved_by(action_by, rm_val, is_admin_applied=(applied_by_val == "Admin"))
+            approved_on_val = format_date_str(approved_on_raw)
+            if not approved_on_val or approved_on_val.upper() in ("NA", "N/A", ""):
+                approved_on_val = applied_on_val if (applied_on_val and applied_on_val.upper() not in ("NA", "N/A", "")) else "NA"
+        else:
+            approved_by_val = "NA"
+            approved_on_val = "NA"
 
         # Dates
         from_dt = parse_date(row.get(col_from_date)) if col_from_date else None
         to_dt = parse_date(row.get(col_to_date)) if col_to_date else None
+
+        if is_approved and (not approved_on_val or approved_on_val == "NA"):
+            approved_on_val = format_date_str(from_dt) if from_dt else "NA"
 
         # Duration
         dur_val = row.get(col_duration) if col_duration else None
@@ -306,13 +498,18 @@ def expand_application_records(
         if from_dt > to_dt:
             from_dt, to_dt = to_dt, from_dt
 
-        # Check if single half day
-        if total_dur <= 0.5 and from_dt == to_dt:
+        # Check if single half day or half day in leave name or session
+        col_sess = find_column(df_apps, "session") or ""
+        sess_val = str(row.get(col_sess) or "").lower() if col_sess else ""
+        is_half_day = (total_dur <= 0.5) or ("half" in str(leave_name_val).lower()) or ("half" in sess_val)
+        day_duration = 0.5 if is_half_day else 1.0
+
+        if is_half_day and from_dt == to_dt:
             expanded_records.append({
                 "emp_num": emp_num,
                 "emp_name": emp_name,
                 "date": from_dt,
-                "duration": total_dur,
+                "duration": 0.5,
                 "applied_by": applied_by_val,
                 "applied_on": applied_on_val,
                 "approved_by": approved_by_val,
@@ -332,7 +529,7 @@ def expand_application_records(
                 "emp_num": emp_num,
                 "emp_name": emp_name,
                 "date": day_dt,
-                "duration": 1.0 if total_dur >= 1.0 else total_dur,
+                "duration": day_duration,
                 "applied_by": applied_by_val,
                 "applied_on": applied_on_val,
                 "approved_by": approved_by_val,
@@ -351,10 +548,11 @@ def expand_application_records(
 
 def reconcile_time_and_leave(
     perf_files: List[Union[str, Path]],
-    leave_active_files: List[Union[str, Path]],
-    leave_inactive_files: List[Union[str, Path]],
-    wfh_files: List[Union[str, Path]],
-    output_path: Union[str, Path],
+    leave_active_files: Optional[List[Union[str, Path]]] = None,
+    leave_inactive_files: Optional[List[Union[str, Path]]] = None,
+    wfh_files: Optional[List[Union[str, Path]]] = None,
+    output_path: Optional[Union[str, Path]] = None,
+    employee_master_files: Optional[List[Union[str, Path]]] = None,
     progress_callback: Optional[Callable[[float, str], None]] = None,
 ) -> Dict[str, Any]:
     """
@@ -370,8 +568,14 @@ def reconcile_time_and_leave(
 
     notify(0.01, "Initializing data sources...")
 
+    # Normalize inputs
+    leave_active_files = leave_active_files or []
+    leave_inactive_files = leave_inactive_files or []
+    wfh_files = wfh_files or []
+    emp_files_list = employee_master_files or []
+
     # 1. Load files with real-time progress tracking
-    total_files = len(perf_files) + len(leave_active_files) + len(leave_inactive_files) + len(wfh_files)
+    total_files = len(perf_files) + len(leave_active_files) + len(leave_inactive_files) + len(wfh_files) + len(emp_files_list)
     files_loaded = 0
 
     def load_group(files: List[Union[str, Path]], label: str) -> pd.DataFrame:
@@ -399,9 +603,38 @@ def reconcile_time_and_leave(
     df_leave_active = load_group(leave_active_files, "Active Leave Applications")
     df_leave_inactive = load_group(leave_inactive_files, "Inactive Leave Applications")
     df_wfh = load_group(wfh_files, "WFH Applications")
+    df_emp_master = load_group(emp_files_list, "Employee Master")
 
     total_perf_rows = len(df_perf)
     notify(0.16, f"Loaded {total_perf_rows:,} daily records across {len(perf_files)} performance file(s)...")
+
+    # Build Employee Master lookup dictionaries if master provided
+    rm_map: Dict[str, str] = {}
+    rm_email_map: Dict[str, str] = {}
+    email_map: Dict[str, str] = {}
+    lwd_map: Dict[str, Any] = {}
+    loc_map: Dict[str, str] = {}
+
+    if not df_emp_master.empty:
+        col_m_emp = find_column(df_emp_master, "employee number") or "Employee Number"
+        col_m_rm = find_column(df_emp_master, "reporting manager")
+        col_m_rm_mail = find_column(df_emp_master, "reporting manager email") or find_column(df_emp_master, "rm mail")
+        col_m_mail = find_column(df_emp_master, "email") or find_column(df_emp_master, "work email")
+        col_m_lwd = find_column(df_emp_master, "last working day") or find_column(df_emp_master, "lwd")
+        col_m_loc = find_column(df_emp_master, "location")
+
+        if col_m_emp in df_emp_master.columns:
+            df_m_clean = df_emp_master.drop_duplicates(subset=[col_m_emp])
+            if col_m_rm:
+                rm_map = dict(zip(df_m_clean[col_m_emp].astype(str).str.strip(), df_m_clean[col_m_rm].astype(str).str.strip()))
+            if col_m_rm_mail:
+                rm_email_map = dict(zip(df_m_clean[col_m_emp].astype(str).str.strip(), df_m_clean[col_m_rm_mail].astype(str).str.strip()))
+            if col_m_mail:
+                email_map = dict(zip(df_m_clean[col_m_emp].astype(str).str.strip(), df_m_clean[col_m_mail].astype(str).str.strip()))
+            if col_m_lwd:
+                lwd_map = dict(zip(df_m_clean[col_m_emp].astype(str).str.strip(), df_m_clean[col_m_lwd]))
+            if col_m_loc:
+                loc_map = dict(zip(df_m_clean[col_m_emp].astype(str).str.strip(), df_m_clean[col_m_loc].astype(str).str.strip()))
 
     # 2. Identify Daily Performance Columns
     col_p_emp_num = find_column(df_perf, "employee number")
@@ -414,6 +647,23 @@ def reconcile_time_and_leave(
 
     if not col_p_date:
         raise ValueError("Daily Performance Report is missing 'Date' column.")
+
+    # Populate Reporting Manager and Location from master if missing in df_perf
+    if rm_map and col_p_emp_num and col_p_emp_num in df_perf.columns:
+        if "Reporting Manager" not in df_perf.columns:
+            df_perf["Reporting Manager"] = df_perf[col_p_emp_num].astype(str).str.strip().map(rm_map).fillna("")
+        else:
+            df_perf["Reporting Manager"] = df_perf["Reporting Manager"].replace("", pd.NA).fillna(
+                df_perf[col_p_emp_num].astype(str).str.strip().map(rm_map)
+            ).fillna("")
+
+    if loc_map and col_p_emp_num and col_p_emp_num in df_perf.columns:
+        if "Location" not in df_perf.columns:
+            df_perf["Location"] = df_perf[col_p_emp_num].astype(str).str.strip().map(loc_map).fillna("")
+        else:
+            df_perf["Location"] = df_perf["Location"].replace("", pd.NA).fillna(
+                df_perf[col_p_emp_num].astype(str).str.strip().map(loc_map)
+            ).fillna("")
 
     # Identify status column in Daily Performance Report to match WFH Request Status / Leave Status
     target_status_col = None
@@ -440,14 +690,14 @@ def reconcile_time_and_leave(
     notify(0.18, f"Expanding {total_raw_leaves:,} leave applications across date ranges...")
     leave_records = []
     if not df_leave_active.empty:
-        leave_records.extend(expand_application_records(df_leave_active, app_type="leave"))
+        leave_records.extend(expand_application_records(df_leave_active, app_type="leave", emp_rm_map=rm_map))
     if not df_leave_inactive.empty:
-        leave_records.extend(expand_application_records(df_leave_inactive, app_type="leave"))
+        leave_records.extend(expand_application_records(df_leave_inactive, app_type="leave", emp_rm_map=rm_map))
 
     notify(0.22, f"Expanding {len(df_wfh):,} WFH applications across date ranges...")
     wfh_records = []
     if not df_wfh.empty:
-        wfh_records.extend(expand_application_records(df_wfh, app_type="wfh"))
+        wfh_records.extend(expand_application_records(df_wfh, app_type="wfh", emp_rm_map=rm_map))
 
     notify(0.25, f"Indexed {len(leave_records):,} leave and {len(wfh_records):,} WFH daily applications...")
 
@@ -495,6 +745,89 @@ def reconcile_time_and_leave(
     df_perf["_parsed_date"] = parsed_dates
     df_perf["_parsed_quantity"] = parsed_quantities
 
+    # Filter out records where Date is after Last Working Day
+    has_lwd_col = any(c in df_perf.columns for c in ["Last Working Day", "LWD", "Last Working Date", "Relieving Date", "Exit Date"])
+    if col_p_emp_num and (lwd_map or has_lwd_col):
+        def is_after_lwd(r):
+            p_dt = r.get("_parsed_date")
+            if not p_dt:
+                return False
+            eno = clean_emp_str(r.get(col_p_emp_num))
+            lwd_raw = (lwd_map.get(eno) if lwd_map else None) or r.get("Last Working Day") or r.get("LWD") or r.get("Last Working Date")
+            if not lwd_raw or pd.isna(lwd_raw) or str(lwd_raw).strip().lower() in ("nan", "nat", "none", "na", "-", "#n/a"):
+                return False
+            l_dt = parse_date(lwd_raw)
+            if l_dt and p_dt > l_dt:
+                return True
+            return False
+
+        valid_perf_mask = ~df_perf.apply(is_after_lwd, axis=1)
+        df_perf = df_perf[valid_perf_mask].reset_index(drop=True)
+        total_perf_rows = len(df_perf)
+
+    # Split composite colon status rows (e.g. 'CL/SL:A') into two line items of 0.5 quantity each
+    if col_p_status and col_p_status in df_perf.columns:
+        has_colon = df_perf[col_p_status].astype(str).str.contains(":")
+        if has_colon.any():
+            split_perf_rows = []
+            for _, r in df_perf.iterrows():
+                st_val = str(r.get(col_p_status) or "").strip()
+                if ":" in st_val:
+                    p1, p2 = [p.strip() for p in st_val.split(":", 1)]
+                    # Part 1
+                    r1 = r.to_dict()
+                    r1[col_p_status] = p1
+                    if col_p_quantity:
+                        r1[col_p_quantity] = 0.5
+                    r1["_parsed_quantity"] = 0.5
+                    if p1 in ("P", "P(MS)", "MS"):
+                        if col_p_att_type: r1[col_p_att_type] = "Present" if p1 == "P" else "Missing Swipes"
+                        if col_p_leave_name: r1[col_p_leave_name] = "-"
+                    elif p1 == "WFH":
+                        if col_p_att_type: r1[col_p_att_type] = "Work From Home"
+                        if col_p_leave_name: r1[col_p_leave_name] = "-"
+                    elif p1 == "A":
+                        if col_p_att_type: r1[col_p_att_type] = "Absent"
+                        if col_p_leave_name: r1[col_p_leave_name] = "-"
+                    else:
+                        if col_p_att_type: r1[col_p_att_type] = "Leave"
+                        r1[col_p_status] = get_leave_status_code(r1.get(col_p_leave_name, p1))
+                    
+                    # Part 2
+                    r2 = r.to_dict()
+                    r2[col_p_status] = p2
+                    if col_p_quantity:
+                        r2[col_p_quantity] = 0.5
+                    r2["_parsed_quantity"] = 0.5
+                    if p2 == "A":
+                        if col_p_att_type: r2[col_p_att_type] = "Absent"
+                        if col_p_leave_name: r2[col_p_leave_name] = "-"
+                        r2["Applied By"] = "NA"
+                        r2["Applied On"] = "NA"
+                        r2["Approved By"] = "NA"
+                        r2["Approved On"] = "NA"
+                        if target_status_col: r2[target_status_col] = "NA"
+                    elif p2 in ("P", "P(MS)", "MS"):
+                        if col_p_att_type: r2[col_p_att_type] = "Present" if p2 == "P" else "Missing Swipes"
+                        if col_p_leave_name: r2[col_p_leave_name] = "-"
+                        r2["Applied By"] = "NA"
+                        r2["Applied On"] = "NA"
+                        r2["Approved By"] = "NA"
+                        r2["Approved On"] = "NA"
+                        if target_status_col: r2[target_status_col] = "NA"
+                    elif p2 == "WFH":
+                        if col_p_att_type: r2[col_p_att_type] = "Work From Home"
+                        if col_p_leave_name: r2[col_p_leave_name] = "-"
+                    else:
+                        if col_p_att_type: r2[col_p_att_type] = "Leave"
+                        r2[col_p_status] = get_leave_status_code(r2.get(col_p_leave_name, p2))
+
+                    split_perf_rows.extend([r1, r2])
+                else:
+                    split_perf_rows.append(r.to_dict())
+            df_perf = pd.DataFrame(split_perf_rows)
+            total_perf_rows = len(df_perf)
+
     # Group by (Employee, Date) to sum quantity
     emp_col_for_grp = col_p_emp_num if col_p_emp_num else col_p_emp_name
     if emp_col_for_grp:
@@ -525,29 +858,29 @@ def reconcile_time_and_leave(
     # Track consumed application records for 1-to-1 matching (especially for half-days)
     consumed_rec_ids: Set[int] = set()
 
-    def find_match(emp_id: str, emp_name: str, p_date: date, event_type: str, leave_type_pref: str = "") -> Optional[Dict[str, Any]]:
+    def find_match(emp_id: str, emp_name: str, p_dt_val: date, event_type: str, leave_type_pref: str = "") -> Optional[Dict[str, Any]]:
         pool = []
         if event_type == "leave":
-            if emp_id and (emp_id, p_date) in leave_by_emp_dt:
-                pool.extend(leave_by_emp_dt[(emp_id, p_date)])
-            elif emp_name and (emp_name.lower(), p_date) in leave_by_name_dt:
-                pool.extend(leave_by_name_dt[(emp_name.lower(), p_date)])
+            if emp_id and (emp_id, p_dt_val) in leave_by_emp_dt:
+                pool.extend(leave_by_emp_dt[(emp_id, p_dt_val)])
+            elif emp_name and (emp_name.lower(), p_dt_val) in leave_by_name_dt:
+                pool.extend(leave_by_name_dt[(emp_name.lower(), p_dt_val)])
         elif event_type == "wfh":
-            if emp_id and (emp_id, p_date) in wfh_by_emp_dt:
-                pool.extend(wfh_by_emp_dt[(emp_id, p_date)])
-            elif emp_name and (emp_name.lower(), p_date) in wfh_by_name_dt:
-                pool.extend(wfh_by_name_dt[(emp_name.lower(), p_date)])
+            if emp_id and (emp_id, p_dt_val) in wfh_by_emp_dt:
+                pool.extend(wfh_by_emp_dt[(emp_id, p_dt_val)])
+            elif emp_name and (emp_name.lower(), p_dt_val) in wfh_by_name_dt:
+                pool.extend(wfh_by_name_dt[(emp_name.lower(), p_dt_val)])
         else:
             # Check leave first, then wfh
-            if emp_id and (emp_id, p_date) in leave_by_emp_dt:
-                pool.extend(leave_by_emp_dt[(emp_id, p_date)])
-            elif emp_name and (emp_name.lower(), p_date) in leave_by_name_dt:
-                pool.extend(leave_by_name_dt[(emp_name.lower(), p_date)])
+            if emp_id and (emp_id, p_dt_val) in leave_by_emp_dt:
+                pool.extend(leave_by_emp_dt[(emp_id, p_dt_val)])
+            elif emp_name and (emp_name.lower(), p_dt_val) in leave_by_name_dt:
+                pool.extend(leave_by_name_dt[(emp_name.lower(), p_dt_val)])
             if not pool:
-                if emp_id and (emp_id, p_date) in wfh_by_emp_dt:
-                    pool.extend(wfh_by_emp_dt[(emp_id, p_date)])
-                elif emp_name and (emp_name.lower(), p_date) in wfh_by_name_dt:
-                    pool.extend(wfh_by_name_dt[(emp_name.lower(), p_date)])
+                if emp_id and (emp_id, p_dt_val) in wfh_by_emp_dt:
+                    pool.extend(wfh_by_emp_dt[(emp_id, p_dt_val)])
+                elif emp_name and (emp_name.lower(), p_dt_val) in wfh_by_name_dt:
+                    pool.extend(wfh_by_name_dt[(emp_name.lower(), p_dt_val)])
 
         # Pick first unconsumed record
         for candidate in pool:
@@ -593,12 +926,33 @@ def reconcile_time_and_leave(
                 matched_leave_count += 1
 
         if matched_rec:
+            st = str(matched_rec.get("status") or "").strip().lower()
+            is_rec_approved = (st == "approved")
             df_perf.at[idx, "Applied By"] = matched_rec["applied_by"] if matched_rec.get("applied_by") else "NA"
             df_perf.at[idx, "Applied On"] = matched_rec["applied_on"] if matched_rec.get("applied_on") else "NA"
-            df_perf.at[idx, "Approved By"] = matched_rec["approved_by"] if matched_rec.get("approved_by") else "NA"
-            df_perf.at[idx, "Approved On"] = matched_rec["approved_on"] if matched_rec.get("approved_on") else "NA"
+            if is_rec_approved:
+                df_perf.at[idx, "Approved By"] = matched_rec["approved_by"] if matched_rec.get("approved_by") else "Manager"
+                appr_date = matched_rec.get("approved_on") or matched_rec.get("applied_on") or format_date_str(p_dt)
+                df_perf.at[idx, "Approved On"] = appr_date if appr_date else "NA"
+            else:
+                df_perf.at[idx, "Approved By"] = "NA"
+                df_perf.at[idx, "Approved On"] = "NA"
+
             if target_status_col and matched_rec.get("status"):
                 df_perf.at[idx, target_status_col] = matched_rec["status"]
+
+            # Map leave status code if currently CLSL or generic
+            if is_leave and col_p_status and col_p_status in df_perf.columns:
+                cur_st = str(df_perf.at[idx, col_p_status] or "").strip()
+                if cur_st.upper() in ("CLSL", "LEAVE", ""):
+                    df_perf.at[idx, col_p_status] = get_leave_status_code(matched_rec.get("leave_name") or lname)
+
+            if col_p_quantity and col_p_quantity in df_perf.columns:
+                rec_dur = matched_rec.get("duration", 1.0)
+                if rec_dur <= 0.5 or "half" in str(lname).lower():
+                    df_perf.at[idx, col_p_quantity] = 0.5
+                else:
+                    df_perf.at[idx, col_p_quantity] = 1.0
 
         # Report realtime progress based on processed volume
         if (idx + 1) % update_freq == 0 or idx == total_perf_rows - 1:
@@ -678,17 +1032,133 @@ def reconcile_time_and_leave(
     if col_p_date and col_p_date in df_perf.columns:
         df_perf[col_p_date] = df_perf[col_p_date].apply(lambda v: format_date_str(v) if pd.notna(v) and str(v).strip() != "" else v)
 
-    for d_col in ["Applied On", "Approved On"]:
+    for d_col in ["Applied On", "Approved On", "LWD", "Last Working Day", "Month"]:
         if d_col in df_perf.columns:
             df_perf[d_col] = df_perf[d_col].apply(lambda v: format_date_str(v) if pd.notna(v) and str(v).strip() != "" else v)
+
+    # Deduplicate LWD vs Last Working Day into a single canonical 'Last Working Day' column
+    if "LWD" in df_perf.columns:
+        if "Last Working Day" in df_perf.columns:
+            df_perf["Last Working Day"] = df_perf["Last Working Day"].replace("", pd.NA).fillna(df_perf["LWD"]).fillna("")
+            df_perf = df_perf.drop(columns=["LWD"])
+        else:
+            df_perf = df_perf.rename(columns={"LWD": "Last Working Day"})
+    elif lwd_map and col_p_emp_num in df_perf.columns:
+        if "Last Working Day" not in df_perf.columns:
+            df_perf["Last Working Day"] = df_perf[col_p_emp_num].astype(str).str.strip().map(lwd_map).apply(format_date_str).fillna("")
+        else:
+            df_perf["Last Working Day"] = df_perf["Last Working Day"].replace("", pd.NA).fillna(
+                df_perf[col_p_emp_num].astype(str).str.strip().map(lwd_map).apply(format_date_str)
+            ).fillna("")
+
+    # Ensure consistency across all rows: if Approval Status is Pending or rejected,
+    # Approved By and Approved On MUST be "NA"
+    if target_status_col in df_perf.columns:
+        st_lower = df_perf[target_status_col].astype(str).str.strip().str.lower()
+        is_pending = st_lower.isin(["pending", "rejected", "cancelled", "revoked", "withdrawn"])
+        if "Approved By" in df_perf.columns:
+            df_perf.loc[is_pending, "Approved By"] = "NA"
+        if "Approved On" in df_perf.columns:
+            df_perf.loc[is_pending, "Approved On"] = "NA"
+
+    # Enforce quantity constraints on df_perf: all entries are single date records,
+    # so quantity must be 0.5 if half day, and max 1.0 (never 0.0 or > 1.0).
+    if col_p_quantity and col_p_quantity in df_perf.columns:
+        def _cap_perf_qty(val: Any) -> float:
+            try:
+                v = float(val)
+                if 0 < v <= 0.5:
+                    return 0.5
+                return 1.0
+            except (ValueError, TypeError):
+                return 1.0
+        df_perf[col_p_quantity] = df_perf[col_p_quantity].apply(_cap_perf_qty)
 
     # Drop temporary helper columns
     df_perf = df_perf.drop(columns=["_parsed_date", "_parsed_quantity"])
 
-    # 6. Save output Excel in Calibri 10 format, header bold with #00FF99 fill and no borders
+    # 6. Build 'Absent Mailer' sheet
+    emp_id_col = col_p_emp_num or "Employee Number"
+    emp_nm_col = col_p_emp_name or "Employee Name"
+
+    # Filter for actionable absent / missing swipes cases if any exist, else full sheet
+    status_series = df_perf[col_p_status].astype(str).str.strip().str.upper() if (col_p_status and col_p_status in df_perf.columns) else pd.Series([""] * len(df_perf))
+    att_type_series = df_perf[col_p_att_type].astype(str).str.strip().str.lower() if (col_p_att_type and col_p_att_type in df_perf.columns) else pd.Series([""] * len(df_perf))
+
+    absent_mask = (
+        status_series.isin(["A", "P(MS)", "MS"]) |
+        status_series.str.contains(r'(?:^|:)A(?::|$)|P\(MS\)', regex=True) |
+        att_type_series.isin(["absent", "missing swipes"])
+    )
+    df_mailer_source = df_perf[absent_mask].copy() if absent_mask.any() else pd.DataFrame(columns=df_perf.columns)
+
+    def _clean_mailer_qty(val: Any) -> float:
+        try:
+            v = float(val)
+            if 0 < v <= 0.5:
+                return 0.5
+            return 1.0
+        except (ValueError, TypeError):
+            return 1.0
+
+    df_mailer = pd.DataFrame()
+    df_mailer["Employee Number"] = df_mailer_source[emp_id_col] if emp_id_col in df_mailer_source.columns else ""
+    df_mailer["Employee Name"] = df_mailer_source[emp_nm_col] if emp_nm_col in df_mailer_source.columns else ""
+    df_mailer["Date"] = df_mailer_source[col_p_date] if col_p_date in df_mailer_source.columns else ""
+    df_mailer["Status"] = df_mailer_source[col_p_status] if (col_p_status and col_p_status in df_mailer_source.columns) else ""
+    df_mailer["Quantity"] = (
+        df_mailer_source[col_p_quantity].apply(_clean_mailer_qty)
+        if (col_p_quantity and col_p_quantity in df_mailer_source.columns)
+        else 1.0
+    )
+
+    if email_map and emp_id_col in df_mailer_source.columns:
+        df_mailer["Employee Mail ID"] = df_mailer_source[emp_id_col].astype(str).str.strip().map(email_map).fillna("")
+    else:
+        df_mailer["Employee Mail ID"] = df_mailer_source.get("Work Email", df_mailer_source.get("Employee Mail ID", ""))
+
+    if "Reporting Manager" in df_mailer_source.columns and not df_mailer_source["Reporting Manager"].replace("", pd.NA).isna().all():
+        df_mailer["Reporting Manager"] = df_mailer_source["Reporting Manager"]
+    elif rm_map and emp_id_col in df_mailer_source.columns:
+        df_mailer["Reporting Manager"] = df_mailer_source[emp_id_col].astype(str).str.strip().map(rm_map).fillna("")
+    else:
+        df_mailer["Reporting Manager"] = ""
+
+    if rm_email_map and emp_id_col in df_mailer_source.columns:
+        df_mailer["RM Mail ID"] = df_mailer_source[emp_id_col].astype(str).str.strip().map(rm_email_map).fillna("")
+    else:
+        df_mailer["RM Mail ID"] = df_mailer_source.get("Reporting Manager Email", df_mailer_source.get("RM Mail ID", ""))
+
+    if "Location" in df_mailer_source.columns and not df_mailer_source["Location"].replace("", pd.NA).isna().all():
+        df_mailer["Location"] = df_mailer_source["Location"]
+    elif loc_map and emp_id_col in df_mailer_source.columns:
+        df_mailer["Location"] = df_mailer_source[emp_id_col].astype(str).str.strip().map(loc_map).fillna("")
+    else:
+        df_mailer["Location"] = ""
+
+    if "Month" in df_mailer_source.columns:
+        df_mailer["Month"] = df_mailer_source["Month"]
+    else:
+        df_mailer["Month"] = df_mailer["Date"].apply(lambda v: format_date_str(v)[:7] if v else "")
+
+    if "Last Working Day" in df_mailer_source.columns:
+        df_mailer["Last Working Day"] = df_mailer_source["Last Working Day"]
+    elif lwd_map and emp_id_col in df_mailer_source.columns:
+        df_mailer["Last Working Day"] = df_mailer_source[emp_id_col].astype(str).str.strip().map(lwd_map).apply(format_date_str).fillna("")
+    else:
+        df_mailer["Last Working Day"] = ""
+
+    mailer_cols = [
+        "Employee Number", "Employee Name", "Date", "Status", "Quantity",
+        "Employee Mail ID", "Reporting Manager", "RM Mail ID", "Location",
+        "Month", "Last Working Day"
+    ]
+    df_mailer = df_mailer[mailer_cols]
+
+    # Save output Excel in Calibri 10 format, header bold with #00FF99 fill and no borders
     out_p = Path(output_path)
     out_p.parent.mkdir(parents=True, exist_ok=True)
-    notify(0.91, f"Writing styled Excel workbook ({total_perf_rows:,} rows) to {out_p.name}...")
+    notify(0.91, f"Writing styled unified Excel workbook ({total_perf_rows:,} rows) to {out_p.name}...")
 
     from openpyxl.styles import Font, PatternFill, Border
     font_header = Font(name="Calibri", size=10, bold=True)
@@ -699,9 +1169,16 @@ def reconcile_time_and_leave(
     try:
         with pd.ExcelWriter(out_p, engine="openpyxl") as writer:
             df_perf.to_excel(writer, index=False, sheet_name="Daily Performance")
+            df_mailer.to_excel(writer, index=False, sheet_name="Absent Mailer")
 
             for sheetname in writer.sheets:
                 ws = writer.sheets[sheetname]
+                date_col_indices = set()
+                for col_idx in range(1, ws.max_column + 1):
+                    h_val = str(ws.cell(row=1, column=col_idx).value or "").strip().lower()
+                    if any(term in h_val for term in ["date", "last working day", "applied on", "approved on", "requested on", "action taken on", "exit date", "month"]):
+                        date_col_indices.add(col_idx)
+
                 for row in ws.iter_rows():
                     for cell in row:
                         cell.border = no_border
@@ -710,8 +1187,11 @@ def reconcile_time_and_leave(
                             cell.fill = fill_header
                         else:
                             cell.font = font_data
-                        if isinstance(cell.value, (datetime, date)):
-                            cell.number_format = "dd-mmm-yy"
+                            if cell.column in date_col_indices or isinstance(cell.value, (datetime, date)):
+                                d_obj = to_excel_date(cell.value)
+                                if isinstance(d_obj, (datetime, date)):
+                                    cell.value = d_obj if isinstance(d_obj, date) else d_obj.date()
+                                    cell.number_format = "dd-mmm-yy"
     except PermissionError:
         raise PermissionError(
             f"Cannot save to '{out_p.name}'. The file is currently open in Microsoft Excel or locked by another application.\n"
@@ -781,5 +1261,6 @@ def reconcile_time_and_leave(
         "unmatched_applications_count": len(unmatched_applications),
         "leave_apps_expanded": len(leave_records),
         "wfh_apps_expanded": len(wfh_records),
+        "absent_mailer_rows": len(df_mailer),
     }
 

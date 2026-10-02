@@ -8,6 +8,7 @@ import os
 import pytest
 from pathlib import Path
 from dotenv import load_dotenv
+from unittest.mock import MagicMock
 
 import id_card_module as ic
 
@@ -332,5 +333,151 @@ def test_keka_direct_bearer_fallback():
     )
     assert err is None
     assert token == "direct_preissued_jwt_token"
+
+
+def test_keka_portal_2fa_otp_callback_flow(monkeypatch):
+    """Tests that _perform_portal_login invokes otp_callback and checks RememberBrowser when 2FA is triggered."""
+    from unittest.mock import MagicMock
+    import keka_data_fetcher
+
+    mock_driver = MagicMock()
+    mock_wait = MagicMock()
+
+    # Sequence of URLs: start -> submit -> verifycode -> dashboard
+    url_sequence = [
+        "https://finbox.keka.com",
+        "https://app.keka.com/Account/VerifyCode",
+        "https://finbox.keka.com/ui/#/home"
+    ]
+    url_index = [0]
+
+    def get_url():
+        idx = min(url_index[0], len(url_sequence) - 1)
+        return url_sequence[idx]
+
+    type(mock_driver).current_url = property(lambda self: get_url())
+
+    # Mock elements
+    mock_code_input = MagicMock()
+    mock_remember_box = MagicMock()
+    mock_remember_box.is_selected.return_value = False
+    mock_verify_btn = MagicMock()
+
+    def advance_url(*args, **kwargs):
+        url_index[0] += 1
+
+    mock_verify_btn.click.side_effect = advance_url
+
+    def find_elements(by, val):
+        if "Code" in val or "code" in val:
+            return [mock_code_input]
+        elif "RememberBrowser" in val:
+            return [mock_remember_box]
+        elif "Verify" in val or "submit" in val:
+            return [mock_verify_btn]
+        return []
+
+    mock_driver.find_elements.side_effect = find_elements
+    mock_driver.find_element.return_value = mock_verify_btn
+
+    fetcher = keka_data_fetcher.KekaDataFetcher(
+        subdomain="finbox",
+        keka_email="test@finbox.in",
+        keka_password="secretpassword"
+    )
+
+    otp_called = []
+    def mock_otp_cb(provider):
+        otp_called.append(provider)
+        return "654321"
+
+    # Simulate landing on VerifyCode
+    url_index[0] = 1
+    ok, msg, details = fetcher._perform_portal_login(
+        mock_driver, mock_wait, timeout=10, otp_callback=mock_otp_cb
+    )
+
+    assert ok is True
+    assert details["status"] == "authenticated"
+    assert "2FA verified" in msg
+    assert otp_called == ["email"]
+    mock_code_input.send_keys.assert_called_with("654321")
+    mock_remember_box.click.assert_called_once()
+
+
+def test_keka_portal_authorize_in_browser_wrapper(monkeypatch):
+    """Tests that id_card_module.authorize_keka_portal_in_browser properly routes to keka_data_fetcher."""
+    import keka_data_fetcher
+
+    called = {}
+    def mock_launch(subdomain=None, keka_email=None, keka_password=None, timeout=180, on_status_update=None):
+        called["subdomain"] = subdomain
+        called["email"] = keka_email
+        called["password"] = keka_password
+        called["timeout"] = timeout
+        return True, "Mock authorized", {"status": "authenticated"}
+
+    monkeypatch.setattr(keka_data_fetcher, "launch_interactive_browser_session", mock_launch)
+
+    ok, msg, details = ic.authorize_keka_portal_in_browser(
+        subdomain="moshpit", email="user@moshpit.com", password="pwd", timeout=60
+    )
+
+    assert ok is True
+    assert called["subdomain"] == "moshpit"
+    assert called["email"] == "user@moshpit.com"
+    assert called["password"] == "pwd"
+    assert called["timeout"] == 60
+
+
+def test_launch_interactive_browser_session_handles_none_url_and_authenticates(monkeypatch):
+    """Ensures launch_interactive_browser_session gracefully handles None/empty current_url and authenticates."""
+    import keka_data_fetcher
+
+    mock_driver = MagicMock()
+    mock_driver.window_handles = ["win1"]
+
+    url_states = [None, "data:,", "https://app.keka.com/Account/Login", "https://moshpit.keka.com/#/home"]
+    url_idx = [0]
+
+    def get_url():
+        idx = min(url_idx[0], len(url_states) - 1)
+        val = url_states[idx]
+        url_idx[0] += 1
+        return val
+
+    type(mock_driver).current_url = property(lambda self: get_url())
+
+    monkeypatch.setattr(keka_data_fetcher, "_create_chrome_driver", lambda *a, **k: mock_driver)
+
+    updates = []
+    ok, msg, details = keka_data_fetcher.launch_interactive_browser_session(
+        subdomain="moshpit", timeout=10, on_status_update=lambda s: updates.append(s)
+    )
+
+    assert ok is True
+    assert details["status"] == "authenticated"
+    assert "successfully authorized" in msg
+    mock_driver.quit.assert_called_once()
+
+
+def test_launch_interactive_browser_session_window_closed(monkeypatch):
+    """Ensures closing the interactive browser returns a clean cancelled status without error."""
+    import keka_data_fetcher
+
+    mock_driver = MagicMock()
+    mock_driver.window_handles = []  # User closed the window
+
+    monkeypatch.setattr(keka_data_fetcher, "_create_chrome_driver", lambda *a, **k: mock_driver)
+
+    ok, msg, details = keka_data_fetcher.launch_interactive_browser_session(
+        subdomain="moshpit", timeout=5
+    )
+
+    assert ok is False
+    assert details["status"] == "cancelled"
+    mock_driver.quit.assert_called_once()
+
+
 
 

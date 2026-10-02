@@ -521,7 +521,7 @@ def fetch_keka_profile_photo(
     if not token or tok_err:
         return None, tok_err or "KEKA credentials missing in .env", "Keka Not Configured"
 
-    sub = (subdomain or os.getenv("KEKA_SUBDOMAIN", "finbox")).strip()
+    sub = (subdomain or os.getenv("KEKA_SUBDOMAIN", "moshpit")).strip()
     sub = sub.replace("https://", "").replace("http://", "").split(".")[0].strip() or "finbox"
     base_url = f"https://{sub}.keka.com/api/v1"
 
@@ -800,7 +800,7 @@ def fetch_keka_employee_full_details(
     if not token or tok_err:
         return None, tok_err or "Keka credentials not configured in Settings/.env"
 
-    sub = (subdomain or os.getenv("KEKA_SUBDOMAIN", "finbox")).strip()
+    sub = (subdomain or os.getenv("KEKA_SUBDOMAIN", "moshpit")).strip()
     sub = sub.replace("https://", "").replace("http://", "").split(".")[0].strip() or "finbox"
     base_url = f"https://{sub}.keka.com/api/v1"
 
@@ -1088,7 +1088,7 @@ def fetch_profile_photo_with_fallback(
     k_key = (keka_api_key or os.getenv("KEKA_API_KEY", "")).strip()
     k_cid = (keka_client_id or os.getenv("KEKA_CLIENT_ID", "")).strip()
     k_csec = (keka_client_secret or os.getenv("KEKA_CLIENT_SECRET", "")).strip()
-    k_sub = (keka_subdomain or os.getenv("KEKA_SUBDOMAIN", "finbox")).strip()
+    k_sub = (keka_subdomain or os.getenv("KEKA_SUBDOMAIN", "moshpit")).strip()
 
     keka_attempted = False
     keka_err_msg = ""
@@ -1514,7 +1514,7 @@ def run_keka_test(test_email, test_emp_no=None):
 
     load_dotenv(override=True)
     api_key = os.getenv("KEKA_API_KEY", "").strip()
-    subdomain = os.getenv("KEKA_SUBDOMAIN", "finbox").strip()
+    subdomain = os.getenv("KEKA_SUBDOMAIN", "moshpit").strip()
 
     if not api_key:
         print("\n[X] Keka Error: KEKA_API_KEY is not defined in .env.")
@@ -2842,7 +2842,7 @@ def run_preview_mode(
         keka_key = os.getenv("KEKA_API_KEY", "").strip()
         keka_cid = os.getenv("KEKA_CLIENT_ID", "").strip()
         keka_csec = os.getenv("KEKA_CLIENT_SECRET", "").strip()
-        keka_sub = os.getenv("KEKA_SUBDOMAIN", "finbox").strip()
+        keka_sub = os.getenv("KEKA_SUBDOMAIN", "moshpit").strip()
 
         if keka_key or (keka_cid and keka_csec):
             print(f"[*] Employee '{preview_email}' not in Excel. Querying Keka HRMS API...")
@@ -2917,7 +2917,7 @@ def run_preview_mode(
     keka_key = os.getenv("KEKA_API_KEY", "").strip()
     keka_cid = os.getenv("KEKA_CLIENT_ID", "").strip()
     keka_csec = os.getenv("KEKA_CLIENT_SECRET", "").strip()
-    keka_sub = os.getenv("KEKA_SUBDOMAIN", "finbox").strip()
+    keka_sub = os.getenv("KEKA_SUBDOMAIN", "moshpit").strip()
 
     slack_client = None
     if slack_token and not slack_token.startswith("xoxb-your-"):
@@ -3366,7 +3366,7 @@ def run_bulk_generation(
     keka_api_key = os.getenv("KEKA_API_KEY", "").strip()
     keka_client_id = os.getenv("KEKA_CLIENT_ID", "").strip()
     keka_client_secret = os.getenv("KEKA_CLIENT_SECRET", "").strip()
-    keka_subdomain = os.getenv("KEKA_SUBDOMAIN", "finbox").strip()
+    keka_subdomain = os.getenv("KEKA_SUBDOMAIN", "moshpit").strip()
 
     if keka_api_key or (keka_client_id and keka_client_secret):
         print(f"[+] Keka HRMS connector enabled ({keka_subdomain}.keka.com - Primary Photo Source).")
@@ -3816,7 +3816,7 @@ def run_email_batch_mode(
     keka_api_key = os.getenv("KEKA_API_KEY", "").strip()
     keka_client_id = os.getenv("KEKA_CLIENT_ID", "").strip()
     keka_client_secret = os.getenv("KEKA_CLIENT_SECRET", "").strip()
-    keka_subdomain = os.getenv("KEKA_SUBDOMAIN", "finbox").strip()
+    keka_subdomain = os.getenv("KEKA_SUBDOMAIN", "moshpit").strip()
     slack_token = os.getenv("SLACK_BOT_TOKEN", "").strip()
 
     if not keka_api_key and not (keka_client_id and keka_client_secret):

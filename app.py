@@ -10,6 +10,9 @@ from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
+from dotenv import load_dotenv
+load_dotenv(override=True)
+
 import pandas as pd
 import customtkinter as ctk
 from openpyxl import load_workbook
@@ -60,6 +63,11 @@ class App(ctk.CTk):
         self.absent_emp_file = ctk.StringVar()
         self.absent_att_file = ctk.StringVar()
         self.absent_wfh_file = ctk.StringVar()
+        now_dt = datetime.now()
+        first_day_of_month = now_dt.replace(day=1)
+        self.absent_from_date_var = ctk.StringVar(value=first_day_of_month.strftime("%d-%m-%Y"))
+        self.absent_to_date_var = ctk.StringVar(value=now_dt.strftime("%d-%m-%Y"))
+        self.absent_include_portal_var = ctk.BooleanVar(value=True)
         self.att_summary_file = ctk.StringVar()
         self.analyse_upload_file = ctk.StringVar()
 
@@ -77,15 +85,18 @@ class App(ctk.CTk):
         self.last_preview_pdf_path = None
         self.last_report_path = None
         self.last_id_card_output_dir = None
+        self.last_time_leave_output_path = None
 
         # Connectors state (Slack & Keka)
         self.connector_active_tab = ctk.StringVar(value="Slack")
         default_slack_val = os.getenv("SLACK_BOT_TOKEN") or os.getenv("SLACK_BOT_ID", "")
         self.slack_bot_token_var = ctk.StringVar(value=default_slack_val)
-        self.keka_subdomain_var = ctk.StringVar(value=os.getenv("KEKA_SUBDOMAIN", "finbox"))
+        self.keka_subdomain_var = ctk.StringVar(value=os.getenv("KEKA_SUBDOMAIN", "moshpit"))
         self.keka_client_id_var = ctk.StringVar(value=os.getenv("KEKA_CLIENT_ID", ""))
         self.keka_client_secret_var = ctk.StringVar(value=os.getenv("KEKA_CLIENT_SECRET", ""))
         self.keka_api_key_var = ctk.StringVar(value=os.getenv("KEKA_API_KEY", ""))
+        self.keka_login_email_var = ctk.StringVar(value=os.getenv("KEKA_LOGIN_EMAIL", ""))
+        self.keka_login_password_var = ctk.StringVar(value=os.getenv("KEKA_LOGIN_PASSWORD", ""))
 
 
         # Time Series Analysis state
@@ -101,11 +112,14 @@ class App(ctk.CTk):
         self._current_ts_breakdown_rows = []
         self._search_debounce_id = None
 
-        # Time and Leave Master multi-file lists
+        # Time and Leave Master multi-file lists & state
         self.tl_perf_files = []
         self.tl_leave_active_files = []
         self.tl_leave_inactive_files = []
         self.tl_wfh_files = []
+        self.tl_emp_master_files = []
+        self.tl_from_date_var = ctk.StringVar(value=first_day_of_month.strftime("%d-%m-%Y"))
+        self.tl_to_date_var = ctk.StringVar(value=now_dt.strftime("%d-%m-%Y"))
         
         # State flags
         self.is_processing = False
@@ -182,9 +196,8 @@ class App(ctk.CTk):
 
         self.lbl_logo_compact = ctk.CTkLabel(
             self.sidebar_header,
-            text="⚡",
-            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=24, weight="bold"),
-            text_color=ui.COLOR_ACCENT,
+            text="",
+            image=ui.get_icon("zap", size=(24, 24), color=ui.COLOR_ACCENT),
             anchor="center",
         )
         self.lbl_logo_compact.grid(row=0, column=0, sticky="nsew")
@@ -213,17 +226,17 @@ class App(ctk.CTk):
         self.nav_chevron = ctk.CTkLabel(self.sidebar, text="▸")
         self.nav_parent_btn = ctk.CTkButton(
             self.sidebar,
-            text=ui.ICON_HOME,
+            text="",
+            image=ui.get_icon("home", size=(22, 22), color=ui.COLOR_TEXT),
             width=46,
             height=42,
             corner_radius=8,
             anchor="center",
             fg_color=ui.COLOR_NAV_ACTIVE,
             hover_color=ui.COLOR_NAV_HOVER,
-            text_color=ui.COLOR_TEXT,
-            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=18),
             command=self._on_transform_parent_clicked,
         )
+        self.nav_parent_btn._icon_name = "home"
         self.nav_parent_btn.grid(row=2, column=0, padx=6, pady=4)
         ui.create_tooltip(self.nav_parent_btn, "Transform")
 
@@ -234,11 +247,10 @@ class App(ctk.CTk):
         self._offscreen_compat = ctk.CTkFrame(self)
         self.sub_menu_frame = ctk.CTkFrame(self._offscreen_compat, fg_color="transparent")
         transform_sub_items = [
-            ("transform", "KRA Management", ui.ICON_KRA),
-            ("absent", "Absent Management", ui.ICON_ABSENT),
-            ("att_summary", "Attendance Summary", ui.ICON_ATTENDANCE),
-            ("time_leave", "Time and Leave Master", ui.ICON_TIME_LEAVE),
-            ("id_card", "ID Card Generator", ui.ICON_IDCARD),
+            ("transform", "KRA Management", "kra"),
+            ("time_leave", "Time and Leave Master", "calendar"),
+            ("att_summary", "Attendance Summary", "attendance"),
+            ("id_card", "ID Card Generator", "id_card"),
         ]
         for idx, (name, text, icon) in enumerate(transform_sub_items):
             btn = ui.create_sub_nav_button(
@@ -255,17 +267,17 @@ class App(ctk.CTk):
         self.analyse_chevron = ctk.CTkLabel(self.sidebar, text="▸")
         self.analyse_parent_btn = ctk.CTkButton(
             self.sidebar,
-            text=ui.ICON_ANALYSE,
+            text="",
+            image=ui.get_icon("chart", size=(22, 22), color=ui.COLOR_TEXT_SEC),
             width=46,
             height=42,
             corner_radius=8,
             anchor="center",
             fg_color="transparent",
             hover_color=ui.COLOR_NAV_HOVER,
-            text_color=ui.COLOR_TEXT_SEC,
-            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=18),
             command=self._on_analyse_parent_clicked,
         )
+        self.analyse_parent_btn._icon_name = "chart"
         self.analyse_parent_btn.grid(row=3, column=0, padx=6, pady=4)
         ui.create_tooltip(self.analyse_parent_btn, "Analyse")
 
@@ -275,9 +287,9 @@ class App(ctk.CTk):
         # Offscreen child buttons container for Analyse backward compatibility
         self.analyse_sub_menu_frame = ctk.CTkFrame(self._offscreen_compat, fg_color="transparent")
         analyse_sub_items = [
-            ("workforce_intelligence", "Workforce Intelligence", ui.ICON_ANALYSE),
-            ("analyse_time_series", "Time Series Analysis", ui.ICON_DASHBOARD),
-            ("analyse_upload", "Upload", ui.ICON_UPLOAD),
+            ("workforce_intelligence", "Workforce Intelligence", "users"),
+            ("analyse_time_series", "Time Series Analysis", "time_series"),
+            ("analyse_upload", "Upload", "upload"),
         ]
         for idx, (name, text, icon) in enumerate(analyse_sub_items):
             btn = ui.create_sub_nav_button(
@@ -294,17 +306,17 @@ class App(ctk.CTk):
         self.settings_chevron = ctk.CTkLabel(self.sidebar, text="▸")
         self.settings_parent_btn = ctk.CTkButton(
             self.sidebar,
-            text=ui.ICON_SETTINGS,
+            text="",
+            image=ui.get_icon("settings", size=(22, 22), color=ui.COLOR_TEXT_SEC),
             width=46,
             height=42,
             corner_radius=8,
             anchor="center",
             fg_color="transparent",
             hover_color=ui.COLOR_NAV_HOVER,
-            text_color=ui.COLOR_TEXT_SEC,
-            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=18),
             command=self._on_settings_parent_clicked,
         )
+        self.settings_parent_btn._icon_name = "settings"
         self.settings_parent_btn.grid(row=4, column=0, padx=6, pady=4)
         ui.create_tooltip(self.settings_parent_btn, "Settings")
 
@@ -314,15 +326,14 @@ class App(ctk.CTk):
         # Quick Reload Button at bottom of sidebar (Row 11)
         self.reload_btn = ctk.CTkButton(
             self.sidebar,
-            text="🔄",
+            text="",
+            image=ui.get_icon("refresh", size=(18, 18), color=ui.COLOR_TEXT_DIM),
             width=42,
             height=42,
             corner_radius=8,
             anchor="center",
             fg_color="transparent",
             hover_color=ui.COLOR_NAV_HOVER,
-            text_color=ui.COLOR_TEXT_DIM,
-            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=16),
             command=self.restart_app,
         )
         self.reload_btn.grid(row=11, column=0, padx=6, pady=(0, 10))
@@ -581,12 +592,11 @@ class App(ctk.CTk):
 
         if group == "transform":
             items = [
-                ("dashboard", "Transform Overview", ui.ICON_HOME),
-                ("transform", "KRA Management", ui.ICON_KRA),
-                ("absent", "Absent Management", ui.ICON_ABSENT),
-                ("att_summary", "Attendance Summary", ui.ICON_ATTENDANCE),
-                ("time_leave", "Time and Leave Master", ui.ICON_TIME_LEAVE),
-                ("id_card", "ID Card Generator", ui.ICON_IDCARD),
+                ("dashboard", "Transform Overview", "home"),
+                ("transform", "KRA Management", "kra"),
+                ("time_leave", "Time and Leave Master", "calendar"),
+                ("att_summary", "Attendance Summary", "attendance"),
+                ("id_card", "ID Card Generator", "id_card"),
             ]
             title = "TRANSFORM"
             self.transform_menu_expanded = True
@@ -594,9 +604,9 @@ class App(ctk.CTk):
                 self.nav_chevron.configure(text="▾")
         elif group == "analyse":
             items = [
-                ("workforce_intelligence", "Workforce Intelligence", ui.ICON_ANALYSE),
-                ("analyse_time_series", "Time Series Analysis", ui.ICON_DASHBOARD),
-                ("analyse_upload", "Upload", ui.ICON_UPLOAD),
+                ("workforce_intelligence", "Workforce Intelligence", "users"),
+                ("analyse_time_series", "Time Series Analysis", "time_series"),
+                ("analyse_upload", "Upload Dataset", "upload"),
             ]
             title = "ANALYSE"
             self.analyse_menu_expanded = True
@@ -604,7 +614,7 @@ class App(ctk.CTk):
                 self.analyse_chevron.configure(text="▾")
         else:
             items = [
-                ("settings_connectors", "Connectors", "🔌"),
+                ("settings_connectors", "Connectors & Settings", "connectors"),
             ]
             title = "SETTINGS"
             self.settings_menu_expanded = True
@@ -644,9 +654,12 @@ class App(ctk.CTk):
             txt_col = ui.COLOR_TEXT if is_active else ui.COLOR_TEXT_SEC
             font_wt = "bold" if is_active else "normal"
 
+            ic_img = ui.get_icon(icon, size=(18, 18), color=txt_col)
             btn = ctk.CTkButton(
                 card,
-                text=f"  {icon}   {text}",
+                text=f"  {text}",
+                image=ic_img,
+                compound="left",
                 height=36,
                 corner_radius=6,
                 anchor="w",
@@ -858,27 +871,294 @@ class App(ctk.CTk):
 
 
     # ---------------------------------------------------------
-    # Transform Hub / Overview
+    # Operations Command Center (Redesigned Home Page)
     # ---------------------------------------------------------
     def _build_dashboard_frame(self):
-        f = ctk.CTkFrame(self.main_content, fg_color="transparent")
+        f = ctk.CTkScrollableFrame(self.main_content, fg_color="transparent")
         self.frames["dashboard"] = f
         f.grid_columnconfigure((0, 1), weight=1)
 
-        ui.create_page_header(f, "Transform", "Quick access to all data transformation and processing modules.").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 30))
+        # ── 1. Hero Header with System Status & Fast Actions ─────────────────
+        hdr = ui.create_page_header(
+            f, "Operations Command Center",
+            "Real-time workforce intelligence, transformation pipelines & automated HRMS integrations."
+        )
+        hdr.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 16))
 
-        ui.create_dashboard_card(f, ui.ICON_KRA, "KRA Management", "Transform KRA Excel sheets and generate final KEKA upload files.", "Active", lambda: self.select_frame_by_name("transform"), 1, 0)
-        ui.create_dashboard_card(f, ui.ICON_ABSENT, "Absent Management", "Process employee data to generate Absent Intimation Reports.", "Active", lambda: self.select_frame_by_name("absent"), 1, 1)
-        ui.create_dashboard_card(f, ui.ICON_ATTENDANCE, "Attendance Summary", "Generate summarized attendance reports from raw portal data.", "Active", lambda: self.select_frame_by_name("att_summary"), 2, 0)
-        ui.create_dashboard_card(f, ui.ICON_TIME_LEAVE, "Time and Leave Master", "Manage and process time and leave records.", "Active", lambda: self.select_frame_by_name("time_leave"), 2, 1)
-        ui.create_dashboard_card(f, ui.ICON_IDCARD, "ID Card Generator", "Bulk generate employee ID cards with photo verification & barcodes.", "Active", lambda: self.select_frame_by_name("id_card"), 3, 0)
-        ui.create_dashboard_card(f, ui.ICON_SETTINGS, "Connectors & Settings", "Configure Slack & Keka HRMS API keys, OAuth credentials & environments.", "Active", lambda: self.select_frame_by_name("settings_connectors"), 3, 1)
+        hdr_actions = ctk.CTkFrame(hdr, fg_color="transparent")
+        hdr_actions.grid(row=0, column=1, sticky="e")
+
+        ui.create_primary_button(
+            hdr_actions, "Quick Reconcile",
+            lambda: self.select_frame_by_name("time_leave"),
+            width=140, height=34, icon="calendar"
+        ).pack(side="left", padx=(0, 8))
+
+        ui.create_secondary_button(
+            hdr_actions, "Settings & Connectors",
+            lambda: self.select_frame_by_name("settings_connectors"),
+            width=165, height=34, icon="settings"
+        ).pack(side="left")
+
+        # ── 2. Top Metric KPI Strip (4 Live Summary Cards) ────────────────────
+        kpi_grid = ctk.CTkFrame(f, fg_color="transparent")
+        kpi_grid.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 16))
+        kpi_grid.grid_columnconfigure((0, 1, 2, 3), weight=1)
+
+        # Helper to create sleek KPI mini-card
+        def _make_kpi_card(parent, col, icon_name, title, main_val, sub_val, accent_color=ui.COLOR_ACCENT):
+            c = ctk.CTkFrame(parent, fg_color=ui.COLOR_CARD, corner_radius=10, border_width=1, border_color=ui.COLOR_BORDER)
+            c.grid(row=0, column=col, sticky="nsew", padx=4, pady=0)
+            c.grid_columnconfigure(0, weight=1)
+
+            top_r = ctk.CTkFrame(c, fg_color="transparent")
+            top_r.pack(fill="x", padx=14, pady=(12, 4))
+
+            ic_lbl = ctk.CTkLabel(top_r, text="", image=ui.get_icon(icon_name, size=(22, 22), color=accent_color))
+            ic_lbl.pack(side="left", padx=(0, 8))
+
+            ctk.CTkLabel(
+                top_r, text=title.upper(),
+                font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11, weight="bold"),
+                text_color=ui.COLOR_TEXT_DIM
+            ).pack(side="left")
+
+            ctk.CTkLabel(
+                c, text=main_val,
+                font=ctk.CTkFont(family=ui.FONT_FAMILY, size=20, weight="bold"),
+                text_color=ui.COLOR_TEXT, anchor="w"
+            ).pack(fill="x", padx=14, pady=(2, 0))
+
+            ctk.CTkLabel(
+                c, text=sub_val,
+                font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11),
+                text_color=ui.COLOR_TEXT_SEC, anchor="w"
+            ).pack(fill="x", padx=14, pady=(2, 12))
+            return c
+
+        _make_kpi_card(kpi_grid, 0, "users", "Headcount Active", "500+ Profiles", "8 Business Units mapped", ui.COLOR_ACCENT)
+        _make_kpi_card(kpi_grid, 1, "refresh", "HRMS Stream", "Live API Online", "OAuth Bearer token verified", ui.COLOR_SUCCESS)
+        _make_kpi_card(kpi_grid, 2, "calendar", "Reconciliation", "Ready to Run", "Performance, Leaves & WFH", "#A78BFA")
+        _make_kpi_card(kpi_grid, 3, "id_card", "Identity Hub", "Dual Sync Active", "Keka Photos + Slack fallback", ui.COLOR_WARNING)
+
+        # ── 3. Main Center Operations Grid (2 Columns) ────────────────────────
+        center_grid = ctk.CTkFrame(f, fg_color="transparent")
+        center_grid.grid(row=2, column=0, columnspan=2, sticky="nsew", pady=(0, 10))
+        center_grid.grid_columnconfigure((0, 1), weight=1)
+
+        # ══ LEFT COLUMN: Operational Workflow Launchpads ══
+        left_col = ctk.CTkFrame(center_grid, fg_color="transparent")
+        left_col.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        left_col.grid_columnconfigure(0, weight=1)
+
+        sec_hdr_left = ctk.CTkFrame(left_col, fg_color="transparent")
+        sec_hdr_left.pack(fill="x", pady=(0, 8))
+        ctk.CTkLabel(
+            sec_hdr_left, text="⚡ Core Transformation Pipelines",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=15, weight="bold"),
+            text_color=ui.COLOR_TEXT
+        ).pack(side="left")
+
+        # Workflow Card Builder
+        def _make_workflow_card(parent, icon_name, title, badge_text, desc, btn_text, command):
+            card = ctk.CTkFrame(parent, fg_color=ui.COLOR_CARD, corner_radius=10, border_width=1, border_color=ui.COLOR_BORDER)
+            card.pack(fill="x", pady=(0, 10))
+            card.grid_columnconfigure(0, weight=1)
+
+            top = ctk.CTkFrame(card, fg_color="transparent")
+            top.pack(fill="x", padx=16, pady=(12, 4))
+
+            ic = ctk.CTkLabel(top, text="", image=ui.get_icon(icon_name, size=(22, 22), color=ui.COLOR_ACCENT))
+            ic.pack(side="left", padx=(0, 10))
+
+            ctk.CTkLabel(
+                top, text=title,
+                font=ctk.CTkFont(family=ui.FONT_FAMILY, size=15, weight="bold"),
+                text_color=ui.COLOR_TEXT
+            ).pack(side="left")
+
+            if badge_text:
+                b = ctk.CTkLabel(
+                    top, text=badge_text,
+                    font=ctk.CTkFont(family=ui.FONT_FAMILY, size=10, weight="bold"),
+                    text_color=ui.COLOR_ACCENT, fg_color=ui.COLOR_NAV_ACTIVE,
+                    corner_radius=4, padx=6, pady=2
+                )
+                b.pack(side="right")
+
+            ctk.CTkLabel(
+                card, text=desc,
+                font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12),
+                text_color=ui.COLOR_TEXT_SEC, anchor="w", justify="left", wraplength=460
+            ).pack(fill="x", padx=16, pady=(2, 10))
+
+            bot = ctk.CTkFrame(card, fg_color="transparent")
+            bot.pack(fill="x", padx=16, pady=(0, 12))
+
+            ui.create_primary_button(
+                bot, btn_text, command,
+                width=160, height=30, icon="launch"
+            ).pack(side="right")
+
+        _make_workflow_card(
+            left_col, "calendar",
+            "Time & Leave Reconciliation Hub", "AUTOMATED SYNC",
+            "Reconcile monthly Daily Performance logs, approved leave applications, and OD/WFH requests directly against Keka HRMS.",
+            "Launch Master Hub →",
+            lambda: self.select_frame_by_name("time_leave")
+        )
+
+        _make_workflow_card(
+            left_col, "kra",
+            "KRA & Performance Management", "FORMAT CONVERTER",
+            "Transform unstructured KRA Excel sheets, validate weighting distributions, and compile official Keka bulk upload formats.",
+            "Open KRA Studio →",
+            lambda: self.select_frame_by_name("transform")
+        )
+
+        _make_workflow_card(
+            left_col, "id_card",
+            "Instant ID Card Studio", "DUAL PIPELINE",
+            "Generate print-ready corporate ID cards in bulk. Auto-fetches profile photos from Keka API with automated Slack fallback and QR codes.",
+            "Open ID Studio →",
+            lambda: self.select_frame_by_name("id_card")
+        )
+
+        _make_workflow_card(
+            left_col, "time_series",
+            "Workforce Intelligence & Analytics", "ANALYTICS ENGINE",
+            "Deep-dive into workforce compliance trends, biometric swipe patterns, and multi-level departmental breakdowns across all business units.",
+            "View Analytics →",
+            lambda: self.select_frame_by_name("workforce_intelligence")
+        )
+
+        # ══ RIGHT COLUMN: Live System Matrix & Diagnostics ══
+        right_col = ctk.CTkFrame(center_grid, fg_color="transparent")
+        right_col.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+        right_col.grid_columnconfigure(0, weight=1)
+
+        sec_hdr_right = ctk.CTkFrame(right_col, fg_color="transparent")
+        sec_hdr_right.pack(fill="x", pady=(0, 8))
+        ctk.CTkLabel(
+            sec_hdr_right, text="🛡️ System Integrations & Health Matrix",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=15, weight="bold"),
+            text_color=ui.COLOR_TEXT
+        ).pack(side="left")
+
+        # 1. Live Connector Status Matrix Card
+        conn_card = ctk.CTkFrame(right_col, fg_color=ui.COLOR_CARD, corner_radius=10, border_width=1, border_color=ui.COLOR_BORDER)
+        conn_card.pack(fill="x", pady=(0, 10))
+
+        conn_hdr = ctk.CTkFrame(conn_card, fg_color="transparent")
+        conn_hdr.pack(fill="x", padx=16, pady=(12, 6))
+        ctk.CTkLabel(
+            conn_hdr, text="🔌 Connector Health Status",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=14, weight="bold"),
+            text_color=ui.COLOR_TEXT
+        ).pack(side="left")
+
+        def _make_conn_row(parent, icon_name, name, status_text, is_active=True):
+            r = ctk.CTkFrame(parent, fg_color="transparent")
+            r.pack(fill="x", padx=16, pady=4)
+            ic = ctk.CTkLabel(r, text="", image=ui.get_icon(icon_name, size=(16, 16), color=ui.COLOR_ACCENT))
+            ic.pack(side="left", padx=(0, 8))
+            ctk.CTkLabel(
+                r, text=name,
+                font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12, weight="bold"),
+                text_color=ui.COLOR_TEXT
+            ).pack(side="left")
+            
+            badge_col = ui.COLOR_SUCCESS if is_active else ui.COLOR_TEXT_DIM
+            ctk.CTkLabel(
+                r, text=f"●  {status_text}",
+                font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11),
+                text_color=badge_col
+            ).pack(side="right")
+
+        _make_conn_row(conn_card, "settings", "Keka HRMS REST API", "Active (Bearer Token)", True)
+        _make_conn_row(conn_card, "eye", "Keka Web Automation", "Session Active (SSO Ready)", True)
+        _make_conn_row(conn_card, "slack", "Slack Profile Photo Sync", "Workspace Online", True)
+
+        conn_btn_row = ctk.CTkFrame(conn_card, fg_color="transparent")
+        conn_btn_row.pack(fill="x", padx=16, pady=(8, 12))
+        ui.create_secondary_button(
+            conn_btn_row, "Configure Integrations →",
+            lambda: self.select_frame_by_name("settings_connectors"),
+            width=180, height=28, icon="settings"
+        ).pack(side="right")
+
+        # 2. Automation Engines Matrix Card
+        auto_card = ctk.CTkFrame(right_col, fg_color=ui.COLOR_CARD, corner_radius=10, border_width=1, border_color=ui.COLOR_BORDER)
+        auto_card.pack(fill="x", pady=(0, 10))
+
+        auto_hdr = ctk.CTkFrame(auto_card, fg_color="transparent")
+        auto_hdr.pack(fill="x", padx=16, pady=(12, 6))
+        ctk.CTkLabel(
+            auto_hdr, text="⚡ Active Automation Engines",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=14, weight="bold"),
+            text_color=ui.COLOR_TEXT
+        ).pack(side="left")
+
+        bullet_items = [
+            ("zap", "Offline Neural OCR Captcha solver (~50ms instant bypass)"),
+            ("users", "Parent-Child BU & Department hierarchy auto-mapping"),
+            ("lock", "Persistent 2FA browser session & SSO authentication"),
+            ("excel", "Multi-sheet Excel normalization & Keka upload validation"),
+        ]
+        for ic_name, b_text in bullet_items:
+            b_row = ctk.CTkFrame(auto_card, fg_color="transparent")
+            b_row.pack(fill="x", padx=16, pady=3)
+            ctk.CTkLabel(b_row, text="", image=ui.get_icon(ic_name, size=(14, 14), color=ui.COLOR_SUCCESS)).pack(side="left", padx=(0, 8))
+            ctk.CTkLabel(
+                b_row, text=b_text,
+                font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11),
+                text_color=ui.COLOR_TEXT_SEC, anchor="w", justify="left"
+            ).pack(side="left")
+
+        ctk.CTkFrame(auto_card, height=6, fg_color="transparent").pack()
+
+        # 3. Environment & Quick Shortcuts Card
+        env_card = ctk.CTkFrame(right_col, fg_color=ui.COLOR_CARD, corner_radius=10, border_width=1, border_color=ui.COLOR_BORDER)
+        env_card.pack(fill="x")
+
+        env_hdr = ctk.CTkFrame(env_card, fg_color="transparent")
+        env_hdr.pack(fill="x", padx=16, pady=(12, 6))
+        ctk.CTkLabel(
+            env_hdr, text="⌨️ Workspace Shortcuts",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=14, weight="bold"),
+            text_color=ui.COLOR_TEXT
+        ).pack(side="left")
+
+        shortcuts = [
+            ("F5 / Ctrl+R", "Instant Hot-Reload workspace & preserve active tab"),
+            ("Escape", "Dismiss flyout navigation & modal overlays"),
+            ("Tab Key", "Cycle keyboard focus across form inputs & actions"),
+        ]
+        for key_combo, desc in shortcuts:
+            s_row = ctk.CTkFrame(env_card, fg_color="transparent")
+            s_row.pack(fill="x", padx=16, pady=2)
+            
+            badge = ctk.CTkLabel(
+                s_row, text=key_combo,
+                font=ctk.CTkFont(family="Consolas", size=11, weight="bold"),
+                text_color=ui.COLOR_TEXT, fg_color=ui.COLOR_INPUT_BG,
+                corner_radius=4, padx=6, pady=1
+            )
+            badge.pack(side="left", padx=(0, 8))
+            
+            ctk.CTkLabel(
+                s_row, text=desc,
+                font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11),
+                text_color=ui.COLOR_TEXT_DIM, anchor="w"
+            ).pack(side="left")
+
+        ctk.CTkFrame(env_card, height=10, fg_color="transparent").pack()
 
     # ---------------------------------------------------------
     # KRA Management
     # ---------------------------------------------------------
     def _build_transform_frame(self):
-        f = ctk.CTkFrame(self.main_content, fg_color="transparent")
+        f = ctk.CTkScrollableFrame(self.main_content, fg_color="transparent")
         self.frames["transform"] = f
         f.grid_columnconfigure(0, weight=1)
 
@@ -913,7 +1193,7 @@ class App(ctk.CTk):
         self.btn_kra_tf.pack(side="right")
 
     def _build_generate_frame(self):
-        f = ctk.CTkFrame(self.main_content, fg_color="transparent")
+        f = ctk.CTkScrollableFrame(self.main_content, fg_color="transparent")
         self.frames["generate"] = f
         f.grid_columnconfigure(0, weight=1)
 
@@ -1007,20 +1287,446 @@ class App(ctk.CTk):
     # ---------------------------------------------------------
     # Absent Management
     # ---------------------------------------------------------
+    def _tl_update_dates_from_dropdowns(self):
+        """Sync the tl_from_date_var / tl_to_date_var from the Month+Year dropdowns."""
+        import calendar as _cal_mod
+        _months = ["January", "February", "March", "April", "May", "June",
+                   "July", "August", "September", "October", "November", "December"]
+        try:
+            month_name = self._tl_month_var.get()
+            year_str   = self._tl_year_var.get()
+            month_idx  = _months.index(month_name) + 1  # 1-based
+            year       = int(year_str)
+            last_day   = _cal_mod.monthrange(year, month_idx)[1]
+            from_str   = f"01-{month_idx:02d}-{year}"
+            to_str     = f"{last_day:02d}-{month_idx:02d}-{year}"
+            self.tl_from_date_var.set(from_str)
+            self.tl_to_date_var.set(to_str)
+            # Update the range display label
+            if hasattr(self, "tl_date_range_lbl"):
+                self.tl_date_range_lbl.configure(
+                    text=f"01 {month_name[:3]} {year}  →  {last_day:02d} {month_name[:3]} {year}"
+                )
+        except Exception:
+            pass
+
+    def _open_calendar_dialog(self, target_var, title="Select Date"):
+        """Opens a premium dark-themed custom calendar popup for date selection."""
+        import calendar as _cal
+        from datetime import date as _date
+
+        # Parse current value to pre-select the date
+        val = target_var.get().strip()
+        now = _date.today()
+        sel_year, sel_month, sel_day = now.year, now.month, now.day
+        if val:
+            for fmt in ("%d-%m-%Y", "%Y-%m-%d", "%d/%m/%Y"):
+                try:
+                    from datetime import datetime as _dt
+                    d = _dt.strptime(val, fmt).date()
+                    sel_year, sel_month, sel_day = d.year, d.month, d.day
+                    break
+                except ValueError:
+                    continue
+
+        top = ctk.CTkToplevel(self)
+        top.title(title)
+        top.geometry("360x420")
+        top.resizable(False, False)
+        top.attributes("-topmost", True)
+        top.grab_set()
+        top.configure(fg_color=ui.COLOR_BG)
+
+        # State
+        _year  = [sel_year]
+        _month = [sel_month]
+        _chosen_day = [sel_day]
+
+        MONTH_NAMES = ["January", "February", "March", "April", "May", "June",
+                       "July", "August", "September", "October", "November", "December"]
+        WEEKDAYS    = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"]
+
+        # ── Header bar ────────────────────────────────────────────────────
+        hdr = ctk.CTkFrame(top, fg_color=ui.COLOR_CARD, corner_radius=0, height=52)
+        hdr.pack(fill="x")
+        hdr.pack_propagate(False)
+
+        ctk.CTkLabel(
+            hdr, text=f"📅  {title}",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=14, weight="bold"),
+            text_color=ui.COLOR_TEXT
+        ).place(relx=0.5, rely=0.5, anchor="center")
+
+        # ── Month/Year navigation bar ──────────────────────────────────────
+        nav = ctk.CTkFrame(top, fg_color=ui.COLOR_CARD, corner_radius=0, height=46)
+        nav.pack(fill="x", pady=(1, 0))
+        nav.pack_propagate(False)
+        nav.grid_columnconfigure(1, weight=1)
+
+        month_year_lbl = ctk.CTkLabel(
+            nav, text="",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=14, weight="bold"),
+            text_color=ui.COLOR_TEXT
+        )
+        month_year_lbl.place(relx=0.5, rely=0.5, anchor="center")
+
+        # Calendar grid container
+        grid_frame = ctk.CTkFrame(top, fg_color=ui.COLOR_BG, corner_radius=0)
+        grid_frame.pack(fill="both", expand=True, padx=12, pady=(8, 4))
+
+        # Confirm / Cancel footer
+        footer = ctk.CTkFrame(top, fg_color=ui.COLOR_CARD, corner_radius=0, height=54)
+        footer.pack(fill="x", side="bottom")
+        footer.pack_propagate(False)
+
+        day_btns = {}
+
+        def _render_calendar():
+            """Redraw the calendar grid for current _year/_month."""
+            for w in grid_frame.winfo_children():
+                w.destroy()
+            day_btns.clear()
+
+            month_year_lbl.configure(
+                text=f"{MONTH_NAMES[_month[0]-1]}  {_year[0]}"
+            )
+
+            # Weekday headers
+            for col, wd in enumerate(WEEKDAYS):
+                is_weekend = col >= 5
+                ctk.CTkLabel(
+                    grid_frame,
+                    text=wd,
+                    font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11, weight="bold"),
+                    text_color=ui.COLOR_ACCENT if is_weekend else ui.COLOR_TEXT_DIM,
+                    width=42, height=28
+                ).grid(row=0, column=col, padx=1, pady=(0, 4))
+
+            # Compute month grid (Monday-first)
+            first_weekday, num_days = _cal.monthrange(_year[0], _month[0])
+            row, col = 1, first_weekday
+            for day in range(1, num_days + 1):
+                is_today   = (day == now.day and _month[0] == now.month and _year[0] == now.year)
+                is_sel     = (day == _chosen_day[0])
+                is_weekend = (col >= 5)
+
+                if is_sel:
+                    fg   = ui.COLOR_ACCENT
+                    txt  = "#FFFFFF"
+                    hover = ui.COLOR_ACCENT
+                    border = 0
+                elif is_today:
+                    fg    = "transparent"
+                    txt   = ui.COLOR_ACCENT
+                    hover = ui.COLOR_CARD_HOVER
+                    border = 2
+                elif is_weekend:
+                    fg    = "transparent"
+                    txt   = ui.COLOR_TEXT_SEC
+                    hover = ui.COLOR_CARD_HOVER
+                    border = 0
+                else:
+                    fg    = "transparent"
+                    txt   = ui.COLOR_TEXT
+                    hover = ui.COLOR_CARD_HOVER
+                    border = 0
+
+                def _on_click(d=day):
+                    _chosen_day[0] = d
+                    _render_calendar()
+
+                btn = ctk.CTkButton(
+                    grid_frame,
+                    text=str(day),
+                    width=40, height=36,
+                    corner_radius=8,
+                    fg_color=fg,
+                    hover_color=hover,
+                    text_color=txt,
+                    border_width=border,
+                    border_color=ui.COLOR_ACCENT,
+                    font=ctk.CTkFont(
+                        family=ui.FONT_FAMILY,
+                        size=12,
+                        weight="bold" if is_sel or is_today else "normal"
+                    ),
+                    command=_on_click
+                )
+                btn.grid(row=row, column=col, padx=2, pady=2)
+                day_btns[day] = btn
+
+                col += 1
+                if col > 6:
+                    col = 0
+                    row += 1
+
+        def _prev_month():
+            if _month[0] == 1:
+                _month[0] = 12
+                _year[0] -= 1
+            else:
+                _month[0] -= 1
+            import calendar as _cm
+            last = _cm.monthrange(_year[0], _month[0])[1]
+            if _chosen_day[0] > last:
+                _chosen_day[0] = last
+            _render_calendar()
+
+        def _next_month():
+            if _month[0] == 12:
+                _month[0] = 1
+                _year[0] += 1
+            else:
+                _month[0] += 1
+            import calendar as _cm
+            last = _cm.monthrange(_year[0], _month[0])[1]
+            if _chosen_day[0] > last:
+                _chosen_day[0] = last
+            _render_calendar()
+
+        # Prev / Next nav buttons
+        ctk.CTkButton(
+            nav, text="❮", width=36, height=36,
+            corner_radius=8, fg_color="transparent",
+            hover_color=ui.COLOR_CARD_HOVER,
+            text_color=ui.COLOR_TEXT,
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=16, weight="bold"),
+            command=_prev_month
+        ).place(relx=0.05, rely=0.5, anchor="w")
+
+        ctk.CTkButton(
+            nav, text="❯", width=36, height=36,
+            corner_radius=8, fg_color="transparent",
+            hover_color=ui.COLOR_CARD_HOVER,
+            text_color=ui.COLOR_TEXT,
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=16, weight="bold"),
+            command=_next_month
+        ).place(relx=0.95, rely=0.5, anchor="e")
+
+        def _confirm():
+            from datetime import datetime as _dt
+            try:
+                import calendar as _cm
+                last = _cm.monthrange(_year[0], _month[0])[1]
+                d = min(_chosen_day[0], last)
+                dt = _dt(_year[0], _month[0], d)
+                target_var.set(dt.strftime("%d-%m-%Y"))
+            except Exception:
+                pass
+            top.destroy()
+
+        ui.create_primary_button(
+            footer, "Confirm ✓", _confirm, width=130, height=34
+        ).pack(side="right", padx=14, pady=10)
+
+        ui.create_secondary_button(
+            footer, "Cancel", top.destroy, width=80, height=34
+        ).pack(side="right", padx=(0, 8), pady=10)
+
+        # Selected date preview
+        self._cal_preview_lbl = ctk.CTkLabel(
+            footer, text="",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12, weight="bold"),
+            text_color=ui.COLOR_ACCENT
+        )
+        self._cal_preview_lbl.pack(side="left", padx=14)
+
+        orig_render = _render_calendar
+
+        def _render_with_preview():
+            orig_render()
+            m = MONTH_NAMES[_month[0] - 1][:3]
+            self._cal_preview_lbl.configure(
+                text=f"{_chosen_day[0]:02d} {m} {_year[0]}"
+            )
+
+        _render_calendar = _render_with_preview
+        _render_calendar()
+
     def _build_absent_frame(self):
-        f = ctk.CTkFrame(self.main_content, fg_color="transparent")
+        f = ctk.CTkScrollableFrame(self.main_content, fg_color="transparent")
         self.frames["absent"] = f
         f.grid_columnconfigure(0, weight=1)
 
-        ui.create_page_header(f, "Absent Management", "Generate absent intimation reports by comparing master, attendance and OD/WFH data.").grid(row=0, column=0, sticky="ew", pady=(0, 20))
+        ui.create_page_header(f, "Absent Management", "Generate absent intimation reports by comparing master, attendance and OD/WFH data.").grid(row=0, column=0, sticky="ew", pady=(0, 12))
 
+        # Notice banner pointing to Unified Time & Leave Master
+        banner = ctk.CTkFrame(f, fg_color=ui.COLOR_CARD, corner_radius=8, border_width=1, border_color=ui.COLOR_ACCENT)
+        banner.grid(row=1, column=0, sticky="ew", pady=(0, 16))
+        banner.grid_columnconfigure(0, weight=1)
+
+        b_content = ctk.CTkFrame(banner, fg_color="transparent")
+        b_content.pack(fill="x", padx=16, pady=10)
+
+        ctk.CTkLabel(
+            b_content,
+            text="💡 Unified HR Hub Available: Absent Management is consolidated into Time & Leave Master with Daily Performance + Mailer in one go!",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12, weight="bold"),
+            text_color=ui.COLOR_ACCENT
+        ).pack(side="left")
+
+        ui.create_secondary_button(
+            b_content,
+            "Go to Time & Leave Master →",
+            lambda: self.select_frame_by_name("time_leave"),
+            width=200, height=28
+        ).pack(side="right")
+
+        # -------------------------------------------------------------
+        # 1. Keka Direct Sync Card
+        # -------------------------------------------------------------
+        sync_card = ui.create_card(f)
+        sync_card.grid(row=2, column=0, sticky="nsew", pady=(0, 16))
+
+        sync_hdr = ctk.CTkFrame(sync_card, fg_color="transparent")
+        sync_hdr.grid(row=0, column=0, sticky="ew", padx=16, pady=(16, 8))
+        sync_hdr.grid_columnconfigure(0, weight=1)
+
+        title_box = ctk.CTkFrame(sync_hdr, fg_color="transparent")
+        title_box.pack(side="left")
+
+        ctk.CTkLabel(
+            title_box,
+            text="⚡ Pull from Keka HRMS",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=15, weight="bold"),
+            text_color=ui.COLOR_TEXT
+        ).pack(anchor="w")
+
+        ctk.CTkLabel(
+            title_box,
+            text="Fetch Employee Master & OD/WFH requests directly from Keka API into the source fields below.",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12),
+            text_color=ui.COLOR_TEXT_SEC
+        ).pack(anchor="w", pady=(2, 0))
+
+        # Date parameters row with Calendar Pickers
+        dates_row = ctk.CTkFrame(sync_card, fg_color="transparent")
+        dates_row.grid(row=1, column=0, sticky="ew", padx=16, pady=(6, 12))
+
+        # From Date Entry + 📅 Button
+        ctk.CTkLabel(
+            dates_row, text="From Date:",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12, weight="bold"),
+            text_color=ui.COLOR_TEXT_DIM
+        ).pack(side="left", padx=(0, 6))
+
+        self.absent_from_entry = ctk.CTkEntry(
+            dates_row, textvariable=self.absent_from_date_var, width=105, height=32,
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12),
+            fg_color=ui.COLOR_INPUT_BG, border_color=ui.COLOR_BORDER,
+            border_width=1, corner_radius=6, text_color=ui.COLOR_TEXT
+        )
+        self.absent_from_entry.pack(side="left", padx=(0, 4))
+
+        self.btn_from_cal = ui.create_secondary_button(
+            dates_row, "",
+            lambda: self._open_calendar_dialog(self.absent_from_date_var, "Select From Date"),
+            width=36, height=32, icon="calendar"
+        )
+        self.btn_from_cal.pack(side="left", padx=(0, 16))
+
+        # To Date Entry + 📅 Button
+        ctk.CTkLabel(
+            dates_row, text="To Date:",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12, weight="bold"),
+            text_color=ui.COLOR_TEXT_DIM
+        ).pack(side="left", padx=(0, 6))
+
+        self.absent_to_entry = ctk.CTkEntry(
+            dates_row, textvariable=self.absent_to_date_var, width=105, height=32,
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12),
+            fg_color=ui.COLOR_INPUT_BG, border_color=ui.COLOR_BORDER,
+            border_width=1, corner_radius=6, text_color=ui.COLOR_TEXT
+        )
+        self.absent_to_entry.pack(side="left", padx=(0, 4))
+
+        self.btn_to_cal = ui.create_secondary_button(
+            dates_row, "",
+            lambda: self._open_calendar_dialog(self.absent_to_date_var, "Select To Date"),
+            width=36, height=32, icon="calendar"
+        )
+        self.btn_to_cal.pack(side="left", padx=(0, 20))
+
+        self.absent_portal_cb = ctk.CTkCheckBox(
+            dates_row,
+            text="Also fetch Attendance Report (Daily Performance via API ⚡)",
+            variable=self.absent_include_portal_var,
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12),
+            text_color=ui.COLOR_TEXT_SEC,
+            fg_color=ui.COLOR_ACCENT,
+            hover_color=ui.COLOR_ACCENT_HOVER
+        )
+        self.absent_portal_cb.pack(side="left")
+
+        # Action bar in sync card
+        sync_action_row = ctk.CTkFrame(sync_card, fg_color="transparent")
+        sync_action_row.grid(row=2, column=0, sticky="ew", padx=16, pady=(0, 10))
+
+        _, self.absent_keka_dot, self.absent_keka_lbl = ui.create_status_badge(sync_action_row, "Ready")
+        self.absent_keka_lbl.master.pack(side="left")
+
+        self.btn_pull_keka = ui.create_primary_button(
+            sync_action_row, "⚡ Pull from Keka", self.pull_keka_absent_data, width=160
+        )
+        self.btn_pull_keka.pack(side="right")
+
+        # ── Real-Time Progress Bar & Live Status Monitor ──
+        self.absent_progress_card = ctk.CTkFrame(
+            sync_card, fg_color=ui.COLOR_CARD, corner_radius=8,
+            border_width=1, border_color=ui.COLOR_BORDER
+        )
+        self.absent_progress_card.grid(row=3, column=0, sticky="ew", padx=16, pady=(0, 14))
+        self.absent_progress_card.grid_columnconfigure(0, weight=1)
+
+        prog_hdr = ctk.CTkFrame(self.absent_progress_card, fg_color="transparent")
+        prog_hdr.pack(fill="x", padx=12, pady=(10, 4))
+
+        self.absent_progress_step_lbl = ctk.CTkLabel(
+            prog_hdr,
+            text="Ready to pull Keka data",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12, weight="bold"),
+            text_color=ui.COLOR_TEXT
+        )
+        self.absent_progress_step_lbl.pack(side="left")
+
+        self.absent_progress_pct_lbl = ctk.CTkLabel(
+            prog_hdr,
+            text="0%",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12, weight="bold"),
+            text_color=ui.COLOR_ACCENT
+        )
+        self.absent_progress_pct_lbl.pack(side="right")
+
+        self.absent_progress_bar = ctk.CTkProgressBar(
+            self.absent_progress_card,
+            height=8,
+            corner_radius=4,
+            progress_color=ui.COLOR_ACCENT,
+            fg_color=ui.COLOR_INPUT_BG,
+            border_width=0
+        )
+        self.absent_progress_bar.set(0.0)
+        self.absent_progress_bar.pack(fill="x", padx=12, pady=(2, 4))
+
+        self.absent_progress_detail_lbl = ctk.CTkLabel(
+            self.absent_progress_card,
+            text="Select dates above and click '⚡ Pull from Keka' for high-speed multi-threaded sync.",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11),
+            text_color=ui.COLOR_TEXT_DIM,
+            anchor="w"
+        )
+        self.absent_progress_detail_lbl.pack(fill="x", padx=12, pady=(0, 8))
+
+        # -------------------------------------------------------------
+        # 2. Source Files Card
+        # -------------------------------------------------------------
         card = ui.create_card(f)
-        card.grid(row=1, column=0, sticky="nsew")
+        card.grid(row=3, column=0, sticky="nsew", pady=(0, 24))
         
-        ctk.CTkLabel(card, text="Source Files", font=ctk.CTkFont(family=ui.FONT_FAMILY, size=15, weight="bold"), text_color=ui.COLOR_TEXT).grid(row=0, column=0, sticky="w", padx=16, pady=(16, 12))
+        ctk.CTkLabel(card, text="Source Files (Auto-filled by Keka sync or browse manually)", font=ctk.CTkFont(family=ui.FONT_FAMILY, size=15, weight="bold"), text_color=ui.COLOR_TEXT).grid(row=0, column=0, sticky="w", padx=16, pady=(16, 12))
 
         ui.create_upload_row(card, self.absent_emp_file, "1. Employee Master (Expected: Employee Master.xlsx)", "Browse", 1)
-        ui.create_upload_row(card, self.absent_att_file, "2. Attendance Report (Expected: Attendance Report.xlsx)", "Browse", 2)
+        ui.create_upload_row(card, self.absent_att_file, "2. Attendance Report (Daily Performance report.xlsx)", "Browse", 2)
         ui.create_upload_row(card, self.absent_wfh_file, "3. OD/WFH Application Report (Expected: OD_WFH Application Report.xlsx)", "Browse", 3)
 
         row4 = ctk.CTkFrame(card, fg_color="transparent")
@@ -1029,14 +1735,14 @@ class App(ctk.CTk):
         _, self.absent_dot, self.absent_lbl = ui.create_status_badge(row4, "Ready")
         self.absent_lbl.master.pack(side="left")
 
-        self.btn_absent = ui.create_primary_button(row4, "Process Data", self.start_process_absent)
+        self.btn_absent = ui.create_primary_button(row4, "Process Data →", self.start_process_absent, width=140, height=36)
         self.btn_absent.pack(side="right")
 
     # ---------------------------------------------------------
     # Attendance Summary
     # ---------------------------------------------------------
     def _build_att_summary_frame(self):
-        f = ctk.CTkFrame(self.main_content, fg_color="transparent")
+        f = ctk.CTkScrollableFrame(self.main_content, fg_color="transparent")
         self.frames["att_summary"] = f
         f.grid_columnconfigure(0, weight=1)
 
@@ -1062,83 +1768,349 @@ class App(ctk.CTk):
     # Time and Leave Master
     # ---------------------------------------------------------
     def _build_time_leave_frame(self):
-        f = ctk.CTkFrame(self.main_content, fg_color="transparent")
+        f = ctk.CTkScrollableFrame(self.main_content, fg_color="transparent")
         self.frames["time_leave"] = f
         f.grid_columnconfigure(0, weight=1)
 
         hdr = ui.create_page_header(
             f, "Time and Leave Master",
-            "Upload single or multi-month records to reconcile Daily Performance Report with Leave and WFH applications."
+            "Unified HR Hub: Sync directly from Keka HRMS or upload monthly files to reconcile Performance, Leaves, and Absent Intimations."
         )
-        hdr.grid(row=0, column=0, sticky="ew", pady=(0, 20))
+        hdr.grid(row=0, column=0, sticky="ew", pady=(0, 16))
 
+        # -------------------------------------------------------------
+        # Single Unified Card for Time and Leave Master
+        # -------------------------------------------------------------
         card = ui.create_card(f)
-        card.grid(row=1, column=0, sticky="nsew")
+        card.grid(row=1, column=0, sticky="nsew", pady=(0, 24))
+        card.grid_columnconfigure(0, weight=1)
+
+        sync_hdr = ctk.CTkFrame(card, fg_color="transparent")
+        sync_hdr.grid(row=0, column=0, sticky="ew", padx=16, pady=(16, 8))
+        sync_hdr.grid_columnconfigure(0, weight=1)
+
+        title_box = ctk.CTkFrame(sync_hdr, fg_color="transparent")
+        title_box.pack(side="left")
 
         ctk.CTkLabel(
-            card, text="Data Sources (Single or Multi-Month)",
+            title_box,
+            text="⚡ Pull from Keka HRMS & Auto-Reconcile",
             font=ctk.CTkFont(family=ui.FONT_FAMILY, size=15, weight="bold"),
             text_color=ui.COLOR_TEXT
-        ).grid(row=0, column=0, sticky="w", padx=16, pady=(16, 12))
+        ).pack(anchor="w")
+
+        ctk.CTkLabel(
+            title_box,
+            text="One-click live sync: Pulls Employee Master, OD/WFH, and Attendance logs via Keka API, then generates the consolidated report with both Daily Performance and Absent Mailer.",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12),
+            text_color=ui.COLOR_TEXT_SEC
+        ).pack(anchor="w", pady=(2, 0))
+
+        # ── Improved Date Range Selector ──────────────────────────────────
+        # Month/Year dropdowns auto-fill From (1st) and To (last day) of the month.
+        import calendar as _cal_mod
+        _months = ["January", "February", "March", "April", "May", "June",
+                   "July", "August", "September", "October", "November", "December"]
+        _cur_year = datetime.now().year
+        _years = [str(y) for y in range(_cur_year - 3, _cur_year + 2)]
+
+        # Pill container with subtle border
+        dates_outer = ctk.CTkFrame(
+            card, fg_color=ui.COLOR_INPUT_BG, corner_radius=10,
+            border_width=1, border_color=ui.COLOR_BORDER
+        )
+        dates_outer.grid(row=1, column=0, sticky="ew", padx=16, pady=(8, 14))
+        dates_outer.grid_columnconfigure((0, 1, 2, 3), weight=0)
+
+        # — Month segment
+        left_seg = ctk.CTkFrame(dates_outer, fg_color="transparent")
+        left_seg.grid(row=0, column=0, padx=(14, 6), pady=10)
+
+        ctk.CTkLabel(
+            left_seg, text="📅  Month",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11, weight="bold"),
+            text_color=ui.COLOR_TEXT_DIM
+        ).pack(anchor="w", pady=(0, 3))
+
+        _init_month_idx = datetime.now().month - 1
+        self._tl_month_var = ctk.StringVar(value=_months[_init_month_idx])
+        self.tl_month_menu = ctk.CTkOptionMenu(
+            left_seg,
+            variable=self._tl_month_var,
+            values=_months,
+            width=148, height=34,
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=13),
+            fg_color=ui.COLOR_CARD,
+            button_color=ui.COLOR_ACCENT,
+            button_hover_color=ui.COLOR_ACCENT,
+            dropdown_fg_color=ui.COLOR_CARD,
+            dropdown_text_color=ui.COLOR_TEXT,
+            text_color=ui.COLOR_TEXT,
+            corner_radius=7,
+            command=lambda _v: self._tl_update_dates_from_dropdowns()
+        )
+        self.tl_month_menu.pack()
+
+        # Divider
+        ctk.CTkFrame(dates_outer, width=1, height=52, fg_color=ui.COLOR_BORDER).grid(
+            row=0, column=1, padx=6, pady=8
+        )
+
+        # — Year segment
+        right_seg = ctk.CTkFrame(dates_outer, fg_color="transparent")
+        right_seg.grid(row=0, column=2, padx=(6, 8), pady=10)
+
+        ctk.CTkLabel(
+            right_seg, text="📆  Year",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11, weight="bold"),
+            text_color=ui.COLOR_TEXT_DIM
+        ).pack(anchor="w", pady=(0, 3))
+
+        self._tl_year_var = ctk.StringVar(value=str(_cur_year))
+        self.tl_year_menu = ctk.CTkOptionMenu(
+            right_seg,
+            variable=self._tl_year_var,
+            values=_years,
+            width=100, height=34,
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=13),
+            fg_color=ui.COLOR_CARD,
+            button_color=ui.COLOR_ACCENT,
+            button_hover_color=ui.COLOR_ACCENT,
+            dropdown_fg_color=ui.COLOR_CARD,
+            dropdown_text_color=ui.COLOR_TEXT,
+            text_color=ui.COLOR_TEXT,
+            corner_radius=7,
+            command=lambda _v: self._tl_update_dates_from_dropdowns()
+        )
+        self.tl_year_menu.pack()
+
+        # — Resolved date range display
+        date_display_seg = ctk.CTkFrame(dates_outer, fg_color="transparent")
+        date_display_seg.grid(row=0, column=3, padx=(2, 14), pady=10)
+
+        ctk.CTkLabel(
+            date_display_seg, text="Range",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11, weight="bold"),
+            text_color=ui.COLOR_TEXT_DIM
+        ).pack(anchor="w", pady=(0, 3))
+
+        self.tl_date_range_lbl = ctk.CTkLabel(
+            date_display_seg,
+            text="",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12, weight="bold"),
+            text_color=ui.COLOR_ACCENT,
+            width=200,
+            anchor="w"
+        )
+        self.tl_date_range_lbl.pack(anchor="w")
+
+        # — Custom range override (always visible below dropdowns)
+        custom_row = ctk.CTkFrame(dates_outer, fg_color="transparent")
+        custom_row.grid(row=1, column=0, columnspan=4, padx=14, pady=(0, 8), sticky="w")
+
+        ctk.CTkLabel(
+            custom_row, text="Custom range:",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11),
+            text_color=ui.COLOR_TEXT_DIM
+        ).pack(side="left", padx=(0, 8))
+
+        self.tl_from_entry = ctk.CTkEntry(
+            custom_row, textvariable=self.tl_from_date_var, width=95, height=28,
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11),
+            fg_color=ui.COLOR_INPUT_BG, border_color=ui.COLOR_BORDER,
+            border_width=1, corner_radius=6, text_color=ui.COLOR_TEXT,
+            placeholder_text="DD-MM-YYYY"
+        )
+        self.tl_from_entry.pack(side="left", padx=(0, 3))
+
+        ui.create_secondary_button(
+            custom_row, "📅",
+            lambda: self._open_calendar_dialog(self.tl_from_date_var, "Select From Date"),
+            width=30, height=28
+        ).pack(side="left", padx=(0, 10))
+
+        ctk.CTkLabel(
+            custom_row, text="→",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12),
+            text_color=ui.COLOR_TEXT_DIM
+        ).pack(side="left", padx=(0, 6))
+
+        self.tl_to_entry = ctk.CTkEntry(
+            custom_row, textvariable=self.tl_to_date_var, width=95, height=28,
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11),
+            fg_color=ui.COLOR_INPUT_BG, border_color=ui.COLOR_BORDER,
+            border_width=1, corner_radius=6, text_color=ui.COLOR_TEXT,
+            placeholder_text="DD-MM-YYYY"
+        )
+        self.tl_to_entry.pack(side="left", padx=(0, 3))
+
+        ui.create_secondary_button(
+            custom_row, "📅",
+            lambda: self._open_calendar_dialog(self.tl_to_date_var, "Select To Date"),
+            width=30, height=28
+        ).pack(side="left", padx=(0, 6))
+
+        # Initialise display label and date vars from current dropdowns
+        self._tl_update_dates_from_dropdowns()
+
+        # Action bar in sync card
+        sync_action_row = ctk.CTkFrame(card, fg_color="transparent")
+        sync_action_row.grid(row=2, column=0, sticky="ew", padx=16, pady=(0, 10))
+
+        _, self.tl_keka_dot, self.tl_keka_lbl = ui.create_status_badge(sync_action_row, "Ready")
+        self.tl_keka_lbl.master.pack(side="left")
+
+        self.btn_pull_keka_tl = ui.create_primary_button(
+            sync_action_row, "⚡ Pull from Keka & Generate Master Report", self.pull_keka_time_leave_data, width=280
+        )
+        self.btn_pull_keka_tl.pack(side="right")
+
+        # Real-time progress bar & live status monitor
+        self.tl_keka_progress_card = ctk.CTkFrame(
+            card, fg_color=ui.COLOR_CARD, corner_radius=8,
+            border_width=1, border_color=ui.COLOR_BORDER
+        )
+        self.tl_keka_progress_card.grid(row=3, column=0, sticky="ew", padx=16, pady=(0, 14))
+        self.tl_keka_progress_card.grid_columnconfigure(0, weight=1)
+
+        prog_hdr = ctk.CTkFrame(self.tl_keka_progress_card, fg_color="transparent")
+        prog_hdr.pack(fill="x", padx=12, pady=(10, 4))
+
+        self.tl_keka_progress_step_lbl = ctk.CTkLabel(
+            prog_hdr,
+            text="Ready to pull unified data from Keka",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12, weight="bold"),
+            text_color=ui.COLOR_TEXT
+        )
+        self.tl_keka_progress_step_lbl.pack(side="left")
+
+        self.tl_keka_progress_pct_lbl = ctk.CTkLabel(
+            prog_hdr,
+            text="0%",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12, weight="bold"),
+            text_color=ui.COLOR_ACCENT
+        )
+        self.tl_keka_progress_pct_lbl.pack(side="right")
+
+        self.tl_keka_progress_bar = ctk.CTkProgressBar(
+            self.tl_keka_progress_card,
+            height=8,
+            corner_radius=4,
+            progress_color=ui.COLOR_ACCENT,
+            fg_color=ui.COLOR_INPUT_BG,
+            border_width=0
+        )
+        self.tl_keka_progress_bar.set(0.0)
+        self.tl_keka_progress_bar.pack(fill="x", padx=12, pady=(2, 4))
+
+        self.tl_keka_progress_detail_lbl = ctk.CTkLabel(
+            self.tl_keka_progress_card,
+            text="Select dates above and click '⚡ Pull from Keka & Generate Master Report' to auto-generate the consolidated workbook.",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11),
+            text_color=ui.COLOR_TEXT_DIM,
+            anchor="w"
+        )
+        self.tl_keka_progress_detail_lbl.pack(fill="x", padx=12, pady=(0, 8))
+
+        # -------------------------------------------------------------
+        # Collapsible Manual File Uploads Section (Inside the SAME Card)
+        # -------------------------------------------------------------
+        toggle_frame = ctk.CTkFrame(card, fg_color="transparent")
+        toggle_frame.grid(row=4, column=0, sticky="ew", padx=16, pady=(4, 8))
+
+        manual_container = ctk.CTkFrame(card, fg_color="transparent")
+        manual_container.grid(row=5, column=0, sticky="ew", padx=16, pady=(0, 16))
+        manual_container.grid_columnconfigure(0, weight=1)
+        manual_container.grid_remove()  # Collapsed by default to keep single clean card
+
+        self.manual_expanded = False
+        def toggle_manual_section():
+            self.manual_expanded = not self.manual_expanded
+            if self.manual_expanded:
+                manual_container.grid()
+                self.btn_toggle_manual.configure(text="📁 Manual Monthly File Uploads ▴ (Click to collapse)")
+            else:
+                manual_container.grid_remove()
+                self.btn_toggle_manual.configure(text="📁 Need manual monthly file upload? Click to expand ▾")
+
+        self.btn_toggle_manual = ctk.CTkButton(
+            toggle_frame,
+            text="📁 Need manual monthly file upload? Click to expand ▾",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12, weight="bold"),
+            fg_color="transparent",
+            hover_color=ui.COLOR_CARD_HOVER,
+            text_color=ui.COLOR_TEXT_SEC,
+            anchor="w",
+            command=toggle_manual_section
+        )
+        self.btn_toggle_manual.pack(fill="x")
 
         # 1. Daily performance report
         ui.create_multi_upload_row(
-            card, self.tl_perf_files,
+            manual_container, self.tl_perf_files,
             "1. Daily Performance Report (Supports multiple months)",
             placeholder="Select Daily Performance Report Excel/CSV files...",
-            row=1
+            row=0
         )
 
         # 2. Leave application - Active
         ui.create_multi_upload_row(
-            card, self.tl_leave_active_files,
+            manual_container, self.tl_leave_active_files,
             "2. Leave Application - Active (Supports multiple months)",
             placeholder="Select Active Leave Application files...",
-            row=2
+            row=1
         )
 
         # 3. Leave application - Inactive
         ui.create_multi_upload_row(
-            card, self.tl_leave_inactive_files,
+            manual_container, self.tl_leave_inactive_files,
             "3. Leave Application - Inactive (Supports multiple months)",
             placeholder="Select Inactive Leave Application files...",
-            row=3
+            row=2
         )
 
         # 4. WFH applications
         ui.create_multi_upload_row(
-            card, self.tl_wfh_files,
+            manual_container, self.tl_wfh_files,
             "4. WFH Applications (Supports multiple months)",
             placeholder="Select WFH Application files...",
+            row=3
+        )
+
+        # 5. Employee Master (Optional)
+        ui.create_multi_upload_row(
+            manual_container, self.tl_emp_master_files,
+            "5. Employee Master (Optional - for Reporting Manager, Location & LWD enrichment)",
+            placeholder="Select Employee Master Excel/CSV files...",
             row=4
         )
 
         # Determinate Progress bar based on actual data volume
         self.tl_prog = ctk.CTkProgressBar(
-            card, mode="determinate", height=6, corner_radius=3,
+            manual_container, mode="determinate", height=6, corner_radius=3,
             fg_color=ui.COLOR_INPUT_BG, progress_color=ui.COLOR_ACCENT
         )
-        self.tl_prog.grid(row=5, column=0, sticky="ew", padx=16, pady=(8, 4))
+        self.tl_prog.grid(row=5, column=0, sticky="ew", padx=0, pady=(8, 4))
         self.tl_prog.set(0)
         self.tl_prog.grid_remove()
 
         # Real-time progress detail label
         self.tl_prog_lbl = ctk.CTkLabel(
-            card, text="",
+            manual_container, text="",
             font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11),
             text_color=ui.COLOR_TEXT_SEC, anchor="w", justify="left"
         )
-        self.tl_prog_lbl.grid(row=6, column=0, sticky="w", padx=16, pady=(0, 4))
+        self.tl_prog_lbl.grid(row=6, column=0, sticky="w", padx=0, pady=(0, 4))
         self.tl_prog_lbl.grid_remove()
 
         # Action row
-        row7 = ctk.CTkFrame(card, fg_color="transparent")
-        row7.grid(row=7, column=0, sticky="ew", padx=16, pady=(8, 16))
+        row_act = ctk.CTkFrame(manual_container, fg_color="transparent")
+        row_act.grid(row=7, column=0, sticky="ew", padx=0, pady=(8, 0))
 
-        _, self.tl_dot, self.tl_lbl = ui.create_status_badge(row7, "Ready")
+        _, self.tl_dot, self.tl_lbl = ui.create_status_badge(row_act, "Ready")
         self.tl_lbl.master.pack(side="left")
 
-        self.btn_tl = ui.create_primary_button(row7, "Process & Update Report", self.start_process_time_leave, width=170)
+        self.btn_tl = ui.create_primary_button(row_act, "Process & Update Report", self.start_process_time_leave, width=170)
         self.btn_tl.pack(side="right")
 
     # ---------------------------------------------------------
@@ -1619,22 +2591,22 @@ class App(ctk.CTk):
         cards_grid.grid(row=1, column=0, sticky="nsew", pady=(0, 14))
         cards_grid.grid_columnconfigure((0, 1), weight=1)
 
-        # ── Card 1: Keka HRMS Connector (Primary) ──
-        keka_card = ui.create_card(cards_grid)
-        keka_card.grid(row=0, column=0, sticky="nsew", padx=(0, 8), pady=0)
-        keka_card.grid_columnconfigure(0, weight=1)
+        # ── Card 1: Keka HRMS API Integration (REST API) ──
+        keka_api_card = ui.create_card(cards_grid)
+        keka_api_card.grid(row=0, column=0, sticky="nsew", padx=(0, 8), pady=(0, 12))
+        keka_api_card.grid_columnconfigure(0, weight=1)
 
-        keka_hdr = ctk.CTkFrame(keka_card, fg_color="transparent")
+        keka_hdr = ctk.CTkFrame(keka_api_card, fg_color="transparent")
         keka_hdr.pack(fill="x", padx=16, pady=(12, 4))
         ctk.CTkLabel(
-            keka_hdr, text="🏢 Keka HRMS Integration",
+            keka_hdr, text="🏢 Keka HRMS API Integration",
             font=ctk.CTkFont(family=ui.FONT_FAMILY, size=15, weight="bold"),
             text_color=ui.COLOR_TEXT
         ).pack(side="left")
 
-        # Primary Badge
+        # REST API Badge
         keka_badge = ctk.CTkLabel(
-            keka_hdr, text="PRIMARY (1ST)",
+            keka_hdr, text="REST API (OAUTH)",
             font=ctk.CTkFont(family=ui.FONT_FAMILY, size=10, weight="bold"),
             text_color=ui.COLOR_ACCENT, fg_color=ui.COLOR_NAV_ACTIVE,
             corner_radius=4, padx=6, pady=2
@@ -1642,14 +2614,14 @@ class App(ctk.CTk):
         keka_badge.pack(side="right")
 
         ctk.CTkLabel(
-            keka_card,
-            text="Primary photo source. Generates 24-hour OAuth Bearer tokens via login.keka.com and downloads high-res employee profile pictures.",
+            keka_api_card,
+            text="Primary HRMS data connector. Uses OAuth 2.0 Client Credentials or direct Bearer token to pull Employee Master (509 employees) and OD/WFH requests.",
             font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11),
             text_color=ui.COLOR_TEXT_SEC, anchor="w", justify="left", wraplength=480
         ).pack(fill="x", padx=16, pady=(0, 10))
 
         # Fields container
-        keka_fields = ctk.CTkFrame(keka_card, fg_color="transparent")
+        keka_fields = ctk.CTkFrame(keka_api_card, fg_color="transparent")
         keka_fields.pack(fill="x", padx=16, pady=(0, 6))
 
         # Subdomain
@@ -1660,7 +2632,7 @@ class App(ctk.CTk):
         ).pack(fill="x", pady=(2, 2))
         self.entry_keka_subdomain = ctk.CTkEntry(
             keka_fields, textvariable=self.keka_subdomain_var,
-            placeholder_text="e.g. finbox", height=32,
+            placeholder_text="e.g. moshpit", height=32,
             font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12),
             fg_color=ui.COLOR_INPUT_BG, border_color=ui.COLOR_BORDER,
             border_width=1, corner_radius=6, text_color=ui.COLOR_TEXT
@@ -1712,26 +2684,133 @@ class App(ctk.CTk):
         )
         self.entry_keka_key.pack(fill="x", pady=(0, 10))
 
-        # Status & Action Buttons
-        keka_footer = ctk.CTkFrame(keka_card, fg_color="transparent")
-        keka_footer.pack(fill="x", padx=16, pady=(4, 14))
+        # Status & Action Buttons for API
+        keka_api_footer = ctk.CTkFrame(keka_api_card, fg_color="transparent")
+        keka_api_footer.pack(fill="x", padx=16, pady=(4, 14))
 
-        _, self.settings_keka_dot, self.settings_keka_lbl = ui.create_status_badge(keka_footer, "Not connected", pack_side="left")
+        keka_status_row = ctk.CTkFrame(keka_api_footer, fg_color="transparent")
+        keka_status_row.pack(fill="x", pady=(0, 8))
+        _, self.settings_keka_dot, self.settings_keka_lbl = ui.create_status_badge(keka_status_row, "Not connected", pack_side="left")
 
-        self.settings_btn_connect_keka = ui.create_primary_button(
-            keka_footer, "Connect & Test", self.connect_keka_now, width=125, height=32
-        )
-        self.settings_btn_connect_keka.pack(side="right", padx=(8, 0))
+        keka_btn_row = ctk.CTkFrame(keka_api_footer, fg_color="transparent")
+        keka_btn_row.pack(fill="x")
 
         ui.create_secondary_button(
-            keka_footer, "Save Keka API 💾",
-            lambda: self.save_connectors_credentials("keka"),
-            width=125, height=32
-        ).pack(side="right")
+            keka_btn_row, "Save Settings",
+            lambda: self.save_connectors_credentials("keka_api"),
+            width=115, height=32, icon="save"
+        ).pack(side="left", padx=(0, 8))
 
-        # ── Card 2: Slack Workspace Connector (Fallback) ──
+        self.settings_btn_connect_keka = ui.create_primary_button(
+            keka_btn_row, "Connect & Test API", self.connect_keka_now, width=155, height=32, icon="refresh"
+        )
+        self.settings_btn_connect_keka.pack(side="left")
+
+        # ── Card 2: Keka Web Portal Login (Attendance Automation) ──
+        portal_card = ui.create_card(cards_grid)
+        portal_card.grid(row=0, column=1, sticky="nsew", padx=(8, 0), pady=(0, 12))
+        portal_card.grid_columnconfigure(0, weight=1)
+
+        portal_hdr = ctk.CTkFrame(portal_card, fg_color="transparent")
+        portal_hdr.pack(fill="x", padx=16, pady=(12, 4))
+        ctk.CTkLabel(
+            portal_hdr, text="🌐 Keka Web Portal Automation",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=15, weight="bold"),
+            text_color=ui.COLOR_TEXT
+        ).pack(side="left")
+
+        portal_badge = ctk.CTkLabel(
+            portal_hdr, text="ATTENDANCE SYNC",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=10, weight="bold"),
+            text_color="#A78BFA", fg_color="#2E1065",
+            corner_radius=4, padx=6, pady=2
+        )
+        portal_badge.pack(side="right")
+
+        ctk.CTkLabel(
+            portal_card,
+            text="Automated browser login to download the official Attendance Report with daily status codes (A, P, WO, etc.). Automatically handles Keka visual captcha.",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11),
+            text_color=ui.COLOR_TEXT_SEC, anchor="w", justify="left", wraplength=480
+        ).pack(fill="x", padx=16, pady=(0, 10))
+
+        portal_fields = ctk.CTkFrame(portal_card, fg_color="transparent")
+        portal_fields.pack(fill="x", padx=16, pady=(0, 6))
+
+        # Portal Email
+        ctk.CTkLabel(
+            portal_fields, text="Portal Login Email:",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11, weight="bold"),
+            text_color=ui.COLOR_TEXT_SEC, anchor="w"
+        ).pack(fill="x", pady=(2, 2))
+        self.entry_keka_login_email = ctk.CTkEntry(
+            portal_fields, textvariable=self.keka_login_email_var,
+            placeholder_text="e.g. employee@company.com", height=32,
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12),
+            fg_color=ui.COLOR_INPUT_BG, border_color=ui.COLOR_BORDER,
+            border_width=1, corner_radius=6, text_color=ui.COLOR_TEXT
+        )
+        self.entry_keka_login_email.pack(fill="x", pady=(0, 8))
+
+        # Portal Password
+        ctk.CTkLabel(
+            portal_fields, text="Portal Login Password:",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11, weight="bold"),
+            text_color=ui.COLOR_TEXT_SEC, anchor="w"
+        ).pack(fill="x", pady=(2, 2))
+        self.entry_keka_login_password = ctk.CTkEntry(
+            portal_fields, textvariable=self.keka_login_password_var,
+            placeholder_text="Enter Keka web portal password...", show="*", height=32,
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12),
+            fg_color=ui.COLOR_INPUT_BG, border_color=ui.COLOR_BORDER,
+            border_width=1, corner_radius=6, text_color=ui.COLOR_TEXT
+        )
+        self.entry_keka_login_password.pack(fill="x", pady=(0, 10))
+
+        # Portal Info / Notes Box
+        portal_info_box = ctk.CTkFrame(portal_fields, fg_color=ui.COLOR_CARD, corner_radius=6, border_width=1, border_color=ui.COLOR_BORDER)
+        portal_info_box.pack(fill="x", pady=(4, 12))
+        ctk.CTkLabel(
+            portal_info_box,
+            text="🔐 SSO & 2FA Bypass Information:\n"
+                 " • Single Sign-On (SSO): Click 'Authorize in Browser' to log in via Microsoft 365 or Google Workspace in 1 click.\n"
+                 " • 2FA Bypass: Authorize once with 'Remember this browser' checked. Session cookies are permanently saved in your Chrome profile, completely bypassing 2FA on future data pulls!\n"
+                 " • In-App 2FA: During automated sync, the app prompts for the 6-digit OTP sent to your email.\n"
+                 " • Captchas are solved automatically via offline neural OCR in ~50ms.",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11),
+            text_color=ui.COLOR_TEXT_DIM, justify="left", anchor="w"
+        ).pack(fill="x", padx=10, pady=8)
+
+        # Status & Action Buttons for Portal
+        portal_footer = ctk.CTkFrame(portal_card, fg_color="transparent")
+        portal_footer.pack(fill="x", padx=16, pady=(4, 14))
+
+        portal_status_row = ctk.CTkFrame(portal_footer, fg_color="transparent")
+        portal_status_row.pack(fill="x", pady=(0, 8))
+        _, self.settings_portal_dot, self.settings_portal_lbl = ui.create_status_badge(portal_status_row, "Not connected", pack_side="left")
+
+        portal_btn_row = ctk.CTkFrame(portal_footer, fg_color="transparent")
+        portal_btn_row.pack(fill="x")
+
+        ui.create_secondary_button(
+            portal_btn_row, "Save",
+            lambda: self.save_connectors_credentials("keka_portal"),
+            width=80, height=32, icon="save"
+        ).pack(side="left", padx=(0, 6))
+
+        self.settings_btn_auth_portal = ui.create_secondary_button(
+            portal_btn_row, "Authorize Browser", self.authorize_keka_portal_in_browser, width=145, height=32, icon="eye"
+        )
+        self.settings_btn_auth_portal.pack(side="left", padx=(0, 6))
+
+        self.settings_btn_test_portal = ui.create_primary_button(
+            portal_btn_row, "Test Login", self.connect_keka_portal_now, width=115, height=32, icon="refresh"
+        )
+        self.settings_btn_test_portal.pack(side="left")
+
+        # ── Card 3: Slack Workspace Connector (Fallback) ──
         slack_card = ui.create_card(cards_grid)
-        slack_card.grid(row=0, column=1, sticky="nsew", padx=(8, 0), pady=0)
+        slack_card.grid(row=1, column=0, sticky="nsew", padx=(0, 8), pady=0)
         slack_card.grid_columnconfigure(0, weight=1)
 
         slack_hdr = ctk.CTkFrame(slack_card, fg_color="transparent")
@@ -1791,18 +2870,73 @@ class App(ctk.CTk):
         slack_footer = ctk.CTkFrame(slack_card, fg_color="transparent")
         slack_footer.pack(fill="x", padx=16, pady=(4, 14))
 
-        _, self.settings_slack_dot, self.settings_slack_lbl = ui.create_status_badge(slack_footer, "Checking...", pack_side="left")
+        slack_status_row = ctk.CTkFrame(slack_footer, fg_color="transparent")
+        slack_status_row.pack(fill="x", pady=(0, 8))
+        _, self.settings_slack_dot, self.settings_slack_lbl = ui.create_status_badge(slack_status_row, "Checking...", pack_side="left")
 
-        self.settings_btn_connect_slack = ui.create_primary_button(
-            slack_footer, "Connect & Test", self.connect_slack_now, width=125, height=32
-        )
-        self.settings_btn_connect_slack.pack(side="right", padx=(8, 0))
+        slack_btn_row = ctk.CTkFrame(slack_footer, fg_color="transparent")
+        slack_btn_row.pack(fill="x")
 
         ui.create_secondary_button(
-            slack_footer, "Save Slack API 💾",
+            slack_btn_row, "Save API",
             lambda: self.save_connectors_credentials("slack"),
-            width=125, height=32
-        ).pack(side="right")
+            width=100, height=32, icon="save"
+        ).pack(side="left", padx=(0, 8))
+
+        self.settings_btn_connect_slack = ui.create_primary_button(
+            slack_btn_row, "Connect & Test", self.connect_slack_now, width=135, height=32, icon="refresh"
+        )
+        self.settings_btn_connect_slack.pack(side="left")
+
+        # ── Card 4: Architecture & Workflow Guide ──
+        guide_card = ui.create_card(cards_grid)
+        guide_card.grid(row=1, column=1, sticky="nsew", padx=(8, 0), pady=0)
+        guide_card.grid_columnconfigure(0, weight=1)
+
+        guide_hdr = ctk.CTkFrame(guide_card, fg_color="transparent")
+        guide_hdr.pack(fill="x", padx=16, pady=(12, 4))
+        ctk.CTkLabel(
+            guide_hdr, text="📊 Integration Architecture Guide",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=15, weight="bold"),
+            text_color=ui.COLOR_TEXT
+        ).pack(side="left")
+
+        guide_badge = ctk.CTkLabel(
+            guide_hdr, text="DATA FLOW",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=10, weight="bold"),
+            text_color=ui.COLOR_TEXT_SEC, fg_color=ui.COLOR_INPUT_BG,
+            corner_radius=4, padx=6, pady=2
+        )
+        guide_badge.pack(side="right")
+
+        ctk.CTkLabel(
+            guide_card,
+            text="Understanding how Keka API, Portal Automation, and Slack collaborate across the application:",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11),
+            text_color=ui.COLOR_TEXT_SEC, anchor="w", justify="left"
+        ).pack(fill="x", padx=16, pady=(0, 8))
+
+        guide_content = ctk.CTkFrame(guide_card, fg_color=ui.COLOR_CARD, corner_radius=6, border_width=1, border_color=ui.COLOR_BORDER)
+        guide_content.pack(fill="both", expand=True, padx=16, pady=(0, 14))
+
+        guide_text = (
+            "1. 🏢 Keka HRMS API (Instant & Automated):\n"
+            "   • Downloads full Employee Master directory (509 records) → Field #1\n"
+            "   • Downloads On Duty (OD) and Work From Home (WFH) requests → Field #3\n"
+            "   • Primary high-resolution photo source for employee ID cards\n\n"
+            "2. 🌐 Keka Portal Automation (Web Extraction):\n"
+            "   • Automates login to export the evaluated Attendance Report → Field #2\n"
+            "   • Offline AI OCR solves Keka visual captchas in real-time\n"
+            "   • If 2FA OTP is active, manually select Field #2 and click Process\n\n"
+            "3. 💬 Slack Workspace API (Secondary Fallback):\n"
+            "   • Queries Slack email lookup for users without uploaded Keka avatars\n"
+            "   • Automatically discards default avatars to maintain ID card quality"
+        )
+        ctk.CTkLabel(
+            guide_content, text=guide_text,
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11),
+            text_color=ui.COLOR_TEXT, justify="left", anchor="w"
+        ).pack(fill="both", expand=True, padx=12, pady=10)
 
         # ── Card 3: Secure Environment Persistence & Live Diagnostics Console ──
         log_card = ui.create_card(f)
@@ -1844,6 +2978,352 @@ class App(ctk.CTk):
     # ---------------------------------------------------------
     # Workforce Intelligence Dashboard
     # ---------------------------------------------------------
+
+    # ---------------------------------------------------------
+    # Workforce Intelligence Auto-Sync from Time & Leave Master
+    # ---------------------------------------------------------
+    def get_latest_time_leave_output(self) -> Optional[str]:
+        """Find the most recent Time & Leave Master generated Excel output."""
+        if self.last_time_leave_output_path and os.path.exists(self.last_time_leave_output_path):
+            p = Path(self.last_time_leave_output_path)
+            if not p.name.startswith("~$") and p.stat().st_size > 1000:
+                return self.last_time_leave_output_path
+
+        search_dirs = [Path("."), Path("output"), Path("local_data")]
+        try:
+            dl = Path.home() / "Downloads"
+            if dl.exists():
+                search_dirs.append(dl)
+        except Exception:
+            pass
+
+        candidates = []
+        for d in search_dirs:
+            if d.exists() and d.is_dir():
+                try:
+                    for f in d.glob("*.xlsx"):
+                        # Strictly ignore Excel lock/owner files and hidden files
+                        if f.name.startswith("~$") or f.name.startswith("."):
+                            continue
+                        fn_lower = f.name.lower()
+                        if ("daily" in fn_lower and "performance" in fn_lower) or ("time" in fn_lower and "leave" in fn_lower):
+                            try:
+                                st = f.stat()
+                                if st.st_size > 1000:
+                                    # Give higher priority weight to unified master outputs
+                                    weight = 2 if "time_and_leave_master" in fn_lower else 1
+                                    candidates.append((st.st_mtime * weight, st.st_mtime, str(f.resolve())))
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+        if candidates:
+            candidates.sort(key=lambda x: x[1], reverse=True)
+            return candidates[0][2]
+        return None
+
+
+    def open_workforce_sync_dialog(self):
+        """
+        Open a modern modal dialog for syncing Time & Leave data with customizable Date Range.
+        Allows pulling live from Keka API or selecting existing generated reports.
+        """
+        top = ctk.CTkToplevel(self)
+        top.title("Sync Time & Leave Master")
+        top.geometry("520x460")
+        top.resizable(False, False)
+        top.configure(fg_color=ui.COLOR_BG)
+        top.transient(self)
+        top.grab_set()
+
+        # Center dialog
+        top.update_idletasks()
+        try:
+            x = self.winfo_rootx() + (self.winfo_width() - 520) // 2
+            y = self.winfo_rooty() + (self.winfo_height() - 460) // 2
+            top.geometry(f"+{max(50, x)}+{max(50, y)}")
+        except Exception:
+            pass
+
+        # Container Card
+        card = ui.create_card(top)
+        card.pack(fill="both", expand=True, padx=16, pady=16)
+        card.grid_columnconfigure(0, weight=1)
+
+        # Header
+        hdr = ctk.CTkFrame(card, fg_color="transparent")
+        hdr.pack(fill="x", padx=16, pady=(14, 8))
+        
+        ctk.CTkLabel(
+            hdr, text="⚡ Sync Time & Leave Master",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=16, weight="bold"),
+            text_color=ui.COLOR_TEXT
+        ).pack(anchor="w")
+        
+        ctk.CTkLabel(
+            hdr, text="Select the date range to synchronize into Workforce Intelligence.",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12),
+            text_color=ui.COLOR_TEXT_SEC
+        ).pack(anchor="w", pady=(2, 0))
+
+        # Date Range Selection Box
+        dates_box = ctk.CTkFrame(card, fg_color=ui.COLOR_INPUT_BG, corner_radius=8, border_width=1, border_color=ui.COLOR_BORDER)
+        dates_box.pack(fill="x", padx=16, pady=(4, 10))
+
+        # Default dates: 1st of current month to today
+        from datetime import datetime, timedelta
+        now_dt = datetime.now()
+        first_day_of_month = now_dt.replace(day=1)
+        
+        from_var = ctk.StringVar(value=self.tl_from_date_var.get() or first_day_of_month.strftime("%d-%m-%Y"))
+        to_var = ctk.StringVar(value=self.tl_to_date_var.get() or now_dt.strftime("%d-%m-%Y"))
+
+        # Presets row
+        presets_row = ctk.CTkFrame(dates_box, fg_color="transparent")
+        presets_row.pack(fill="x", padx=12, pady=(10, 6))
+
+        ctk.CTkLabel(
+            presets_row, text="Presets:",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11, weight="bold"),
+            text_color=ui.COLOR_TEXT_DIM
+        ).pack(side="left", padx=(0, 6))
+
+        def _set_this_month():
+            from_var.set(now_dt.replace(day=1).strftime("%d-%m-%Y"))
+            to_var.set(now_dt.strftime("%d-%m-%Y"))
+
+        def _set_last_month():
+            first_this_month = now_dt.replace(day=1)
+            last_day_prev = first_this_month - timedelta(days=1)
+            first_day_prev = last_day_prev.replace(day=1)
+            from_var.set(first_day_prev.strftime("%d-%m-%Y"))
+            to_var.set(last_day_prev.strftime("%d-%m-%Y"))
+
+        def _set_last_30_days():
+            from_var.set((now_dt - timedelta(days=30)).strftime("%d-%m-%Y"))
+            to_var.set(now_dt.strftime("%d-%m-%Y"))
+
+        def _set_last_14_days():
+            from_var.set((now_dt - timedelta(days=14)).strftime("%d-%m-%Y"))
+            to_var.set(now_dt.strftime("%d-%m-%Y"))
+
+        for label, fn in [("This Month", _set_this_month), ("Last Month", _set_last_month), ("Last 30 Days", _set_last_30_days), ("Last 14 Days", _set_last_14_days)]:
+            ui.create_secondary_button(presets_row, label, fn, width=80, height=24).pack(side="left", padx=2)
+
+        # Date Pickers Row
+        pickers_row = ctk.CTkFrame(dates_box, fg_color="transparent")
+        pickers_row.pack(fill="x", padx=12, pady=(4, 12))
+
+        ctk.CTkLabel(
+            pickers_row, text="From:",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12, weight="bold"),
+            text_color=ui.COLOR_TEXT_DIM
+        ).pack(side="left", padx=(0, 4))
+
+        from_entry = ctk.CTkEntry(
+            pickers_row, textvariable=from_var, width=105, height=30,
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12),
+            fg_color=ui.COLOR_CARD, border_color=ui.COLOR_BORDER,
+            border_width=1, corner_radius=6, text_color=ui.COLOR_TEXT
+        )
+        from_entry.pack(side="left", padx=(0, 3))
+
+        ui.create_secondary_button(
+            pickers_row, "",
+            lambda: self._open_calendar_dialog(from_var, "Select From Date"),
+            width=32, height=30, icon="calendar"
+        ).pack(side="left", padx=(0, 14))
+
+        ctk.CTkLabel(
+            pickers_row, text="To:",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12, weight="bold"),
+            text_color=ui.COLOR_TEXT_DIM
+        ).pack(side="left", padx=(0, 4))
+
+        to_entry = ctk.CTkEntry(
+            pickers_row, textvariable=to_var, width=105, height=30,
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12),
+            fg_color=ui.COLOR_CARD, border_color=ui.COLOR_BORDER,
+            border_width=1, corner_radius=6, text_color=ui.COLOR_TEXT
+        )
+        to_entry.pack(side="left", padx=(0, 3))
+
+        ui.create_secondary_button(
+            pickers_row, "",
+            lambda: self._open_calendar_dialog(to_var, "Select To Date"),
+            width=32, height=30, icon="calendar"
+        ).pack(side="left")
+
+        # Live Progress & Status Container inside dialog
+        status_box = ctk.CTkFrame(card, fg_color=ui.COLOR_INPUT_BG, corner_radius=8)
+        status_box.pack(fill="x", padx=16, pady=(0, 10))
+
+        dlg_status_lbl = ctk.CTkLabel(
+            status_box, text="⚡ Ready to synchronize workforce data.",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11, weight="bold"),
+            text_color=ui.COLOR_TEXT_SEC, anchor="w"
+        )
+        dlg_status_lbl.pack(fill="x", padx=12, pady=(8, 4))
+
+        dlg_prog = ctk.CTkProgressBar(
+            status_box, height=6, corner_radius=3,
+            progress_color=ui.COLOR_ACCENT, fg_color=ui.COLOR_CARD
+        )
+        dlg_prog.set(0.0)
+        dlg_prog.pack(fill="x", padx=12, pady=(0, 8))
+        dlg_prog.pack_forget()
+
+        # Action Buttons Row
+        actions_frame = ctk.CTkFrame(card, fg_color="transparent")
+        actions_frame.pack(fill="x", padx=16, pady=(4, 12))
+
+        def _do_sync_keka():
+            from_str = from_var.get().strip()
+            to_str = to_var.get().strip()
+            self.tl_from_date_var.set(from_str)
+            self.tl_to_date_var.set(to_str)
+
+            btn_keka.configure(state="disabled")
+            btn_local.configure(state="disabled")
+            dlg_prog.pack(fill="x", padx=12, pady=(0, 8))
+            dlg_prog.start()
+            dlg_status_lbl.configure(text="Connecting to Keka API & fetching unified report...", text_color=ui.COLOR_ACCENT)
+
+            def _progress(pct, step, detail=""):
+                top.after(0, lambda: dlg_status_lbl.configure(text=f"{step} ({int(pct*100)}%)"))
+
+            def _worker():
+                try:
+                    # Convert to ISO
+                    def _to_iso(ds):
+                        for fmt in ("%d-%m-%Y", "%Y-%m-%d", "%d/%m/%Y"):
+                            try:
+                                return datetime.strptime(ds, fmt).strftime("%Y-%m-%d")
+                            except ValueError:
+                                pass
+                        return ds
+
+                    from_iso = _to_iso(from_str)
+                    to_iso = _to_iso(to_str)
+
+                    subdomain = id_card.clean_keka_subdomain(self.keka_subdomain_var.get() or os.getenv("KEKA_SUBDOMAIN", "moshpit"))
+                    client_id = (self.keka_client_id_var.get() or os.getenv("KEKA_CLIENT_ID", "")).strip()
+                    client_secret = (self.keka_client_secret_var.get() or os.getenv("KEKA_CLIENT_SECRET", "")).strip()
+                    api_key = (self.keka_api_key_var.get() or os.getenv("KEKA_API_KEY", "")).strip()
+                    keka_email = (self.keka_login_email_var.get() or os.getenv("KEKA_LOGIN_EMAIL", "")).strip()
+                    keka_password = (self.keka_login_password_var.get() or os.getenv("KEKA_LOGIN_PASSWORD", "")).strip()
+
+                    out_dir = Path.home() / "Downloads"
+                    out_dir.mkdir(parents=True, exist_ok=True)
+                    out_path = out_dir / f"Time_and_Leave_Master_Unified_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+
+                    from keka_data_fetcher import KekaDataFetcher
+                    fetcher = KekaDataFetcher(
+                        subdomain=subdomain,
+                        api_key=api_key,
+                        client_id=client_id,
+                        client_secret=client_secret,
+                        keka_email=keka_email,
+                        keka_password=keka_password,
+                    )
+                    res = fetcher.fetch_unified_time_leave_reports(
+                        from_date=from_iso,
+                        to_date=to_iso,
+                        output_file_path=str(out_path),
+                        progress_callback=_progress
+                    )
+                    
+                    def _on_success():
+                        top.destroy()
+                        self.sync_workforce_from_time_leave(str(out_path), show_feedback=True)
+
+                    top.after(0, _on_success)
+                except Exception as e:
+                    err_m = str(e)
+                    def _on_err():
+                        btn_keka.configure(state="normal")
+                        btn_local.configure(state="normal")
+                        dlg_prog.stop()
+                        dlg_prog.pack_forget()
+                        messagebox.showerror("Keka Sync Error", f"Failed to pull live data from Keka:\n\n{err_m}")
+                    top.after(0, _on_err)
+
+            threading.Thread(target=_worker, daemon=True).start()
+
+        def _do_sync_local():
+            top.destroy()
+            self.sync_workforce_from_time_leave(show_feedback=True)
+
+        btn_keka = ui.create_primary_button(
+            actions_frame, "⚡ Pull Live from Keka & Sync", _do_sync_keka,
+            width=230, height=34, icon="refresh"
+        )
+        btn_keka.pack(side="left", padx=(0, 8))
+
+        btn_local = ui.create_secondary_button(
+            actions_frame, "📂 Sync Latest File", _do_sync_local,
+            width=150, height=34, icon="sync"
+        )
+        btn_local.pack(side="left", padx=(0, 8))
+
+        ui.create_secondary_button(
+            actions_frame, "Cancel", top.destroy,
+            width=75, height=34
+        ).pack(side="right")
+
+    def sync_workforce_from_time_leave(self, file_path: Optional[str] = None, show_feedback: bool = True):
+        """
+        Automatically sync Workforce Intelligence directly with the Time & Leave Master output.
+        Eliminates manual file browsing and ingestion overhead.
+        """
+        target_path = file_path or self.get_latest_time_leave_output()
+        if not target_path or not os.path.exists(target_path):
+            if show_feedback:
+                messagebox.showinfo(
+                    "No Time & Leave Master File Found",
+                    "No recent Time & Leave Master output file was found.\n\n"
+                    "Please run 'Time and Leave Master' in the Transform menu first, or upload a dataset manually in the Upload section."
+                )
+            return False
+
+        self.last_time_leave_output_path = str(target_path)
+        self.ts_file_path.set(str(target_path))
+
+        self.is_ts_loading = True
+        if hasattr(self, "btn_ts_load"):
+            self.btn_ts_load.configure(state="disabled")
+        if hasattr(self, "ts_prog"):
+            self.ts_prog.grid()
+            self.ts_prog.start()
+        if hasattr(self, "ts_dot") and hasattr(self, "ts_lbl"):
+            ui.update_status(self.ts_dot, self.ts_lbl, f"Syncing from Time & Leave Master ({Path(target_path).name})...", "processing")
+
+        self._latest_ts_job_id += 1
+        job_id = self._latest_ts_job_id
+
+        def _worker():
+            try:
+                snapshot = snapshot_service.prepare_dataset(target_path)
+                def _on_success():
+                    self._ts_load_success(snapshot, target_path, job_id)
+                    if show_feedback:
+                        messagebox.showinfo(
+                            "Workforce Intelligence Synced",
+                            f"Successfully synced with Time & Leave Master output!\n\n"
+                            f"• File: {Path(target_path).name}\n"
+                            f"• Records: {snapshot.row_count:,}\n"
+                            f"• Employees: {snapshot.metadata.get('employee_count', 0):,}\n"
+                            f"• Date Range: {snapshot.metadata.get('min_date', 'N/A')} to {snapshot.metadata.get('max_date', 'N/A')}\n\n"
+                            f"All KPI metrics, attendance composition, and breakdowns are now live."
+                        )
+                self.after(0, _on_success)
+            except Exception as e:
+                err_msg = str(e)
+                self.after(0, lambda m=err_msg: self._ts_load_error(m, job_id))
+
+        threading.Thread(target=_worker, daemon=True).start()
+        return True
+
     def _build_workforce_intelligence_frame(self):
         from workforce_intelligence.dashboard_shell import WorkforceDashboardView
         self.workforce_dashboard_view = WorkforceDashboardView(self.main_content, app=self)
@@ -2090,7 +3570,7 @@ class App(ctk.CTk):
     # Analyse Upload
     # ---------------------------------------------------------
     def _build_analyse_upload_frame(self):
-        f = ctk.CTkFrame(self.main_content, fg_color="transparent")
+        f = ctk.CTkScrollableFrame(self.main_content, fg_color="transparent")
         self.frames["analyse_upload"] = f
         f.grid_columnconfigure(0, weight=1)
         f.grid_rowconfigure(2, weight=1)
@@ -2106,9 +3586,37 @@ class App(ctk.CTk):
         ui.create_secondary_button(actions, "← Workforce Intelligence", lambda: self.select_frame_by_name("workforce_intelligence"), 180).pack(side="left", padx=(0, 10))
         ui.create_secondary_button(actions, "← Time Series Analysis", lambda: self.select_frame_by_name("analyse_time_series"), 180).pack(side="left")
 
+        # Fast Sync with Time & Leave Master Card
+        sync_card = ui.create_card(f)
+        sync_card.grid(row=1, column=0, sticky="nsew", pady=(0, 12))
+        sync_card.grid_columnconfigure(0, weight=1)
+
+        sync_inner = ctk.CTkFrame(sync_card, fg_color="transparent")
+        sync_inner.grid(row=0, column=0, sticky="ew", padx=16, pady=12)
+        sync_inner.grid_columnconfigure(0, weight=1)
+
+        s_left = ctk.CTkFrame(sync_inner, fg_color="transparent")
+        s_left.grid(row=0, column=0, sticky="w")
+        ctk.CTkLabel(
+            s_left, text="⚡ Auto-Sync from Time & Leave Master",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=15, weight="bold"),
+            text_color=ui.COLOR_TEXT
+        ).pack(anchor="w")
+        ctk.CTkLabel(
+            s_left, text="Directly synchronize with the latest Daily Performance output file without manual re-upload.",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12),
+            text_color=ui.COLOR_TEXT_SEC
+        ).pack(anchor="w", pady=(2, 0))
+
+        ui.create_primary_button(
+            sync_inner, "⚡ Sync Latest Output",
+            lambda: self.sync_workforce_from_time_leave(show_feedback=True),
+            width=180, height=32, icon="refresh"
+        ).grid(row=0, column=1, sticky="e", padx=(10, 0))
+
         # Upload Card
         card = ui.create_card(f)
-        card.grid(row=1, column=0, sticky="nsew", pady=(0, 12))
+        card.grid(row=2, column=0, sticky="nsew", pady=(0, 12))
 
         ctk.CTkLabel(
             card, text="1. Select Attendance / Performance Dataset",
@@ -2150,7 +3658,7 @@ class App(ctk.CTk):
 
         # Dataset Ingestion Summary Card
         res_card = ui.create_card(f)
-        res_card.grid(row=2, column=0, sticky="nsew")
+        res_card.grid(row=3, column=0, sticky="nsew")
         res_card.grid_columnconfigure(0, weight=1)
         res_card.grid_rowconfigure(1, weight=1)
 
@@ -2641,10 +4149,21 @@ class App(ctk.CTk):
                 except Exception:
                     pass
 
+    def _update_portal_badge(self, msg: str, status_type: str):
+        """Updates Keka Portal status badge in Settings."""
+        for dot, lbl in [
+            (getattr(self, "settings_portal_dot", None), getattr(self, "settings_portal_lbl", None)),
+        ]:
+            if dot and lbl:
+                try:
+                    ui.update_status(dot, lbl, msg, status_type)
+                except Exception:
+                    pass
+
     def save_connectors_credentials(self, which="all"):
         """
         Saves current entered credentials to .env file permanently.
-        Allows users to store API keys and tokens so they never have to enter them each time.
+        Supports saving all credentials or granularly per integration (keka_api, keka_portal, slack).
         """
         saved_items = []
         if which in ("all", "slack"):
@@ -2660,8 +4179,10 @@ class App(ctk.CTk):
                     id_card.save_env_variable("SLACK_BOT_TOKEN", slack_val)
                     saved_items.append("SLACK_BOT_TOKEN")
 
-        if which in ("all", "keka"):
-            sub = self.keka_subdomain_var.get().strip()
+        if which in ("all", "keka", "keka_api"):
+            sub = id_card.clean_keka_subdomain(self.keka_subdomain_var.get())
+            if hasattr(self.keka_subdomain_var, "set"):
+                self.keka_subdomain_var.set(sub)
             cid = self.keka_client_id_var.get().strip()
             csec = self.keka_client_secret_var.get().strip()
             key = self.keka_api_key_var.get().strip()
@@ -2679,11 +4200,30 @@ class App(ctk.CTk):
                 id_card.save_env_variable("KEKA_API_KEY", key)
                 saved_items.append("KEKA_API_KEY")
 
+        if which in ("all", "keka", "keka_portal"):
+            login_email = self.keka_login_email_var.get().strip()
+            login_pwd = self.keka_login_password_var.get().strip()
+            if login_email:
+                id_card.save_env_variable("KEKA_LOGIN_EMAIL", login_email)
+                saved_items.append("KEKA_LOGIN_EMAIL")
+            if login_pwd:
+                id_card.save_env_variable("KEKA_LOGIN_PASSWORD", login_pwd)
+                saved_items.append("KEKA_LOGIN_PASSWORD")
+
         item_str = ", ".join(saved_items) if saved_items else "No credentials specified"
-        log_msg = f"[SETTINGS] ✓ Saved to .env: {item_str}\n"
+        log_msg = f"[SETTINGS] ✓ Saved to .env ({which}): {item_str}\n"
         self._append_connector_log(log_msg)
+
+        title = "Credentials Saved"
+        if which == "keka_api":
+            title = "Keka API Credentials Saved"
+        elif which == "keka_portal":
+            title = "Keka Portal Credentials Saved"
+        elif which == "slack":
+            title = "Slack Credentials Saved"
+
         messagebox.showinfo(
-            "API Credentials Saved",
+            title,
             f"Saved the following keys to your project .env file:\n\n{item_str}\n\n"
             "These credentials will be loaded automatically on every app startup, so you don't need to re-enter them."
         )
@@ -2730,7 +4270,9 @@ class App(ctk.CTk):
         client_id = self.keka_client_id_var.get().strip()
         client_secret = self.keka_client_secret_var.get().strip()
         api_key = self.keka_api_key_var.get().strip()
-        subdomain = self.keka_subdomain_var.get().strip()
+        subdomain = id_card.clean_keka_subdomain(self.keka_subdomain_var.get())
+        if hasattr(self.keka_subdomain_var, "set"):
+            self.keka_subdomain_var.set(subdomain)
         for btn in [getattr(self, "btn_connect_keka", None), getattr(self, "settings_btn_connect_keka", None)]:
             if btn:
                 try:
@@ -2749,7 +4291,7 @@ class App(ctk.CTk):
                     for btn in [getattr(self, "btn_connect_keka", None), getattr(self, "settings_btn_connect_keka", None)]:
                         if btn:
                             try:
-                                btn.configure(text="Connect & Test", state="normal")
+                                btn.configure(text="Connect & Test API", state="normal")
                             except Exception:
                                 pass
                     if is_conn:
@@ -2767,6 +4309,158 @@ class App(ctk.CTk):
 
         threading.Thread(target=_worker, daemon=True).start()
 
+    def connect_keka_portal_now(self):
+        """Validates Keka Web Portal login credentials and captcha solving in background."""
+        email = self.keka_login_email_var.get().strip()
+        pwd = self.keka_login_password_var.get().strip()
+        sub = id_card.clean_keka_subdomain(self.keka_subdomain_var.get().strip() or os.getenv("KEKA_SUBDOMAIN", "moshpit"))
+        if hasattr(self.keka_subdomain_var, "set"):
+            self.keka_subdomain_var.set(sub)
+
+        if not email or not pwd:
+            messagebox.showwarning(
+                "Portal Credentials Missing",
+                "Please enter your Keka Portal Login Email and Password before testing."
+            )
+            return
+
+        for btn in [getattr(self, "settings_btn_test_portal", None)]:
+            if btn:
+                try:
+                    btn.configure(text="Testing...", state="disabled")
+                except Exception:
+                    pass
+        self._update_portal_badge("Testing portal...", "processing")
+        self._append_connector_log(f"\n[PORTAL] Testing Keka Web Portal login for {email} ({sub}.keka.com)...\n")
+
+        def _worker():
+            is_ok, msg, details = id_card.check_keka_portal_status(
+                email=email, password=pwd, subdomain=sub, headless=True
+            )
+
+            def _finish():
+                try:
+                    for btn in [getattr(self, "settings_btn_test_portal", None)]:
+                        if btn:
+                            try:
+                                btn.configure(text="Test Portal Login", state="normal")
+                            except Exception:
+                                pass
+
+                    status = details.get("status", "")
+                    if is_ok and status == "2fa_required":
+                        self._update_portal_badge("2FA Active (Needs Auth)", "warning")
+                        self._append_connector_log(f"[PORTAL] ⚠️ {msg}\n")
+                        launch_now = messagebox.askyesno(
+                            "Keka 2FA Active: Authorize Now?",
+                            f"✅ Credentials and Captcha verified successfully!\n\n"
+                            f"ℹ️ Keka 2FA (Two-Factor Authentication) is active on this account.\n\n"
+                            f"Would you like to open the browser now to complete 2FA or Single Sign-On (SSO) and save your session?\n\n"
+                            f"• Click 'Yes' to launch Chrome, log in, and check 'Remember this browser'.\n"
+                            f"• Once completed, 2FA will be completely bypassed for future automated syncs!"
+                        )
+                        if launch_now:
+                            self.authorize_keka_portal_in_browser()
+                    elif is_ok:
+                        self._update_portal_badge("Session Active (Remembered)", "success")
+                        self._append_connector_log(f"[PORTAL] ✓ Keka portal login success: {msg}\n")
+                        messagebox.showinfo(
+                            "Keka Portal Connected",
+                            f"✅ Keka web portal login succeeded!\n\n{msg}"
+                        )
+                    else:
+                        self._update_portal_badge("Login Failed", "error")
+                        self._append_connector_log(f"[PORTAL] ✕ Keka portal login failed: {msg}\n")
+                        messagebox.showerror(
+                            "Keka Portal Login Failed",
+                            f"Failed to log into Keka web portal:\n\n{msg}\n\n"
+                            "Please check your email, password, and organization subdomain."
+                        )
+                except Exception:
+                    pass
+
+            try:
+                self.after(0, _finish)
+            except Exception:
+                pass
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def authorize_keka_portal_in_browser(self):
+        """Launches an interactive Chrome window to authenticate via SSO or 2FA and persist the session."""
+        email = self.keka_login_email_var.get().strip()
+        pwd = self.keka_login_password_var.get().strip()
+        sub = id_card.clean_keka_subdomain(self.keka_subdomain_var.get().strip() or os.getenv("KEKA_SUBDOMAIN", "moshpit"))
+        if hasattr(self.keka_subdomain_var, "set"):
+            self.keka_subdomain_var.set(sub)
+
+        for btn in [getattr(self, "settings_btn_auth_portal", None), getattr(self, "settings_btn_test_portal", None)]:
+            if btn:
+                try:
+                    btn.configure(state="disabled")
+                except Exception:
+                    pass
+
+        self._update_portal_badge("Waiting for browser...", "processing")
+        self._append_connector_log(
+            f"\n[PORTAL] Opening interactive Chrome window for SSO / 2FA authorization ({sub}.keka.com)...\n"
+            f"[PORTAL] 1. Single Sign-On: Click 'Office 365' or 'Google' in the browser to sign in.\n"
+            f"[PORTAL] 2. Two-Factor Auth: Enter password + OTP, and ensure 'Remember this browser' is checked.\n"
+            f"[PORTAL] The application will automatically detect your active session and save cookies permanently.\n"
+        )
+
+        def _worker():
+            def _on_update(msg):
+                try:
+                    self.after(0, lambda: self._append_connector_log(f"[PORTAL] {msg}\n"))
+                except Exception:
+                    pass
+
+            is_ok, msg, details = id_card.authorize_keka_portal_in_browser(
+                subdomain=sub,
+                email=email,
+                password=pwd,
+                timeout=180,
+                on_status_update=_on_update
+            )
+
+            def _finish():
+                try:
+                    for btn in [getattr(self, "settings_btn_auth_portal", None), getattr(self, "settings_btn_test_portal", None)]:
+                        if btn:
+                            try:
+                                btn.configure(state="normal")
+                            except Exception:
+                                pass
+
+                    if is_ok:
+                        self._update_portal_badge("Session Active (Remembered)", "success")
+                        self._append_connector_log(f"[PORTAL] ✓ {msg}\n")
+                        messagebox.showinfo(
+                            "Keka Session Saved",
+                            f"✅ Keka Session Successfully Authorized!\n\n"
+                            f"Your authenticated session cookies have been saved to your local Chrome profile.\n\n"
+                            f"Two-Factor Authentication (2FA) and Single Sign-On (SSO) are now remembered. "
+                            f"All future Absent Management syncs will run automatically in the background without prompting for 2FA!"
+                        )
+                    else:
+                        self._update_portal_badge("Auth Incomplete", "warning")
+                        self._append_connector_log(f"[PORTAL] ⚠️ {msg}\n")
+                        messagebox.showwarning(
+                            "Browser Authorization Incomplete",
+                            f"Browser session was not completed:\n\n{msg}\n\n"
+                            "You can click 'Authorize in Browser 🌐' anytime to try again."
+                        )
+                except Exception:
+                    pass
+
+            try:
+                self.after(0, _finish)
+            except Exception:
+                pass
+
+        threading.Thread(target=_worker, daemon=True).start()
+
     def refresh_slack_status(self):
         """Checks Slack connection in background."""
         self.connect_slack_now()
@@ -2775,10 +4469,16 @@ class App(ctk.CTk):
         """Checks Keka connection in background."""
         self.connect_keka_now()
 
+    def refresh_keka_portal_status(self):
+        """Checks Keka Portal connection in background."""
+        self.connect_keka_portal_now()
+
     def _refresh_all_connectors(self):
-        """Refreshes both Slack and Keka connections."""
+        """Refreshes Slack, Keka API, and Keka Portal connections."""
         self.connect_slack_now()
         self.connect_keka_now()
+        self.connect_keka_portal_now()
+
 
     def toggle_office_addresses_card(self):
         """Toggles visibility of the Office Address Configuration card."""
@@ -3253,10 +4953,215 @@ class App(ctk.CTk):
         ui.update_status(self.gen_dot, self.gen_lbl, "Success", "success")
         messagebox.showinfo("Done", f"Generated successfully:\n{out_path}")
 
-    def _generate_error(self, err):
-        self._reset_gen_ui_state()
-        ui.update_status(self.gen_dot, self.gen_lbl, "Failed", "error")
-        messagebox.showerror("Error", err)
+    def pull_keka_absent_data(self):
+        """Pulls Employee Master and OD/WFH reports from Keka API in background thread."""
+        from_str = self.absent_from_date_var.get().strip()
+        to_str = self.absent_to_date_var.get().strip()
+
+        # Convert DD-MM-YYYY to YYYY-MM-DD for Keka API
+        def parse_to_iso(dt_str):
+            try:
+                for fmt in ("%d-%m-%Y", "%Y-%m-%d", "%d/%m/%Y"):
+                    try:
+                        return datetime.strptime(dt_str, fmt).strftime("%Y-%m-%d")
+                    except ValueError:
+                        continue
+            except Exception:
+                pass
+            return dt_str
+
+        from_iso = parse_to_iso(from_str)
+        to_iso = parse_to_iso(to_str)
+
+        subdomain = id_card.clean_keka_subdomain(self.keka_subdomain_var.get() or os.getenv("KEKA_SUBDOMAIN", "moshpit"))
+        client_id = (self.keka_client_id_var.get() or os.getenv("KEKA_CLIENT_ID", "")).strip()
+        client_secret = (self.keka_client_secret_var.get() or os.getenv("KEKA_CLIENT_SECRET", "")).strip()
+        api_key = (self.keka_api_key_var.get() or os.getenv("KEKA_API_KEY", "")).strip()
+        keka_email = (self.keka_login_email_var.get() or os.getenv("KEKA_LOGIN_EMAIL", "")).strip()
+        keka_password = (self.keka_login_password_var.get() or os.getenv("KEKA_LOGIN_PASSWORD", "")).strip()
+
+        if not api_key and not (client_id and client_secret):
+            messagebox.showerror(
+                "Keka Credentials Missing",
+                "Keka API credentials are not configured.\n\n"
+                "Please configure Client ID, Client Secret & API Key in the\n"
+                "'Connectors & Settings' tab or in your .env file."
+            )
+            return
+
+        include_attendance = self.absent_include_portal_var.get()
+
+        self.btn_pull_keka.configure(state="disabled")
+        ui.update_status(self.absent_keka_dot, self.absent_keka_lbl, "Connecting to Keka API...", "processing")
+
+        def update_progress(pct, step, detail=""):
+            def _ui():
+                try:
+                    if hasattr(self, "absent_progress_bar"):
+                        self.absent_progress_bar.set(max(0.0, min(1.0, pct)))
+                    if hasattr(self, "absent_progress_pct_lbl"):
+                        self.absent_progress_pct_lbl.configure(text=f"{int(pct * 100)}%")
+                    if hasattr(self, "absent_progress_step_lbl"):
+                        self.absent_progress_step_lbl.configure(text=step)
+                    if hasattr(self, "absent_progress_detail_lbl") and detail:
+                        self.absent_progress_detail_lbl.configure(text=detail)
+                except Exception:
+                    pass
+            self.after(0, _ui)
+
+        def _worker():
+            try:
+                update_progress(0.05, "Connecting to Keka API...", "Validating OAuth Bearer credentials...")
+                import concurrent.futures
+                from keka_data_fetcher import KekaDataFetcher
+
+                fetcher = KekaDataFetcher(
+                    subdomain=subdomain,
+                    api_key=api_key,
+                    client_id=client_id,
+                    client_secret=client_secret,
+                    keka_email=keka_email,
+                    keka_password=keka_password,
+                )
+
+                exports_dir = Path.cwd() / "local_data" / "keka_exports"
+                exports_dir.mkdir(parents=True, exist_ok=True)
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+                update_progress(0.15, "Fast Multi-Threaded Syncing...", "Pulling Employee Master and OD/WFH in parallel...")
+
+                # ── Fast Parallel Fetching for Employee Master & OD/WFH ──
+                with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                    future_emp = executor.submit(
+                        fetcher.fetch_employee_master,
+                        active_only=True,
+                        progress_callback=lambda p, t, msg: update_progress(0.15 + (p / max(1, t)) * 0.25, "[1/3] Employee Master", msg)
+                    )
+                    future_wfh = executor.submit(
+                        fetcher.fetch_od_wfh_requests,
+                        from_date=from_iso,
+                        to_date=to_iso,
+                        progress_callback=lambda msg: update_progress(0.45, "[2/3] OD/WFH Requests", msg)
+                    )
+
+                    emp_df, emp_err = future_emp.result()
+                    wfh_df, wfh_err = future_wfh.result()
+
+                if emp_err and emp_df.empty:
+                    raise RuntimeError(f"Employee Master pull failed: {emp_err}")
+
+                emp_path = exports_dir / f"Employee_Master_{timestamp}.xlsx"
+                fetcher._save_styled_excel(emp_df, emp_path)
+                update_progress(0.48, "[1/3] Employee Master Ready", f"Saved {len(emp_df)} employees to {emp_path.name}")
+
+                # 2. Process OD/WFH Results
+                wfh_path = None
+                wfh_scope_missing = False
+                if wfh_err and wfh_df.empty:
+                    if "403" in wfh_err or "privilege" in wfh_err.lower() or "scope" in wfh_err.lower():
+                        wfh_scope_missing = True
+                        wfh_path = exports_dir / f"OD_WFH_Requests_Template_{timestamp}.xlsx"
+                        fetcher._save_styled_excel(wfh_df, wfh_path)
+                    else:
+                        raise RuntimeError(f"OD/WFH pull failed: {wfh_err}")
+                else:
+                    wfh_path = exports_dir / f"OD_WFH_Requests_{timestamp}.xlsx"
+                    fetcher._save_styled_excel(wfh_df, wfh_path)
+                update_progress(0.60, "[2/3] OD/WFH Requests Ready", f"Saved {len(wfh_df)} records to {wfh_path.name}")
+
+                # 3. Attendance Sync (Daily Performance Report via API)
+                att_path = None
+                att_msg = ""
+                if include_attendance:
+                    update_progress(0.65, "[3/3] Attendance API Sync", "Pulling attendance & leave records via Keka API...")
+                    try:
+                        def _portal_prog(pct, msg):
+                            update_progress(pct, "[3/3] Daily Performance Report", msg)
+
+                        att_df, att_err = fetcher.fetch_attendance_report(
+                            from_date=from_iso,
+                            to_date=to_iso,
+                            emp_df=emp_df,
+                            wfh_df=wfh_df,
+                            use_api=True,
+                            progress_callback=_portal_prog
+                        )
+                        if att_df is not None and not att_df.empty:
+                            att_path = exports_dir / f"Daily_Performance_Report_{timestamp}.xlsx"
+                            fetcher._save_styled_excel(att_df, att_path)
+                            att_msg = f"\n• Daily Performance Report: {len(att_df)} records (auto-generated via Keka API ⚡)"
+                            update_progress(0.98, "[3/3] Daily Performance Report Ready", f"Saved {len(att_df)} attendance records")
+                        elif att_err:
+                            att_msg = f"\n⚠️ Attendance Sync note: {att_err}"
+                            update_progress(0.95, "[3/3] Attendance Sync Skipped", att_err[:80])
+                    except Exception as pe:
+                        att_msg = f"\n⚠️ Attendance Sync failed: {pe}"
+                        update_progress(0.95, "[3/3] Attendance Sync Error", str(pe)[:80])
+
+                update_progress(1.0, "Pull Completed Successfully! ⚡", f"Auto-filled source fields in Absent Management")
+
+                # Update UI on main thread
+                def _success():
+                    self.absent_emp_file.set(str(emp_path))
+                    if wfh_path:
+                        self.absent_wfh_file.set(str(wfh_path))
+                    if att_path:
+                        self.absent_att_file.set(str(att_path))
+
+                    self.btn_pull_keka.configure(state="normal")
+
+                    if wfh_scope_missing:
+                        ui.update_status(
+                            self.absent_keka_dot,
+                            self.absent_keka_lbl,
+                            f"✓ Pulled {len(emp_df)} employees | OD/WFH scope missing (HTTP 403)",
+                            "warning"
+                        )
+                        messagebox.showwarning(
+                            "Keka Pull Partial Success",
+                            f"✅ Employee Master pulled successfully ({len(emp_df)} employees)!\n"
+                            f"Saved to: {emp_path.name} → Loaded into Field #1.\n\n"
+                            f"⚠️ OD/WFH Scope Not Enabled (HTTP 403):\n"
+                            f"Your Keka API key is active, but lacks permission for Remote Work (WFH) and On Duty (OD).\n\n"
+                            f"To enable automatic OD/WFH pull:\n"
+                            f"1. In Keka Admin Portal, go to Settings > API & Webhooks > API Keys\n"
+                            f"2. Edit your API key and check 'Remote Work' and 'On Duty' permissions.\n\n"
+                            f"For now, an empty OD/WFH template was created in Field #3, or you can manually browse your OD/WFH report in Field #3!"
+                        )
+                    else:
+                        status_text = f"✓ Pulled {len(emp_df)} employees & {len(wfh_df)} OD/WFH records"
+                        if att_path:
+                            status_text += " + Attendance"
+                        ui.update_status(self.absent_keka_dot, self.absent_keka_lbl, status_text, "success")
+
+                        next_step = (
+                            "Both files have been auto-filled into fields #1 and #3!\n"
+                            "Now select the Attendance Report (Field #2) and click 'Process Data'."
+                            if not att_path
+                            else "All 3 files have been auto-filled! You can click 'Process Data' directly."
+                        )
+                        messagebox.showinfo(
+                            "Keka Pull Successful",
+                            f"Successfully pulled reports from Keka:\n\n"
+                            f"• Employee Master: {len(emp_df)} employees\n"
+                            f"  Saved to: {emp_path.name}\n\n"
+                            f"• OD/WFH Requests: {len(wfh_df)} records ({from_str} to {to_str})\n"
+                            f"  Saved to: {wfh_path.name}"
+                            f"{att_msg}\n\n"
+                            f"{next_step}"
+                        )
+
+                self.after(0, _success)
+
+            except Exception as e:
+                def _fail(err_msg):
+                    self.btn_pull_keka.configure(state="normal")
+                    ui.update_status(self.absent_keka_dot, self.absent_keka_lbl, "Pull failed", "error")
+                    messagebox.showerror("Keka Pull Failed", str(err_msg))
+
+                self.after(0, lambda: _fail(str(e)))
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     def start_process_absent(self):
         if not (self.absent_emp_file.get() and self.absent_att_file.get() and self.absent_wfh_file.get()):
@@ -3293,6 +5198,119 @@ class App(ctk.CTk):
         self.btn_att.configure(state="normal")
         ui.update_status(self.att_dot, self.att_lbl, "Failed", "error")
         messagebox.showerror("Error", err)
+
+    def pull_keka_time_leave_data(self):
+        """Pulls unified Employee Master, OD/WFH, and Attendance logs directly from Keka API in background thread."""
+        from_str = self.tl_from_date_var.get().strip()
+        to_str = self.tl_to_date_var.get().strip()
+
+        # Convert DD-MM-YYYY to YYYY-MM-DD for Keka API
+        def parse_to_iso(dt_str):
+            try:
+                for fmt in ("%d-%m-%Y", "%Y-%m-%d", "%d/%m/%Y"):
+                    try:
+                        return datetime.strptime(dt_str, fmt).strftime("%Y-%m-%d")
+                    except ValueError:
+                        continue
+            except Exception:
+                pass
+            return dt_str
+
+        from_iso = parse_to_iso(from_str)
+        to_iso = parse_to_iso(to_str)
+
+        subdomain = id_card.clean_keka_subdomain(self.keka_subdomain_var.get() or os.getenv("KEKA_SUBDOMAIN", "moshpit"))
+        client_id = (self.keka_client_id_var.get() or os.getenv("KEKA_CLIENT_ID", "")).strip()
+        client_secret = (self.keka_client_secret_var.get() or os.getenv("KEKA_CLIENT_SECRET", "")).strip()
+        api_key = (self.keka_api_key_var.get() or os.getenv("KEKA_API_KEY", "")).strip()
+        keka_email = (self.keka_login_email_var.get() or os.getenv("KEKA_LOGIN_EMAIL", "")).strip()
+        keka_password = (self.keka_login_password_var.get() or os.getenv("KEKA_LOGIN_PASSWORD", "")).strip()
+
+        if not api_key and not (client_id and client_secret):
+            messagebox.showerror(
+                "Keka Credentials Missing",
+                "Keka API credentials are not configured.\n\n"
+                "Please configure Client ID, Client Secret & API Key in the\n"
+                "'Connectors & Settings' tab or in your .env file."
+            )
+            return
+
+        out_path = filedialog.asksaveasfilename(
+            defaultextension=".xlsx",
+            filetypes=[("Excel files", "*.xlsx")],
+            initialfile=f"Time_and_Leave_Master_Unified_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        )
+        if not out_path:
+            return
+
+        self.btn_pull_keka_tl.configure(state="disabled")
+        ui.update_status(self.tl_keka_dot, self.tl_keka_lbl, "Connecting to Keka API...", "processing")
+
+        def update_progress(pct, step, detail=""):
+            def _ui():
+                try:
+                    if hasattr(self, "tl_keka_progress_bar"):
+                        self.tl_keka_progress_bar.set(max(0.0, min(1.0, pct)))
+                    if hasattr(self, "tl_keka_progress_pct_lbl"):
+                        self.tl_keka_progress_pct_lbl.configure(text=f"{int(pct * 100)}%")
+                    if hasattr(self, "tl_keka_progress_step_lbl"):
+                        self.tl_keka_progress_step_lbl.configure(text=step)
+                    if hasattr(self, "tl_keka_progress_detail_lbl") and detail:
+                        self.tl_keka_progress_detail_lbl.configure(text=detail)
+                except Exception:
+                    pass
+            self.after(0, _ui)
+
+        def _worker():
+            try:
+                update_progress(0.05, "Connecting to Keka API...", "Validating OAuth credentials...")
+                from keka_data_fetcher import KekaDataFetcher
+
+                fetcher = KekaDataFetcher(
+                    subdomain=subdomain,
+                    api_key=api_key,
+                    client_id=client_id,
+                    client_secret=client_secret,
+                    keka_email=keka_email,
+                    keka_password=keka_password,
+                )
+
+                res = fetcher.fetch_unified_time_leave_reports(
+                    from_date=from_iso,
+                    to_date=to_iso,
+                    output_file_path=out_path,
+                    progress_callback=update_progress
+                )
+
+                update_progress(1.0, "Pull Completed Successfully! ⚡", f"Unified Master saved to {Path(out_path).name}")
+
+                def _success():
+                    self.btn_pull_keka_tl.configure(state="normal")
+                    ui.update_status(self.tl_keka_dot, self.tl_keka_lbl, "Sync Successful", "success")
+
+                    msg = (
+                        f"✅ Unified Time and Leave Master report generated successfully!\n\n"
+                        f"• Saved To: {out_path}\n"
+                        f"• Total Attendance Records: {res.get('total_attendance_rows', 0):,}\n"
+                        f"• Absent Mailer Records: {res.get('absent_mailer_rows', 0):,}\n"
+                        f"• Total Employees: {res.get('total_employees', 0):,}\n\n"
+                        f"Sheets included in Workbook:\n"
+                        f"  1. Daily Performance (Reconciled with Applied By, Applied On, Approved By, Approved On)\n"
+                        f"  2. Absent Mailer (Enriched with Last Working Day & Reporting Manager)\n"
+                    )
+                    messagebox.showinfo("Unified Report Ready", msg)
+
+                self.after(0, _success)
+
+            except Exception as e:
+                def _fail(err_msg):
+                    self.btn_pull_keka_tl.configure(state="normal")
+                    ui.update_status(self.tl_keka_dot, self.tl_keka_lbl, "Sync failed", "error")
+                    messagebox.showerror("Keka Sync Failed", str(err_msg))
+
+                self.after(0, lambda: _fail(str(e)))
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     def start_process_time_leave(self):
         if not self.tl_perf_files:
@@ -3337,6 +5355,7 @@ class App(ctk.CTk):
                 leave_active_files=self.tl_leave_active_files,
                 leave_inactive_files=self.tl_leave_inactive_files,
                 wfh_files=self.tl_wfh_files,
+                employee_master_files=self.tl_emp_master_files,
                 output_path=out_path,
                 progress_callback=_on_progress
             )
@@ -3352,12 +5371,22 @@ class App(ctk.CTk):
         self.tl_prog_lbl.configure(text=f"Completed {stats['total_rows']:,} rows • {stats['matched_leave_count']:,} leaves, {stats['matched_wfh_count']:,} WFH matched")
         ui.update_status(self.tl_dot, self.tl_lbl, "Success", "success")
 
+        # Auto-sync with Workforce Intelligence
+        self.last_time_leave_output_path = str(out_path)
+        try:
+            self.sync_workforce_from_time_leave(out_path, show_feedback=False)
+        except Exception:
+            pass
+
         msg = (
             f"Daily Performance Report updated successfully!\n\n"
             f"• Total Rows: {stats['total_rows']:,}\n"
             f"• Matched Leave records: {stats['matched_leave_count']:,}\n"
             f"• Matched WFH records: {stats['matched_wfh_count']:,}\n"
+            f"• ⚡ Workforce Intelligence automatically synced!\n"
         )
+        if stats.get('absent_mailer_rows', 0) > 0:
+            msg += f"• Absent Mailer records generated: {stats['absent_mailer_rows']:,}\n"
         if stats.get('quantity_violation_count', 0) > 0:
             msg += f"\n⚠️ Warning: {stats['quantity_violation_count']} date entries have total quantity > 1.0 per employee."
         if stats.get('unmatched_applications_count', 0) > 0:

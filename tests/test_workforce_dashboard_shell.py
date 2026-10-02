@@ -110,22 +110,17 @@ def test_workforce_intelligence_accessible_via_navigation(desktop_app):
 
 
 # =========================================================================
-# 4. All six analytical views can be selected
+# 4. Executive Overview view can be selected
 # =========================================================================
 def test_all_six_analytical_views_can_be_selected(desktop_app):
-    """Verify each of the 6 analytical views can be activated."""
+    """Verify the Executive Overview view is activated."""
     wf_view: WorkforceDashboardView = desktop_app.workforce_dashboard_view
     expected_views = [
         "overview",
-        "attendance",
-        "leave",
-        "wfh",
-        "working_hours",
-        "investigations",
     ]
 
     assert VIEW_KEYS == expected_views
-    assert len(wf_view.view_containers) == 6
+    assert len(wf_view.view_containers) == 1
 
     for key in expected_views:
         wf_view.select_view(key)

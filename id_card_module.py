@@ -14,7 +14,23 @@ import subprocess
 from pathlib import Path
 from dotenv import load_dotenv
 
+load_dotenv(override=True)
+
 import generate_id_cards as gen
+
+
+def clean_keka_subdomain(subdomain=None):
+    """Normalizes subdomain string or full URL into a clean subdomain slug (e.g. 'moshpit')."""
+    sub = (subdomain or os.getenv("KEKA_SUBDOMAIN", "moshpit")).strip()
+    if not sub:
+        sub = "moshpit"
+    if "://" in sub:
+        sub = sub.split("://", 1)[1]
+    if "/" in sub:
+        sub = sub.split("/", 1)[0]
+    if ".keka.com" in sub:
+        sub = sub.replace(".keka.com", "")
+    return sub.strip() or "moshpit"
 
 
 class ConsoleStreamRedirector:
@@ -150,12 +166,7 @@ def check_keka_status(api_key: str = None, client_id: str = None, client_secret:
     csec = (client_secret or "").strip() or os.getenv("KEKA_CLIENT_SECRET", "").strip()
     key = (api_key or "").strip() or os.getenv("KEKA_API_KEY", "").strip()
 
-    sub = (subdomain or "").strip()
-    if not sub:
-        sub = os.getenv("KEKA_SUBDOMAIN", "finbox").strip()
-
-    # Clean subdomain if user entered full URL
-    sub = sub.replace("https://", "").replace("http://", "").split(".")[0].strip() or "finbox"
+    sub = clean_keka_subdomain(subdomain)
 
     if not key and not (cid and csec):
         return False, "Keka credentials missing. Enter Client ID, Client Secret & API Key.", {}
@@ -193,6 +204,26 @@ def check_keka_status(api_key: str = None, client_id: str = None, client_secret:
     except Exception as e:
         err = str(e)
         return False, f"Keka connection error: {err[:60]}", {}
+
+
+def check_keka_portal_status(email=None, password=None, subdomain=None, headless=True, otp_callback=None):
+    """Tests Keka Web Portal login connectivity (Email, Password, Captcha & optional 2FA)."""
+    import keka_data_fetcher
+    return keka_data_fetcher.check_keka_portal_status(
+        email=email, password=password, subdomain=clean_keka_subdomain(subdomain), headless=headless, otp_callback=otp_callback
+    )
+
+
+def authorize_keka_portal_in_browser(subdomain=None, email=None, password=None, timeout=180, on_status_update=None):
+    """Launches an interactive Chrome window to authorize Keka session via SSO or 2FA."""
+    import keka_data_fetcher
+    return keka_data_fetcher.launch_interactive_browser_session(
+        subdomain=clean_keka_subdomain(subdomain),
+        keka_email=email,
+        keka_password=password,
+        timeout=timeout,
+        on_status_update=on_status_update
+    )
 
 
 def fetch_keka_profile_photo(email, emp_no=None, api_key=None, client_id=None, client_secret=None, subdomain=None, max_retries=2):

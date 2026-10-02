@@ -11,3 +11,7 @@ opencv-python-headless
 pypdf
 pypdfium2
 customtkinter
+selenium
+webdriver-manager
+tkcalendar
+ddddocr

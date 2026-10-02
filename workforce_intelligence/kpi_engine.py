@@ -70,19 +70,14 @@ def hours_to_duration_str(hrs: Optional[Union[float, int]]) -> str:
     return f"{h}h {m:02d}m"
 
 
-def get_effective_bu(raw_bu_val: Any, raw_dept_val: Any) -> str:
+def get_effective_bu(raw_bu_val: Any, raw_dept_val: Any = None) -> str:
     """
-    Compute effective Business Unit adhering to enterprise Lending attribution rule:
-    If raw Business Unit is 'Lending', Department acts as the effective Business Unit.
-    Preserves Unknown / Unassigned for missing or empty attributes.
+    Compute clean Business Unit string.
+    Preserves Unknown / Unassigned for missing, blank, or null attributes.
     """
     b_str = str(raw_bu_val).strip() if pd.notna(raw_bu_val) else ""
-    if not b_str or b_str.lower() in ("nan", "none", ""):
+    if not b_str or b_str.lower() in ("nan", "none", "", "unknown", "unassigned", "-"):
         return "Unknown / Unassigned"
-    if b_str.lower() == "lending":
-        d_str = str(raw_dept_val).strip() if pd.notna(raw_dept_val) else ""
-        if d_str and d_str.lower() not in ("nan", "none", ""):
-            return d_str
     return b_str
 
 
@@ -672,11 +667,15 @@ def compute_repeated_exceptions(
     repeat_emp_ids: Set[str] = set()
 
     all_emps = set(work_df["_emp_num"].unique()) - {"", "nan"}
+    excp_by_emp: Dict[str, pd.DataFrame] = {}
+    if len(excp_df) > 0:
+        for emp_k, grp in excp_df.groupby("_emp_num"):
+            excp_by_emp[str(emp_k).strip()] = grp
+
     for emp_id in sorted(all_emps):
         emp_str = str(emp_id).strip()
-        e_rows = excp_df[excp_df["_emp_num"] == emp_id]
-
-        if len(e_rows) == 0:
+        e_rows = excp_by_emp.get(emp_str)
+        if e_rows is None or len(e_rows) == 0:
             qualifying_dates: Set[Any] = set()
             excp_types_seen: Set[str] = set()
             rec_ids: List[str] = []
@@ -889,6 +888,7 @@ def compute_workforce_intelligence_bundle(
         filtered["_status"].str.lower().isin(["wo", "w/o", "off", "week off"])
     ) & (~is_wfh) & (~is_leave) & (~is_od) & (~is_hol)
     is_ms = _is_missing_swipe_series(filtered)
+    is_reg_series = _is_regularized_series(filtered)
     is_ab = (
         filtered["_att_type"].str.contains("absent", case=False, na=False) |
         filtered["_status"].str.lower().isin(["ab", "absent", "a"])
@@ -1027,12 +1027,36 @@ def compute_workforce_intelligence_bundle(
 
     # Group by distinct (Employee, Date) to prevent multi-counting single calendar days
     if "_date" in filtered.columns and "_emp_num" in filtered.columns:
-        date_groups = filtered.groupby(["_emp_num", "_date"], sort=False)
-        for (emp_key, d_key), grp in date_groups:
-            eff_bu = _get_eff_bu(
-                grp.iloc[0].get("_bu", "") if "_bu" in grp.columns else grp.iloc[0].get("Business Unit", ""),
-                grp.iloc[0].get("_dept", "") if "_dept" in grp.columns else grp.iloc[0].get("Department", ""),
-            )
+        n_rows = len(filtered)
+        emp_arr = filtered["_emp_num"].tolist()
+        date_arr = filtered["_date"].tolist()
+        bu_arr = filtered["_bu"].tolist() if "_bu" in filtered.columns else ["" for _ in range(n_rows)]
+        dept_arr = filtered["_dept"].tolist() if "_dept" in filtered.columns else ["" for _ in range(n_rows)]
+        eff_bu_arr = filtered["_eff_bu"].tolist() if "_eff_bu" in filtered.columns else [get_effective_bu(b, d) for b, d in zip(bu_arr, dept_arr)]
+        qty_arr = filtered["_clean_qty"].tolist()
+        cat_arr = filtered["_cat"].tolist()
+        ms_arr = is_ms.tolist()
+        reg_arr = is_reg_series.tolist() if isinstance(is_reg_series, pd.Series) else _is_regularized_series(filtered).tolist()
+
+        appr_col = None
+        for cand in ["Approval Status", "_approval_status", "approval_status"]:
+            if cand in filtered.columns:
+                appr_col = cand
+                break
+        appr_arr = [str(a).strip().lower() if pd.notna(a) else "" for a in filtered[appr_col]] if appr_col else ["" for _ in range(n_rows)]
+        rid_arr = [str(r) for r in filtered["record_id"]] if "record_id" in filtered.columns else [f"{e}_{d}" for e, d in zip(emp_arr, date_arr)]
+
+        group_map: Dict[Tuple[Any, Any], List[int]] = {}
+        for i in range(n_rows):
+            k = (emp_arr[i], date_arr[i])
+            if k not in group_map:
+                group_map[k] = []
+            group_map[k].append(i)
+
+        for (emp_key, d_key), idxs in group_map.items():
+            i0 = idxs[0]
+            eff_bu = eff_bu_arr[i0]
+
             d_rec = _ensure_daily(d_key)
             d_rec["recorded_days"] += 1
             bu_rec = _ensure_bu(eff_bu)
@@ -1040,58 +1064,48 @@ def compute_workforce_intelligence_bundle(
             bu_rec["recorded_days"] += 1
 
             # Check if this employee-date has at least one Missing Swipe record
-            has_ms_day = bool(_is_missing_swipe_series(grp).any())
-            if has_ms_day:
+            if any(ms_arr[i] for i in idxs):
                 d_rec["missing_swipe_days"] += 1
                 bu_rec["ms_days"] += 1
 
             # Check if this employee-date has at least one Regularized record
-            has_reg = bool(_is_regularized_series(grp).any())
-            if has_reg:
+            if any(reg_arr[i] for i in idxs):
                 d_rec["regularized_days"] += 1
                 bu_rec["reg_days"] += 1
 
-            n_rows = len(grp)
-            grp_qty = float(grp["_clean_qty"].sum())
-
-            if n_rows == 1:
-                # 1. Single record: standard day equivalent (capped at 1.0)
-                row0 = grp.iloc[0]
-                q = min(1.0, float(row0["_clean_qty"]))
-                cat0 = _resolve_row_category(row0) if _is_approved_row(row0) else row0["_cat"]
-                _record_event(d_key, eff_bu, cat0, q)
-
-            elif grp_qty <= 1.0001:
-                # 2. Legitimate fractional splits on same date (e.g., 0.5 Present + 0.5 Leave = 1.0)
-                for _, row in grp.iterrows():
-                    q = float(row["_clean_qty"])
-                    cat_row = _resolve_row_category(row) if _is_approved_row(row) else row["_cat"]
-                    _record_event(d_key, eff_bu, cat_row, q)
-
+            n_grp = len(idxs)
+            if n_grp == 1:
+                q = min(1.0, qty_arr[i0])
+                c = cat_arr[i0]
+                if appr_arr[i0] == "approved" and c == "UNCLASSIFIED" and reg_arr[i0]:
+                    c = "PRESENT"
+                _record_event(d_key, eff_bu, c, q)
             else:
-                # 3. Overlapping records on same date (total quantity > 1.0):
-                # An employee can have at most 1.0 attendance-day equivalent on a single date.
-                # Check for explicit approved transactions
-                appr_series = grp["Approval Status"] if "Approval Status" in grp.columns else (
-                    grp["_approval_status"] if "_approval_status" in grp.columns else None
-                )
-                approved_rows = grp[appr_series.astype(str).str.strip().str.lower() == "approved"] if appr_series is not None else grp.iloc[0:0]
-                appr_qty = float(approved_rows["_clean_qty"].sum()) if len(approved_rows) > 0 else 0.0
-
-                if 0.9999 <= appr_qty <= 1.0001:
-                    # Approved transactions cleanly resolve the day to exactly 1.0 day equivalent
-                    # Each approved event retains its actual attendance meaning (Leave, WFH, OD, Present)
-                    for _, appr_row in approved_rows.iterrows():
-                        q_appr = float(appr_row["_clean_qty"])
-                        cat_appr = _resolve_row_category(appr_row)
-                        _record_event(d_key, eff_bu, cat_appr, q_appr)
+                grp_qty = sum(qty_arr[i] for i in idxs)
+                if grp_qty <= 1.0001:
+                    for i in idxs:
+                        q = qty_arr[i]
+                        c = cat_arr[i]
+                        if appr_arr[i] == "approved" and c == "UNCLASSIFIED" and reg_arr[i]:
+                            c = "PRESENT"
+                        _record_event(d_key, eff_bu, c, q)
                 else:
-                    # Contradictory / unresolved records: flag as conflicting employee-day
-                    # Strictly capped at 1.0 day equivalent to prevent denominator inflation
-                    _record_event(d_key, eff_bu, "UNCLASSIFIED", 1.0)
-                    conflicting_days_count += 1
-                    if "record_id" in grp.columns:
-                        conflicting_record_ids.extend(grp["record_id"].astype(str).tolist())
+                    # Overlapping records on same date (total quantity > 1.0)
+                    approved_idxs = [i for i in idxs if appr_arr[i] == "approved"]
+                    appr_qty = sum(qty_arr[i] for i in approved_idxs)
+
+                    if 0.9999 <= appr_qty <= 1.0001:
+                        for i in approved_idxs:
+                            q = qty_arr[i]
+                            c = cat_arr[i]
+                            if c == "UNCLASSIFIED" and reg_arr[i]:
+                                c = "PRESENT"
+                            _record_event(d_key, eff_bu, c, q)
+                    else:
+                        _record_event(d_key, eff_bu, "UNCLASSIFIED", 1.0)
+                        conflicting_days_count += 1
+                        for i in idxs:
+                            conflicting_record_ids.append(rid_arr[i])
     else:
         # Fallback if no date column exists
         q_pres = float(filtered.loc[is_pres | is_ms, "_clean_qty"].sum())
@@ -1154,7 +1168,7 @@ def compute_workforce_intelligence_bundle(
     # ─────────────────────────────────────────────────────────────────────────
     # Attendance Exceptions: ONLY Attendance Type == 'Regularized'
     # ─────────────────────────────────────────────────────────────────────────
-    is_reg = _is_regularized_series(filtered)
+    is_reg = is_reg_series if isinstance(is_reg_series, pd.Series) else _is_regularized_series(filtered)
     reg_df = filtered[is_reg].copy()
     total_reg_recs = len(reg_df)
 
@@ -1230,22 +1244,37 @@ def compute_workforce_intelligence_bundle(
     }
 
     reg_traceability_records: List[Dict[str, Any]] = []
-    for _, r in reg_df.iterrows():
-        e_id = str(r.get("_emp_num", r.get("Employee Number", ""))).strip()
-        d_val = r.get("_date", r.get("Date", None))
-        d_str = d_val.isoformat() if isinstance(d_val, (date, datetime)) else (str(d_val) if pd.notna(d_val) else "")
-        at_val = str(r.get("_att_type", r.get("Attendance Type", ""))).strip()
-        ap_val = str(r.get("Approval Status", r.get("_approval_status", "Unknown"))).strip()
-        if not ap_val or ap_val.lower() in ("nan", "none"):
-            ap_val = "Unknown"
-        rid = str(r.get("record_id", r.get("Record ID", f"{e_id}_{d_str}"))).strip()
-        reg_traceability_records.append({
-            "employee_id": e_id,
-            "date": d_str,
-            "attendance_type": at_val,
-            "approval_status": ap_val,
-            "record_id": rid,
-        })
+    if total_reg_recs > 0:
+        reg_emp_list = reg_df["_emp_num"].tolist() if "_emp_num" in reg_df.columns else (
+            reg_df["Employee Number"].tolist() if "Employee Number" in reg_df.columns else ["" for _ in range(total_reg_recs)]
+        )
+        reg_date_list = reg_df["_date"].tolist() if "_date" in reg_df.columns else (
+            reg_df["Date"].tolist() if "Date" in reg_df.columns else [None for _ in range(total_reg_recs)]
+        )
+        reg_att_list = reg_df["_att_type"].tolist() if "_att_type" in reg_df.columns else (
+            reg_df["Attendance Type"].tolist() if "Attendance Type" in reg_df.columns else ["" for _ in range(total_reg_recs)]
+        )
+        reg_appr_list = reg_df[appr_col].tolist() if appr_col and appr_col in reg_df.columns else ["Unknown" for _ in range(total_reg_recs)]
+        reg_rid_list = reg_df["record_id"].tolist() if "record_id" in reg_df.columns else (
+            reg_df["Record ID"].tolist() if "Record ID" in reg_df.columns else [f"{e}_{d}" for e, d in zip(reg_emp_list, reg_date_list)]
+        )
+
+        for i in range(total_reg_recs):
+            e_id = str(reg_emp_list[i]).strip()
+            d_val = reg_date_list[i]
+            d_str = d_val.isoformat() if isinstance(d_val, (date, datetime)) else (str(d_val) if pd.notna(d_val) else "")
+            at_val = str(reg_att_list[i]).strip()
+            ap_val = str(reg_appr_list[i]).strip() if pd.notna(reg_appr_list[i]) else "Unknown"
+            if not ap_val or ap_val.lower() in ("nan", "none"):
+                ap_val = "Unknown"
+            rid = str(reg_rid_list[i]).strip()
+            reg_traceability_records.append({
+                "employee_id": e_id,
+                "date": d_str,
+                "attendance_type": at_val,
+                "approval_status": ap_val,
+                "record_id": rid,
+            })
 
     # ── Executive Overview Visualizations Data Bundles ──
     # 1. Attendance Composition (all 8 categories, quantity-weighted)

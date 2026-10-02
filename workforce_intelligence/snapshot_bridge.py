@@ -74,7 +74,7 @@ class WorkforceIntelligenceBridge:
     def __init__(
         self,
         snapshot_service: Optional[TimeSeriesSnapshotService] = None,
-        max_cache_size: int = 128,
+        max_cache_size: int = 256,
     ):
         self._service = snapshot_service or default_snapshot_service
         self._max_cache_size = max_cache_size

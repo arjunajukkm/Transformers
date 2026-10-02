@@ -32,18 +32,22 @@ def _load_single_file(
     if not path.exists():
         raise FileNotFoundError(f"Workforce data file not found: {path.name}")
 
+    if path.name.startswith("~$") or path.name.startswith("."):
+        raise ValueError(f"Cannot read temporary or locked Excel file '{path.name}'. Please select the original workbook.")
+
     ext = path.suffix.lower()
     if ext not in (".xlsx", ".xls", ".csv"):
         raise ValueError(
             f"Unsupported file format '{ext}' for file '{path.name}'. Expected .xlsx, .xls, or .csv"
         )
 
-    # 1. Load Raw File safely
+    # 1. Load Raw File safely (prioritizes 'Daily Performance' sheet for Time & Leave Master outputs)
     if ext == ".csv":
         df = pd.read_csv(path, dtype=object)
     else:
         with pd.ExcelFile(path) as xl:
-            df = xl.parse(xl.sheet_names[0], dtype=object)
+            target_sheet = "Daily Performance" if "Daily Performance" in xl.sheet_names else xl.sheet_names[0]
+            df = xl.parse(target_sheet, dtype=object)
 
     # 2. Map Column Names to Canonical Schema
     column_mapping = {col: resolve_canonical_column(col) for col in df.columns}
