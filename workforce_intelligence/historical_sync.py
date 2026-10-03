@@ -333,15 +333,6 @@ class HistoricalSyncManager:
         to_iso = l_day.strftime("%Y-%m-%d")
         disp_name = self.get_month_display_name(month_key)
 
-        # Check Keka 3-month rolling window policy
-        min_api_date = self.get_keka_api_window_start()
-        if l_day < min_api_date:
-            min_fmt = min_api_date.strftime("%b %d, %Y")
-            return None, cached_emp_df, (
-                f"Keka API only allows attendance queries for the last 3 months (Earliest allowed: {min_fmt}). "
-                f"For {disp_name}, please click '📂 Import File' to add your exported Keka report."
-            )
-
         _notify(0.10, f"Syncing {disp_name}...", "Fetching Employee Master...")
         emp_df = cached_emp_df
         if emp_df is None or emp_df.empty:
@@ -352,8 +343,8 @@ class HistoricalSyncManager:
         _notify(0.35, f"Syncing {disp_name}...", f"Fetching OD/WFH Requests ({from_iso} to {to_iso})...")
         wfh_df, wfh_err = keka_fetcher.fetch_od_wfh_requests(from_date=from_iso, to_date=to_iso)
 
-        _notify(0.60, f"Syncing {disp_name}...", f"Querying Keka Attendance Logs ({from_iso} to {to_iso})...")
-        att_df, att_err = keka_fetcher.fetch_attendance_records_api(
+        _notify(0.60, f"Syncing {disp_name}...", f"Pulling Attendance Records ({from_iso} to {to_iso})...")
+        att_df, att_err = keka_fetcher.fetch_attendance_report(
             from_date=from_iso,
             to_date=to_iso,
             emp_df=emp_df,
@@ -362,11 +353,6 @@ class HistoricalSyncManager:
         )
 
         if att_err and (att_df is None or att_df.empty):
-            if "last three months only" in str(att_err).lower() or "allowed to access attendance summary" in str(att_err).lower():
-                return None, emp_df, (
-                    f"Keka API 3-Month Limit: Keka only permits attendance API queries for the last 3 months. "
-                    f"Please click '📂 Import File' to load an exported Keka report for {disp_name}."
-                )
             return None, emp_df, f"Keka attendance sync failed for {disp_name}: {att_err}"
 
         if att_df is None or att_df.empty:

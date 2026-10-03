@@ -76,6 +76,7 @@ def mock_keka_fetcher():
         return pd.DataFrame(rows), None
 
     fetcher.fetch_attendance_records_api.side_effect = _fake_att
+    fetcher.fetch_attendance_report.side_effect = _fake_att
     return fetcher
 
 

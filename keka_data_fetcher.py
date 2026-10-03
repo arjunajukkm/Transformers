@@ -2182,9 +2182,13 @@ class KekaDataFetcher:
     ) -> Tuple[Optional[pd.DataFrame], Optional[str]]:
         """
         Unified Attendance Report fetcher.
-        Defaults to fast, robust Keka REST API (GET /time/attendance).
-        Falls back to Selenium portal automation if use_api is explicitly False or if API is unavailable.
+        1. Tries fast Keka REST API (GET /time/attendance) first.
+        2. Automatically falls back to Selenium portal automation whenever:
+           - REST API encounters Keka's 3-month rolling window limit (HTTP 400), OR
+           - REST API is unavailable, OR
+           - User has credentials configured to export full Daily Performance report.
         """
+        api_err = None
         if use_api:
             try:
                 df, err = self.fetch_attendance_records_api(
@@ -2196,20 +2200,42 @@ class KekaDataFetcher:
                 )
                 if df is not None and not df.empty:
                     return df, None
-                if err and not ("403" in err or "missing" in err.lower() or "privilege" in err.lower()):
-                    return df, err
+                api_err = err
+                logger.info(f"REST API attendance fetch could not complete ({err}). Triggering Keka Portal fallback...")
             except Exception as e:
-                logger.warning(f"Attendance API failed ({e}), attempting Selenium fallback...")
+                api_err = str(e)
+                logger.warning(f"Attendance API exception ({e}), triggering Keka Portal fallback...")
 
-        return self.fetch_attendance_report_selenium(
-            from_date=from_date,
-            to_date=to_date,
-            download_dir=download_dir,
-            headless=headless,
-            timeout=timeout,
-            otp_callback=otp_callback,
-            progress_callback=progress_callback
-        )
+        # If user has Keka portal credentials or saved browser session, run Selenium portal export
+        has_creds = bool(self.keka_email and self.keka_password)
+        has_profile = (Path.home() / ".keka_chrome_profile").exists()
+        if has_creds or has_profile:
+            if progress_callback:
+                progress_callback(0.65, f"Pulling {from_date} to {to_date} via Keka Web Portal exporter...")
+            df_sel, sel_err = self.fetch_attendance_report_selenium(
+                from_date=from_date,
+                to_date=to_date,
+                download_dir=download_dir,
+                headless=headless,
+                timeout=timeout,
+                otp_callback=otp_callback,
+                progress_callback=progress_callback
+            )
+            if df_sel is not None and not df_sel.empty:
+                return df_sel, None
+            if sel_err:
+                return None, f"REST API: {api_err}\nPortal Export: {sel_err}"
+
+        # If Selenium could not run or no credentials, return informative message
+        if api_err:
+            if "last three months only" in str(api_err).lower() or "3-month" in str(api_err).lower():
+                return None, (
+                    f"Keka API only allows attendance queries for the last 3 months via REST API ({api_err}).\n\n"
+                    "To pull older historical months directly from Keka, enter your Keka login email/password in Settings "
+                    "to enable automated portal export, or use 'Import Historical File'."
+                )
+            return None, api_err
+        return None, "No attendance records returned from Keka."
 
     # ──────────────────────────────────────────────────────────────────────────
     # REPORT 2 FALLBACK: ATTENDANCE REPORT (via Selenium — portal export)
