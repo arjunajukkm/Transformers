@@ -1953,9 +1953,20 @@ class WorkforceDashboardView(ctk.CTkFrame):
         self.lbl_dq_info.bind("<Button-1>", lambda e: self._show_dq_details_dialog())
         ui.create_tooltip(self.lbl_dq_info, "Click to view Data Quality diagnostics and reconciliation details")
 
-        # Right: Sync from Time & Leave & Go to Upload buttons
+        # Right: Export, Sync from Time & Leave & Go to Upload buttons
         btn_box = ctk.CTkFrame(inner, fg_color="transparent")
         btn_box.grid(row=0, column=3, sticky="e")
+
+        self.btn_export_excel = ui.create_secondary_button(
+            btn_box,
+            "Export Excel",
+            command=self._on_export_excel,
+            width=110,
+            height=28,
+            icon="export"
+        )
+        self.btn_export_excel.pack(side="left", padx=(0, 6))
+        ui.create_tooltip(self.btn_export_excel, "Export complete multi-level drilldown analysis report to Excel")
 
         self.btn_sync_tl = ui.create_primary_button(
             btn_box,
@@ -1977,6 +1988,71 @@ class WorkforceDashboardView(ctk.CTkFrame):
             icon="upload"
         )
         self.btn_go_upload.pack(side="left")
+
+    def _on_export_excel(self):
+        """Export comprehensive multi-level drilldown analysis report to Excel."""
+        snap = snapshot_service.get_active_snapshot()
+        if not snap or not snap.is_valid():
+            from tkinter import messagebox
+            messagebox.showwarning(
+                "No Dataset Loaded",
+                "Please sync or upload a workforce dataset first before exporting an analysis report."
+            )
+            return
+
+        from tkinter import filedialog
+        default_fn = f"Workforce_Intelligence_Report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        out_path = filedialog.asksaveasfilename(
+            defaultextension=".xlsx",
+            filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")],
+            initialfile=default_fn,
+            title="Export Workforce Intelligence Analysis Report",
+        )
+        if not out_path:
+            return
+
+        bu = self._filter_state.get("business_unit")
+        dept = self._filter_state.get("department")
+        month = self._filter_state.get("date_preset")
+        if month in ("All Dates", "All", None):
+            month = None
+
+        if hasattr(self, "btn_export_excel"):
+            self.btn_export_excel.configure(state="disabled")
+
+        def _worker():
+            try:
+                snapshot_service.export_report(
+                    output_path=out_path,
+                    business_unit=bu,
+                    department=dept,
+                    month=month,
+                )
+                def _on_success():
+                    if hasattr(self, "btn_export_excel"):
+                        self.btn_export_excel.configure(state="normal")
+                    from tkinter import messagebox
+                    res = messagebox.askyesno(
+                        "Export Successful",
+                        f"Workforce Intelligence Report exported successfully!\n\n"
+                        f"• Saved to: {out_path}\n"
+                        f"• Sheets: KPI Summary, Business Unit, Department, Reporting Manager, Employee Breakdown\n\n"
+                        f"Would you like to open the folder where it is saved?",
+                    )
+                    if res:
+                        import os
+                        os.system(f'explorer /select,"{Path(out_path).resolve()}"')
+                self.after(0, _on_success)
+            except Exception as e:
+                err_msg = str(e)
+                def _on_err():
+                    if hasattr(self, "btn_export_excel"):
+                        self.btn_export_excel.configure(state="normal")
+                    from tkinter import messagebox
+                    messagebox.showerror("Export Error", f"Failed to export Excel report:\n\n{err_msg}")
+                self.after(0, _on_err)
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     def _on_sync_from_time_leave(self):
         """Trigger sync dialog with date range selection from the Time & Leave Master."""
@@ -3272,3 +3348,15 @@ class WorkforceDashboardView(ctk.CTkFrame):
             self._last_metrics_bundle = None
             self._full_dataset_dq_bundle = None
             self._set_overview_state("empty")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Backwards Compatibility Aliases
+# ─────────────────────────────────────────────────────────────────────────────
+AttendanceDailyTrendWidget = DailyAttendanceTrendWidget
+AttendanceStatusBreakdownWidget = AttendanceCompositionWidget
+AdditiveCompositionWidget = AttendanceCompositionWidget
+AttendanceBUComparisonWidget = BusinessUnitComparisonTableWidget
+BUAttendanceDistributionWidget = BusinessUnitComparisonTableWidget
+BUComparisonTableWidget = BusinessUnitComparisonTableWidget
+ATTENDANCE_TABLE_COLUMNS = TABLE_COLUMNS

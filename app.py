@@ -288,7 +288,6 @@ class App(ctk.CTk):
         self.analyse_sub_menu_frame = ctk.CTkFrame(self._offscreen_compat, fg_color="transparent")
         analyse_sub_items = [
             ("workforce_intelligence", "Workforce Intelligence", "users"),
-            ("analyse_time_series", "Time Series Analysis", "time_series"),
             ("analyse_upload", "Upload", "upload"),
         ]
         for idx, (name, text, icon) in enumerate(analyse_sub_items):
@@ -605,7 +604,6 @@ class App(ctk.CTk):
         elif group == "analyse":
             items = [
                 ("workforce_intelligence", "Workforce Intelligence", "users"),
-                ("analyse_time_series", "Time Series Analysis", "time_series"),
                 ("analyse_upload", "Upload Dataset", "upload"),
             ]
             title = "ANALYSE"
@@ -3328,243 +3326,17 @@ class App(ctk.CTk):
         from workforce_intelligence.dashboard_shell import WorkforceDashboardView
         self.workforce_dashboard_view = WorkforceDashboardView(self.main_content, app=self)
         self.frames["workforce_intelligence"] = self.workforce_dashboard_view
+        self.frames["analyse_time_series"] = self.workforce_dashboard_view
+        self.frames["analyse_dashboard"] = self.workforce_dashboard_view
 
     # ---------------------------------------------------------
-    # Time Series Analysis
+    # Time Series Analysis (Consolidated into Workforce Intelligence)
     # ---------------------------------------------------------
     def _build_time_series_frame(self):
-        f = ctk.CTkScrollableFrame(self.main_content, fg_color="transparent")
-        self.frames["analyse_time_series"] = f
-        self.frames["analyse_dashboard"] = f  # backwards-compatible alias
-        f.grid_columnconfigure(0, weight=1)
-
-        # Page Header
-        hdr = ui.create_page_header(
-            f, "Time Series Analysis",
-            "Workforce compliance, exceptions, biometric swipes, and multi-level breakdown."
-        )
-        hdr.grid(row=0, column=0, sticky="ew", pady=(0, 16))
-
-        # 1. Dataset Status Header Card
-        self.ts_banner_card = ui.create_card(f)
-        self.ts_banner_card.grid(row=1, column=0, sticky="ew", pady=(0, 14))
-        self.ts_banner_card.grid_columnconfigure(0, weight=1)
-
-        b_frame = ctk.CTkFrame(self.ts_banner_card, fg_color="transparent")
-        b_frame.grid(row=0, column=0, sticky="ew", padx=16, pady=12)
-        b_frame.grid_columnconfigure(0, weight=1)
-
-        self.ts_banner_lbl = ctk.CTkLabel(
-            b_frame, text="⚠️ No dataset loaded yet. Please upload a dataset in the Upload section to begin analysis.",
-            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=13),
-            text_color=ui.COLOR_WARNING, anchor="w"
-        )
-        self.ts_banner_lbl.grid(row=0, column=0, sticky="w")
-
-        self.btn_ts_go_upload = ui.create_secondary_button(
-            b_frame, "📂 Go to Upload Section",
-            lambda: self.select_frame_by_name("analyse_upload"), width=180
-        )
-        self.btn_ts_go_upload.grid(row=0, column=1, sticky="e", padx=(10, 0))
-
-        # 2. Filter & Actions Toolbar
-        self.card_filters = ui.create_card(f)
-        self.card_filters.grid(row=2, column=0, sticky="ew", pady=(0, 14))
-
-        f_header = ctk.CTkFrame(self.card_filters, fg_color="transparent")
-        f_header.grid(row=0, column=0, sticky="ew", padx=16, pady=(12, 6))
-        ctk.CTkLabel(
-            f_header, text="Filters & Scope",
-            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=14, weight="bold"),
-            text_color=ui.COLOR_TEXT
-        ).pack(side="left")
-
-        self.btn_ts_export = ui.create_secondary_button(
-            f_header, "📥 Export Report to Excel", self._export_ts_excel, width=180
-        )
-        self.btn_ts_export.pack(side="right")
-
-        f_body = ctk.CTkFrame(self.card_filters, fg_color="transparent")
-        f_body.grid(row=1, column=0, sticky="ew", padx=16, pady=(0, 12))
-        f_body.grid_columnconfigure((0, 1, 2, 3), weight=1)
-
-        # BU Combobox
-        ctk.CTkLabel(f_body, text="Business Unit", font=ctk.CTkFont(size=11, weight="bold"), text_color=ui.COLOR_TEXT_DIM).grid(row=0, column=0, sticky="w", padx=4, pady=(0, 2))
-        self.ts_bu_combo = ctk.CTkComboBox(
-            f_body, variable=self.ts_bu_var, values=["All Business Units"],
-            command=self._on_ts_filter_changed, height=32,
-            fg_color=ui.COLOR_INPUT_BG, border_color=ui.COLOR_BORDER,
-            text_color=ui.COLOR_TEXT, dropdown_fg_color=ui.COLOR_CARD,
-        )
-        self.ts_bu_combo.grid(row=1, column=0, sticky="ew", padx=4)
-
-        # Department Combobox
-        ctk.CTkLabel(f_body, text="Department", font=ctk.CTkFont(size=11, weight="bold"), text_color=ui.COLOR_TEXT_DIM).grid(row=0, column=1, sticky="w", padx=4, pady=(0, 2))
-        self.ts_dept_combo = ctk.CTkComboBox(
-            f_body, variable=self.ts_dept_var, values=["All Departments"],
-            command=self._on_ts_filter_changed, height=32,
-            fg_color=ui.COLOR_INPUT_BG, border_color=ui.COLOR_BORDER,
-            text_color=ui.COLOR_TEXT, dropdown_fg_color=ui.COLOR_CARD,
-        )
-        self.ts_dept_combo.grid(row=1, column=1, sticky="ew", padx=4)
-
-        # Month Combobox
-        ctk.CTkLabel(f_body, text="Month", font=ctk.CTkFont(size=11, weight="bold"), text_color=ui.COLOR_TEXT_DIM).grid(row=0, column=2, sticky="w", padx=4, pady=(0, 2))
-        self.ts_month_combo = ctk.CTkComboBox(
-            f_body, variable=self.ts_month_var, values=["All Months"],
-            command=self._on_ts_filter_changed, height=32,
-            fg_color=ui.COLOR_INPUT_BG, border_color=ui.COLOR_BORDER,
-            text_color=ui.COLOR_TEXT, dropdown_fg_color=ui.COLOR_CARD,
-        )
-        self.ts_month_combo.grid(row=1, column=2, sticky="ew", padx=4)
-
-        # Reset button
-        btn_reset = ui.create_secondary_button(f_body, "Reset Filters", self._reset_ts_filters, width=100)
-        btn_reset.grid(row=1, column=3, sticky="ew", padx=4)
-
-        # 3. KPI Metrics Grid (8 cards, 4 per row)
-        self.ts_kpi_frame = ctk.CTkFrame(f, fg_color="transparent")
-        self.ts_kpi_frame.grid(row=3, column=0, sticky="ew", pady=(0, 14))
-        self.ts_kpi_frame.grid_columnconfigure((0, 1, 2, 3), weight=1, uniform="kpi")
-
-        # Row 0
-        c1, self.lbl_kpi_leave_val, self.lbl_kpi_leave_sub = ui.create_kpi_metric_card(self.ts_kpi_frame, "Leave Compliance Rate")
-        c1.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)
-
-        c2, self.lbl_kpi_appr_val, self.lbl_kpi_appr_sub = ui.create_kpi_metric_card(self.ts_kpi_frame, "Manager Approval Compliance")
-        c2.grid(row=0, column=1, sticky="nsew", padx=4, pady=4)
-
-        c3, self.lbl_kpi_reg_val, self.lbl_kpi_reg_sub = ui.create_kpi_metric_card(self.ts_kpi_frame, "Attendance Exception Rate")
-        c3.grid(row=0, column=2, sticky="nsew", padx=4, pady=4)
-
-        c4, self.lbl_kpi_wfh_val, self.lbl_kpi_wfh_sub = ui.create_kpi_metric_card(self.ts_kpi_frame, "WFH Exception Rate (>3d)")
-        c4.grid(row=0, column=3, sticky="nsew", padx=4, pady=4)
-
-        # Row 1
-        c5, self.lbl_kpi_rep_val, self.lbl_kpi_rep_sub = ui.create_kpi_metric_card(self.ts_kpi_frame, "Repeat Attendance Non-Compliance")
-        c5.grid(row=1, column=0, sticky="nsew", padx=4, pady=4)
-
-        c6, self.lbl_kpi_in_val, self.lbl_kpi_in_sub = ui.create_kpi_metric_card(self.ts_kpi_frame, "AVG In Time (Present/MS)")
-        c6.grid(row=1, column=1, sticky="nsew", padx=4, pady=4)
-
-        c7, self.lbl_kpi_out_val, self.lbl_kpi_out_sub = ui.create_kpi_metric_card(self.ts_kpi_frame, "AVG Out Time (Present/MS)")
-        c7.grid(row=1, column=2, sticky="nsew", padx=4, pady=4)
-
-        c8, self.lbl_kpi_hrs_val, self.lbl_kpi_hrs_sub = ui.create_kpi_metric_card(self.ts_kpi_frame, "AVG Working Hours")
-        c8.grid(row=1, column=3, sticky="nsew", padx=4, pady=4)
-
-        # 4. Multi-Level Breakdown Table Card
-        card_table = ui.create_card(f)
-        card_table.grid(row=4, column=0, sticky="ew", pady=(0, 20))
-
-        tbl_top = ctk.CTkFrame(card_table, fg_color="transparent")
-        tbl_top.grid(row=0, column=0, sticky="ew", padx=16, pady=(12, 8))
-
-        ctk.CTkLabel(
-            tbl_top, text="Multi-Level Breakdown Analysis",
-            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=15, weight="bold"),
-            text_color=ui.COLOR_TEXT
-        ).pack(side="left", padx=(0, 16))
-
-        # Segmented Control for Levels
-        self.ts_level_seg = ctk.CTkSegmentedButton(
-            tbl_top,
-            values=["Business Unit", "Department", "Reporting Manager", "Employee"],
-            command=self._on_ts_level_changed,
-            selected_color=ui.COLOR_ACCENT,
-            selected_hover_color=ui.COLOR_ACCENT_HOVER,
-            unselected_color=ui.COLOR_INPUT_BG,
-            unselected_hover_color=ui.COLOR_BTN_SEC_HOV,
-            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12, weight="bold"),
-        )
-        self.ts_level_seg.set("Business Unit")
-        self.ts_level_seg.pack(side="left")
-
-        # Search box on right
-        search_box = ctk.CTkEntry(
-            tbl_top,
-            textvariable=self.ts_search_var,
-            placeholder_text="Search entity name...",
-            width=200, height=32,
-            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12),
-            fg_color=ui.COLOR_INPUT_BG, border_color=ui.COLOR_BORDER,
-            border_width=1, text_color=ui.COLOR_TEXT,
-        )
-        search_box.pack(side="right")
-        self.ts_search_var.trace_add("write", self._on_ts_search_changed)
-
-        # Treeview container
-        tree_container = ctk.CTkFrame(card_table, fg_color=ui.COLOR_CARD)
-        tree_container.grid(row=1, column=0, sticky="ew", padx=16, pady=(0, 14))
-        tree_container.grid_columnconfigure(0, weight=1)
-
-        # Style Treeview
-        style = ttk.Style()
-        style.theme_use("clam")
-        style.configure(
-            "TS.Treeview",
-            background=ui.COLOR_CARD,
-            foreground=ui.COLOR_TEXT,
-            fieldbackground=ui.COLOR_CARD,
-            rowheight=28,
-            font=(ui.FONT_FAMILY, 10),
-            borderwidth=0,
-        )
-        style.configure(
-            "TS.Treeview.Heading",
-            background="#1A2340",
-            foreground="#00FF99",
-            font=(ui.FONT_FAMILY, 10, "bold"),
-            borderwidth=0,
-            relief="flat",
-        )
-        style.map(
-            "TS.Treeview",
-            background=[("selected", ui.COLOR_ACCENT)],
-            foreground=[("selected", "#FFFFFF")],
-        )
-        style.map(
-            "TS.Treeview.Heading",
-            background=[("active", "#243052")],
-        )
-
-        cols = (
-            "entity", "records", "emps", "leave_days", "leave_emp_pct",
-            "appr_days", "appr_mgr_pct", "regularized", "wfh_excess",
-            "repeat_dev", "in_time", "out_time", "work_hrs"
-        )
-        self.ts_tree = ttk.Treeview(
-            tree_container, columns=cols, show="headings",
-            style="TS.Treeview", height=10
-        )
-
-        col_configs = [
-            ("entity", "Entity Name", 160, "w"),
-            ("records", "Rows", 65, "center"),
-            ("emps", "Emps", 60, "center"),
-            ("leave_days", "Avg Leave Apply", 110, "center"),
-            ("leave_emp_pct", "Emp Leave %", 90, "center"),
-            ("appr_days", "Avg Approval", 95, "center"),
-            ("appr_mgr_pct", "Mgr Appr %", 85, "center"),
-            ("regularized", "Regularized", 85, "center"),
-            ("wfh_excess", "WFH >3 Days", 85, "center"),
-            ("repeat_dev", "Repeat Dev", 80, "center"),
-            ("in_time", "AVG In Time", 95, "center"),
-            ("out_time", "AVG Out Time", 95, "center"),
-            ("work_hrs", "AVG Work Hrs", 95, "center"),
-        ]
-
-        for col_id, col_text, col_w, col_anchor in col_configs:
-            self.ts_tree.heading(col_id, text=col_text)
-            self.ts_tree.column(col_id, width=col_w, minwidth=60, anchor=col_anchor)
-
-        v_scroll = ttk.Scrollbar(tree_container, orient="vertical", command=self.ts_tree.yview)
-        h_scroll = ttk.Scrollbar(tree_container, orient="horizontal", command=self.ts_tree.xview)
-        self.ts_tree.configure(yscrollcommand=v_scroll.set, xscrollcommand=h_scroll.set)
-
-        self.ts_tree.grid(row=0, column=0, sticky="ew")
-        v_scroll.grid(row=0, column=1, sticky="ns")
-        h_scroll.grid(row=1, column=0, sticky="ew")
+        """Unified into Workforce Intelligence; aliased for backwards compatibility."""
+        if hasattr(self, "workforce_dashboard_view"):
+            self.frames["analyse_time_series"] = self.workforce_dashboard_view
+            self.frames["analyse_dashboard"] = self.workforce_dashboard_view
 
     # ---------------------------------------------------------
     # Analyse Upload
@@ -3577,14 +3349,13 @@ class App(ctk.CTk):
 
         hdr = ui.create_page_header(
             f, "Upload Dataset",
-            "Upload Daily Performance report or attendance logs (.xlsx, .xls, .csv) for Time Series Analysis."
+            "Upload Daily Performance report or attendance logs (.xlsx, .xls, .csv) for Workforce Intelligence."
         )
         hdr.grid(row=0, column=0, sticky="ew", pady=(0, 14))
 
         actions = ctk.CTkFrame(hdr, fg_color="transparent")
         actions.grid(row=0, column=1, sticky="e")
-        ui.create_secondary_button(actions, "← Workforce Intelligence", lambda: self.select_frame_by_name("workforce_intelligence"), 180).pack(side="left", padx=(0, 10))
-        ui.create_secondary_button(actions, "← Time Series Analysis", lambda: self.select_frame_by_name("analyse_time_series"), 180).pack(side="left")
+        ui.create_secondary_button(actions, "← Workforce Intelligence", lambda: self.select_frame_by_name("workforce_intelligence"), 180).pack(side="left")
 
         # Fast Sync with Time & Leave Master Card
         sync_card = ui.create_card(f)
@@ -3672,8 +3443,8 @@ class App(ctk.CTk):
         ).pack(side="left")
 
         self.btn_ts_open_tsa = ui.create_primary_button(
-            res_top, "🚀 Open Time Series Analysis →",
-            lambda: self.select_frame_by_name("analyse_time_series"), width=230
+            res_top, "🚀 Open Workforce Intelligence →",
+            lambda: self.select_frame_by_name("workforce_intelligence"), width=240
         )
         self.btn_ts_open_tsa.pack(side="right")
         self.btn_ts_open_tsa.configure(state="disabled")
@@ -3684,7 +3455,7 @@ class App(ctk.CTk):
             border_width=1, text_color=ui.COLOR_TEXT, corner_radius=6
         )
         self.ts_upload_summary_text.grid(row=1, column=0, sticky="nsew", padx=16, pady=(0, 12))
-        self.ts_upload_summary_text.insert("0.0", "Select an attendance or performance dataset above and click 'Load & Ingest Dataset'.\nOnce loaded, all metrics and drilldowns will be instantly populated in Time Series Analysis.")
+        self.ts_upload_summary_text.insert("0.0", "Select an attendance or performance dataset above and click 'Load & Ingest Dataset'.\nOnce loaded, all metrics and breakdowns will be instantly populated in Workforce Intelligence.")
         self.ts_upload_summary_text.configure(state="disabled")
 
 
@@ -3767,7 +3538,7 @@ class App(ctk.CTk):
                 f"Managers ({len(rms)}):         {', '.join(rms[:8])}{'...' if len(rms) > 8 else ''}\n"
                 f"Months ({len(months)}):           {', '.join(months)}\n"
                 f"{'=' * 60}\n"
-                f"Status: Ready for Time Series Analysis! Click 'Open Time Series Analysis →' above."
+                f"Status: Ready for Workforce Intelligence! Click 'Open Workforce Intelligence →' above."
             )
             self.ts_upload_summary_text.insert("0.0", summary_info)
             self.ts_upload_summary_text.configure(state="disabled")
@@ -3778,17 +3549,21 @@ class App(ctk.CTk):
                 text=f"📊 Active Dataset: {p_name}  •  {total_rows:,} records  •  {total_emps:,} employees",
                 text_color=ui.COLOR_SUCCESS
             )
+        if hasattr(self, "btn_ts_go_upload"):
             self.btn_ts_go_upload.configure(text="📂 Change Dataset")
 
-        # Populate filters
-        self.ts_bu_combo.configure(values=["All Business Units"] + bus)
-        self.ts_bu_var.set("All Business Units")
+        # Populate filters if legacy controls exist
+        if hasattr(self, "ts_bu_combo"):
+            self.ts_bu_combo.configure(values=["All Business Units"] + bus)
+            self.ts_bu_var.set("All Business Units")
 
-        self.ts_dept_combo.configure(values=["All Departments"] + depts)
-        self.ts_dept_var.set("All Departments")
+        if hasattr(self, "ts_dept_combo"):
+            self.ts_dept_combo.configure(values=["All Departments"] + depts)
+            self.ts_dept_var.set("All Departments")
 
-        self.ts_month_combo.configure(values=["All Months"] + months)
-        self.ts_month_var.set("All Months")
+        if hasattr(self, "ts_month_combo"):
+            self.ts_month_combo.configure(values=["All Months"] + months)
+            self.ts_month_var.set("All Months")
 
         self._refresh_ts_dashboard()
 
@@ -3817,23 +3592,30 @@ class App(ctk.CTk):
         self._refresh_ts_dashboard()
 
     def _on_ts_level_changed(self, choice):
-        self.ts_level_var.set(choice)
+        if hasattr(self, "ts_level_var"):
+            self.ts_level_var.set(choice)
         self._refresh_ts_table(reload_data=True)
 
     def _reset_ts_filters(self):
-        self.ts_bu_var.set("All Business Units")
-        self.ts_dept_var.set("All Departments")
-        self.ts_month_var.set("All Months")
-        self.ts_search_var.set("")
+        if hasattr(self, "ts_bu_var"):
+            self.ts_bu_var.set("All Business Units")
+        if hasattr(self, "ts_dept_var"):
+            self.ts_dept_var.set("All Departments")
+        if hasattr(self, "ts_month_var"):
+            self.ts_month_var.set("All Months")
+        if hasattr(self, "ts_search_var"):
+            self.ts_search_var.set("")
         self._refresh_ts_dashboard()
 
     def _refresh_ts_dashboard(self):
         if not snapshot_service.has_active_snapshot():
             return
+        if not hasattr(self, "lbl_kpi_leave_val"):
+            return
 
-        bu = self.ts_bu_var.get()
-        dept = self.ts_dept_var.get()
-        month = self.ts_month_var.get()
+        bu = self.ts_bu_var.get() if hasattr(self, "ts_bu_var") else None
+        dept = self.ts_dept_var.get() if hasattr(self, "ts_dept_var") else None
+        month = self.ts_month_var.get() if hasattr(self, "ts_month_var") else None
 
         metrics = snapshot_service.get_dashboard_metrics(
             business_unit=bu, department=dept, month=month
@@ -3881,6 +3663,8 @@ class App(ctk.CTk):
 
     def _refresh_ts_table(self, reload_data=True):
         if not snapshot_service.has_active_snapshot():
+            return
+        if not hasattr(self, "ts_tree"):
             return
 
         level = self.ts_level_var.get()
