@@ -12,6 +12,8 @@ Handles Keka's 1-month API/export restriction by:
 """
 
 import os
+import io
+import time
 import json
 import logging
 from pathlib import Path
@@ -275,6 +277,9 @@ class HistoricalSyncManager:
                 errors.append(f"{disp_name}: {err}")
             elif df_m is not None and not df_m.empty:
                 synced_dfs.append(df_m)
+
+            # Small cooldown between months to allow Keka rate-limit window to refresh
+            time.sleep(0.4)
 
         # Assemble unified dataset
         unified_df = pd.DataFrame()

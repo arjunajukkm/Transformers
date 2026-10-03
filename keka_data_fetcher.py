@@ -41,6 +41,7 @@ if hasattr(sys.stderr, "reconfigure"):
 
 import pandas as pd
 import requests
+import concurrent.futures
 from dotenv import load_dotenv
 
 load_dotenv(override=True)
@@ -340,41 +341,74 @@ class KekaDataFetcher:
         all_records = []
         for page in range(1, max_pages + 1):
             params["pageNumber"] = page
-            try:
-                url = f"{self.base_url}/{endpoint.lstrip('/')}"
-                res = getter(url, headers=headers, params=params, timeout=30)
-                if res.status_code == 401:
-                    return all_records, "Authentication failed (HTTP 401). Invalid or expired token."
-                if res.status_code == 403:
-                    try:
-                        err_text = res.text.strip('" ')
-                    except Exception:
-                        err_text = "Forbidden"
-                    return all_records, f"Privilege missing for {endpoint} (HTTP 403: {err_text}). Enable this scope in Keka Admin Settings."
-                if res.status_code != 200:
-                    return all_records, f"API error: HTTP {res.status_code} on page {page}"
+            
+            # Retry loop for HTTP 429 (Rate Limiting) and transient network/server hiccups
+            max_retries = 4
+            success = False
+            for attempt in range(max_retries):
+                try:
+                    url = f"{self.base_url}/{endpoint.lstrip('/')}"
+                    res = getter(url, headers=headers, params=params, timeout=30)
+                    
+                    if res.status_code == 429:
+                        # Rate limit hit: extract Retry-After or apply exponential backoff
+                        retry_after = res.headers.get("Retry-After")
+                        wait_sec = float(retry_after) if retry_after else (1.5 * (attempt + 1))
+                        logger.warning(f"Keka Rate Limit (HTTP 429) on {endpoint}. Backing off for {wait_sec:.1f}s (attempt {attempt + 1}/{max_retries})...")
+                        time.sleep(wait_sec)
+                        continue
 
-                body = res.json()
-                data = body.get("data", [])
-                if isinstance(data, list):
-                    all_records.extend(data)
-                elif isinstance(data, dict):
-                    all_records.append(data)
+                    if res.status_code in (500, 502, 503, 504) and attempt < max_retries - 1:
+                        time.sleep(1.0 * (attempt + 1))
+                        continue
 
-                total_pages = body.get("totalPages", 1)
-                if progress_callback:
-                    try:
-                        progress_callback(page, total_pages, f"Fetched {label} page {page}/{total_pages} ({len(all_records)} records)")
-                    except Exception:
-                        pass
+                    if res.status_code == 401:
+                        return all_records, "Authentication failed (HTTP 401). Invalid or expired token."
+                    if res.status_code == 403:
+                        try:
+                            err_text = res.text.strip('" ')
+                        except Exception:
+                            err_text = "Forbidden"
+                        return all_records, f"Privilege missing for {endpoint} (HTTP 403: {err_text}). Enable this scope in Keka Admin Settings."
+                    if res.status_code != 200:
+                        try:
+                            err_msg = res.json().get("message") or res.text[:200]
+                        except Exception:
+                            err_msg = res.text[:200] if hasattr(res, "text") else ""
+                        return all_records, f"API error: HTTP {res.status_code} on page {page} ({err_msg})"
 
-                if page >= total_pages:
+                    body = res.json()
+                    data = body.get("data", [])
+                    if isinstance(data, list):
+                        all_records.extend(data)
+                    elif isinstance(data, dict):
+                        all_records.append(data)
+
+                    total_pages = body.get("totalPages", 1)
+                    if progress_callback:
+                        try:
+                            progress_callback(page, total_pages, f"Fetched {label} page {page}/{total_pages} ({len(all_records)} records)")
+                        except Exception:
+                            pass
+
+                    success = True
+                    # Small throttle between pages to stay well below rate limit threshold
+                    time.sleep(0.15)
+
+                    if page >= total_pages:
+                        return all_records, None
                     break
 
-            except requests.Timeout:
-                return all_records, f"Request timed out on page {page}"
-            except Exception as e:
-                return all_records, f"Error on page {page}: {e}"
+                except requests.Timeout:
+                    if attempt < max_retries - 1:
+                        time.sleep(1.0 * (attempt + 1))
+                        continue
+                    return all_records, f"Request timed out on page {page}"
+                except Exception as e:
+                    return all_records, f"Error on page {page}: {e}"
+
+            if not success:
+                return all_records, f"API rate limit or connection failure after {max_retries} attempts on page {page}"
 
         return all_records, None
 
@@ -902,19 +936,32 @@ class KekaDataFetcher:
           Employee Number, Employee Name, From Date, To Date, Request Status,
           Request Type (WFH/OD)
         """
-        import concurrent.futures
+        # Parse dates into datetime objects
+        f_dt = None
+        t_dt = None
+        for fmt in ["%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y"]:
+            try:
+                if not f_dt and from_date:
+                    f_dt = datetime.strptime(from_date.strip(), fmt).date()
+                if not t_dt and to_date:
+                    t_dt = datetime.strptime(to_date.strip(), fmt).date()
+            except Exception:
+                pass
+        if not f_dt:
+            f_dt = datetime.now().replace(day=1).date()
+        if not t_dt:
+            t_dt = datetime.now().date()
 
-        # Default to current month if dates not specified
-        if not from_date or not to_date:
-            today = datetime.now()
-            first_day = today.replace(day=1)
-            from_date = first_day.strftime("%Y-%m-%d")
-            to_date = today.strftime("%Y-%m-%d")
+        # Partition into safe <= 15-day intervals
+        chunks = []
+        c_start = f_dt
+        while c_start <= t_dt:
+            c_end = min(c_start + timedelta(days=14), t_dt)
+            chunks.append((c_start.strftime("%Y-%m-%d"), c_end.strftime("%Y-%m-%d")))
+            c_start = c_end + timedelta(days=1)
 
         all_rows = []
         errors = []
-
-        # Status mapping (Keka API uses integers)
         status_map = {
             1: "Pending",
             2: "Approved",
@@ -923,24 +970,53 @@ class KekaDataFetcher:
             5: "Revoked"
         }
 
-        wfh_params = {"from": from_date, "to": to_date}
-        od_params = {"from": from_date, "to": to_date}
+        wfh_records = []
+        od_records = []
 
-        if progress_callback:
-            progress_callback("Querying WFH and OD requests concurrently via API...")
+        for c_idx, (c_from, c_to) in enumerate(chunks, 1):
+            if progress_callback:
+                progress_callback(f"Querying WFH and OD requests (slice {c_idx}/{len(chunks)}: {c_from} to {c_to})...")
 
-        # Fast parallel execution of WFH and OD requests
-        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-            future_wfh = executor.submit(self._paginated_get, "/time/wfh", wfh_params)
-            future_od = executor.submit(self._paginated_get, "/time/od", od_params)
+            wfh_params = {"from": c_from, "to": c_to}
+            od_params = {"from": c_from, "to": c_to}
 
-            wfh_records, wfh_err = future_wfh.result()
-            od_records, od_err = future_od.result()
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                future_wfh = executor.submit(self._paginated_get, "/time/wfh", wfh_params)
+                future_od = executor.submit(self._paginated_get, "/time/od", od_params)
 
-        if wfh_err:
-            errors.append(f"WFH: {wfh_err}")
-        if od_err:
-            errors.append(f"OD: {od_err}")
+                w_recs, w_err = future_wfh.result()
+                o_recs, o_err = future_od.result()
+
+            if w_err and not w_recs:
+                errors.append(f"WFH: {w_err}")
+            elif w_recs:
+                wfh_records.extend(w_recs)
+
+            if o_err and not o_recs:
+                errors.append(f"OD: {o_err}")
+            elif o_recs:
+                od_records.extend(o_recs)
+
+            time.sleep(0.1)
+
+        # Deduplicate records by ID
+        seen_wfh = set()
+        unique_wfh = []
+        for r in wfh_records:
+            rid = r.get("id") or str(r)
+            if rid not in seen_wfh:
+                seen_wfh.add(rid)
+                unique_wfh.append(r)
+        wfh_records = unique_wfh
+
+        seen_od = set()
+        unique_od = []
+        for r in od_records:
+            rid = r.get("id") or str(r)
+            if rid not in seen_od:
+                seen_od.add(rid)
+                unique_od.append(r)
+        od_records = unique_od
 
         for r in wfh_records:
             status_val = r.get("status", "")
@@ -1478,24 +1554,60 @@ class KekaDataFetcher:
         if progress_callback:
             progress_callback(0.70, f"Pulling Attendance & Leave records ({from_iso} to {to_iso}) via API...")
 
-        # 1. Fetch attendance records and leave requests concurrently
-        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-            future_att = executor.submit(
-                self._paginated_get,
-                "/time/attendance",
-                {"from": from_iso, "to": to_iso, "pageSize": 200},
-                max_pages=50,
-                label="Attendance"
-            )
-            future_leave = executor.submit(
-                self._paginated_get,
-                "/time/leaverequests",
-                {"from": from_iso, "to": to_iso, "pageSize": 200},
-                max_pages=20,
-                label="Leaves"
-            )
-            att_records, att_err = future_att.result()
-            leave_records, leave_err = future_leave.result()
+        # Partition into safe <= 15-day intervals so Keka 30-day API limit is never violated
+        chunks = []
+        c_start = from_dt.date() if isinstance(from_dt, datetime) else from_dt
+        c_end_final = to_dt.date() if isinstance(to_dt, datetime) else to_dt
+        while c_start <= c_end_final:
+            c_end = min(c_start + timedelta(days=14), c_end_final)
+            chunks.append((c_start.strftime("%Y-%m-%d"), c_end.strftime("%Y-%m-%d")))
+            c_start = c_end + timedelta(days=1)
+
+        att_records = []
+        leave_records = []
+        att_err = None
+
+        for c_idx, (c_from, c_to) in enumerate(chunks, 1):
+            if progress_callback:
+                progress_callback(0.70 + (c_idx / len(chunks)) * 0.15, f"Pulling Attendance & Leaves ({c_from} to {c_to})...")
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                future_att = executor.submit(
+                    self._paginated_get,
+                    "/time/attendance",
+                    {"from": c_from, "to": c_to, "pageSize": 200},
+                    max_pages=50,
+                    label="Attendance"
+                )
+                future_leave = executor.submit(
+                    self._paginated_get,
+                    "/time/leaverequests",
+                    {"from": c_from, "to": c_to, "pageSize": 200},
+                    max_pages=20,
+                    label="Leaves"
+                )
+                c_att, c_att_err = future_att.result()
+                c_lve, c_lve_err = future_leave.result()
+
+            if c_att_err and not c_att:
+                att_err = c_att_err
+            elif c_att:
+                att_records.extend(c_att)
+
+            if c_lve:
+                leave_records.extend(c_lve)
+
+            time.sleep(0.15)
+
+        # Deduplicate attendance logs by (employeeNumber, attendanceDate)
+        seen_att = set()
+        unique_att = []
+        for a in att_records:
+            k = (str(a.get("employeeNumber") or ""), str(a.get("attendanceDate") or "")[:10])
+            if k not in seen_att:
+                seen_att.add(k)
+                unique_att.append(a)
+        att_records = unique_att
 
         if att_err and not att_records:
             return pd.DataFrame(), f"Attendance API error: {att_err}"
