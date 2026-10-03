@@ -45,6 +45,12 @@ from storage import AnalyticalSnapshot, snapshot_service
 import time_series_analysis as tsa
 import ui_components as ui
 from workforce_intelligence.snapshot_bridge import workforce_bridge
+from workforce_intelligence.charts import (
+    ChartCanvas,
+    render_trend_time_series,
+    render_what_changed_bars,
+    CHART_THEME,
+)
 from workforce_intelligence.trends import (
     TREND_METRICS,
     POLICY_EFFECTIVE_DATE_STR,
@@ -1970,14 +1976,14 @@ class TrendPulseWidget(ctk.CTkFrame):
 
 class MainTrendChartWidget(ctk.CTkFrame):
     """
-    Interactive time-series canvas chart showing:
-    - Scoped Actual metric trend (solid cyan line with node markers)
+    Interactive time-series Matplotlib chart showing:
+    - Scoped Actual metric trend (smooth anti-aliased cyan line with soft gradient fill)
     - Active Benchmark (Organisation dashed amber line / Historical dotted / Peer line)
     - Historical Baseline (trailing 3-month median dotted line)
     - Normal / Reference variation band (shaded corridor)
     - Policy Effective Date vertical marker (1 Oct 2026)
     - Highlights for Regression points (rose ring) and Low-Volume points (amber hollow dot)
-    - Interactive hover inspection tooltip card
+    - Interactive crosshairs and rich hover inspection tooltip card
     """
     def __init__(self, parent, **kwargs):
         kwargs.setdefault("corner_radius", 10)
@@ -1989,7 +1995,11 @@ class MainTrendChartWidget(ctk.CTkFrame):
         self.grid_rowconfigure(1, weight=1)
 
         self._chart_data: Dict[str, Any] = {}
-        self._node_coords: List[Dict[str, Any]] = []
+        self._benchmark_label: str = "Organisation"
+        self._node_records: List[Dict[str, Any]] = []
+        self._hover_ann = None
+        self._hover_vline = None
+        self._current_hover_idx = None
 
         # Top Header & Legend Strip
         hdr = ctk.CTkFrame(self, fg_color="transparent")
@@ -2047,283 +2057,160 @@ class MainTrendChartWidget(ctk.CTkFrame):
         ctk.CTkLabel(f_ref, text="■", font=ctk.CTkFont(size=11), text_color="#1E293B").pack(side="left", padx=(0, 3))
         ctk.CTkLabel(f_ref, text="Normal Range", font=ctk.CTkFont(family=ui.FONT_FAMILY, size=10), text_color=ui.COLOR_TEXT_SEC).pack(side="left")
 
-        # Canvas container
+        # Matplotlib Chart Canvas container
         self.canvas_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self.canvas_frame.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 8))
+        self.canvas_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 8))
         self.canvas_frame.grid_columnconfigure(0, weight=1)
         self.canvas_frame.grid_rowconfigure(0, weight=1)
 
-        self.chart_canvas = tk.Canvas(
-            self.canvas_frame,
-            bg=ui.COLOR_CARD,
-            bd=0,
-            highlightthickness=0,
-            relief="flat",
-            height=200,
-        )
+        self.chart_canvas = ChartCanvas(self.canvas_frame, figsize=(8, 2.3), dpi=100)
         self.chart_canvas.grid(row=0, column=0, sticky="nsew")
-        self.chart_canvas.bind("<Configure>", lambda e: self._draw_chart())
-        self.chart_canvas.bind("<Motion>", self._on_canvas_motion)
-        self.chart_canvas.bind("<Leave>", self._on_canvas_leave)
+        self.chart_ax = self.chart_canvas.fig.add_subplot(111)
+
+        # Connect Matplotlib mouse events for interactive tooltips
+        self.chart_canvas.canvas.mpl_connect("motion_notify_event", self._on_mpl_motion)
+        self.chart_canvas.canvas.mpl_connect("axes_leave_event", self._on_mpl_leave)
 
     def update_data(self, chart_data: Dict[str, Any], benchmark_label: str = "Organisation"):
         """Update chart with points and metadata from get_trend_intelligence."""
         self._chart_data = chart_data or {}
-        m_name = chart_data.get("metric_name", "Selected Metric")
+        self._benchmark_label = benchmark_label
+        self._current_hover_idx = None
+        self._hover_ann = None
+        self._hover_vline = None
+
+        m_name = self._chart_data.get("metric_name", "Selected Metric")
         self.lbl_title.configure(text=f"{m_name} — Trajectory & Benchmark Evaluation")
         self.lbl_subtitle.configure(text=f"Actual vs {benchmark_label} Benchmark • Trailing baseline • Decision markers")
         self.lbl_leg_bn_text.configure(text=f"{benchmark_label} Benchmark")
+
         self._draw_chart()
 
     def _draw_chart(self):
-        canvas = self.chart_canvas
-        canvas.delete("all")
-        self._node_coords.clear()
+        self._node_records = render_trend_time_series(
+            self.chart_canvas.fig,
+            self.chart_ax,
+            self._chart_data,
+            benchmark_label=self._benchmark_label,
+        )
+        self.chart_canvas.draw()
 
-        w = canvas.winfo_width()
-        h = canvas.winfo_height()
-        if w <= 40 or h <= 40:
+    def _on_mpl_motion(self, event):
+        """Show interactive tooltip annotation when mouse is near a data node."""
+        if not self._node_records or event.inaxes != self.chart_ax or event.xdata is None:
+            if self._current_hover_idx is not None:
+                self._clear_hover()
             return
 
-        pts = self._chart_data.get("points", [])
-        if not pts:
-            canvas.create_text(
-                w / 2, h / 2,
-                text="No trend observation data available for active scope",
-                fill=ui.COLOR_TEXT_DIM,
-                font=(ui.FONT_FAMILY, 11),
-            )
-            return
-
-        pad_left = 56.0
-        pad_right = 28.0
-        pad_top = 24.0
-        pad_bottom = 34.0
-
-        plot_w = max(10.0, w - pad_left - pad_right)
-        plot_h = max(10.0, h - pad_top - pad_bottom)
-
-        # Collect all values to find Y range
-        all_vals = []
-        for p in pts:
-            for k in ("actual", "benchmark", "historical"):
-                v = p.get(k)
-                if v is not None and not pd.isna(v):
-                    all_vals.append(float(v))
-
-        ref_range = self._chart_data.get("reference_range")
-        if ref_range:
-            all_vals.extend([float(ref_range[0]), float(ref_range[1])])
-
-        if not all_vals:
-            all_vals = [0.0, 10.0]
-
-        min_val = max(0.0, min(all_vals) * 0.9 if min(all_vals) > 0 else 0.0)
-        max_val = max(all_vals) * 1.15 if max(all_vals) > 0 else 1.0
-        if max_val <= min_val:
-            max_val = min_val + 1.0
-
-        val_range = max_val - min_val
-
-        def val_to_y(v: float) -> float:
-            ratio = (v - min_val) / val_range
-            return pad_top + plot_h * (1.0 - ratio)
-
-        # Draw 4 horizontal reference grid lines
-        grid_steps = 4
-        for step in range(grid_steps + 1):
-            g_val = min_val + (val_range * step / grid_steps)
-            gy = val_to_y(g_val)
-            canvas.create_line(pad_left, gy, w - pad_right, gy, fill="#1E293B", width=1)
-            # Label
-            fmt = self._chart_data.get("format", "percentage")
-            if fmt == "percentage":
-                lbl_txt = f"{g_val:.1f}%"
-            elif fmt == "days":
-                lbl_txt = f"{g_val:.1f}d"
-            elif fmt in ("duration", "time"):
-                lbl_txt = f"{g_val:.0f}m"
-            else:
-                lbl_txt = f"{g_val:.1f}"
-            canvas.create_text(
-                pad_left - 8, gy,
-                text=lbl_txt,
-                fill=ui.COLOR_TEXT_DIM,
-                font=(ui.FONT_FAMILY, 8),
-                anchor="e",
-            )
-
-        # Draw Reference Band if available
-        if ref_range and len(pts) >= 1:
-            r_top = val_to_y(ref_range[1])
-            r_bot = val_to_y(ref_range[0])
-            canvas.create_rectangle(
-                pad_left, min(r_top, r_bot),
-                w - pad_right, max(r_top, r_bot),
-                fill="#162032", outline="",
-            )
-            canvas.create_line(pad_left, r_top, w - pad_right, r_top, fill="#1E293B", dash=(2, 2))
-            canvas.create_line(pad_left, r_bot, w - pad_right, r_bot, fill="#1E293B", dash=(2, 2))
-
-        # X-Coordinates for each period point
-        n_pts = len(pts)
-        x_coords = []
-        for i in range(n_pts):
-            if n_pts == 1:
-                x = pad_left + plot_w / 2.0
-            else:
-                x = pad_left + (plot_w * i / (n_pts - 1))
-            x_coords.append(x)
-
-        # Draw Policy Effective Date Marker (1 Oct 2026)
-        pol_date_str = str(self._chart_data.get("policy_effective_date") or POLICY_EFFECTIVE_DATE_STR)
-        for i, p in enumerate(pts):
-            if p.get("period") == pol_date_str or (i > 0 and pts[i - 1].get("period", "") < pol_date_str <= p.get("period", "")):
-                px = x_coords[i]
-                canvas.create_line(px, pad_top - 4, px, pad_top + plot_h, fill="#06B6D4", dash=(4, 3), width=1)
-                canvas.create_text(
-                    px - 4 if px > w - 100 else px + 4, pad_top - 10,
-                    text="⚡ Policy Effective",
-                    fill="#06B6D4",
-                    font=(ui.FONT_FAMILY, 8, "bold"),
-                    anchor="e" if px > w - 100 else "w",
-                )
-                break
-
-        # Draw Historical Baseline Line (dotted purple)
-        hist_coords = []
-        for i, p in enumerate(pts):
-            hv = p.get("historical")
-            if hv is not None and not pd.isna(hv):
-                hist_coords.extend([x_coords[i], val_to_y(float(hv))])
-        if len(hist_coords) >= 4:
-            canvas.create_line(*hist_coords, fill="#8B5CF6", dash=(2, 3), width=1)
-
-        # Draw Benchmark Line (dashed amber)
-        bench_coords = []
-        for i, p in enumerate(pts):
-            bv = p.get("benchmark")
-            if bv is not None and not pd.isna(bv):
-                bench_coords.extend([x_coords[i], val_to_y(float(bv))])
-        if len(bench_coords) >= 4:
-            canvas.create_line(*bench_coords, fill="#F59E0B", dash=(4, 3), width=2)
-        elif len(bench_coords) == 2:
-            bx, by = bench_coords[0], bench_coords[1]
-            canvas.create_oval(bx - 3, by - 3, bx + 3, by + 3, fill="#F59E0B", outline="")
-
-        # Draw Actual Trend Line (solid cyan)
-        actual_coords = []
-        valid_act_indices = []
-        for i, p in enumerate(pts):
-            av = p.get("actual")
-            if av is not None and not pd.isna(av):
-                actual_coords.extend([x_coords[i], val_to_y(float(av))])
-                valid_act_indices.append(i)
-
-        if len(actual_coords) >= 4:
-            canvas.create_line(*actual_coords, fill="#06B6D4", width=2)
-
-        # Draw Actual Nodes & Highlights
-        for idx in valid_act_indices:
-            p = pts[idx]
-            x = x_coords[idx]
-            y = val_to_y(float(p["actual"]))
-            is_reg = p.get("is_regression", False)
-            is_low = p.get("is_low_volume", False)
-
-            if is_reg:
-                # Regression highlight (red ring around node)
-                canvas.create_oval(x - 8, y - 8, x + 8, y + 8, outline="#F43F5E", width=2)
-                canvas.create_oval(x - 4, y - 4, x + 4, y + 4, fill="#F43F5E", outline="")
-            elif is_low:
-                # Low volume (amber hollow ring)
-                canvas.create_oval(x - 5, y - 5, x + 5, y + 5, outline="#F59E0B", width=2, fill=ui.COLOR_CARD)
-            else:
-                # Regular node
-                canvas.create_oval(x - 4, y - 4, x + 4, y + 4, fill="#06B6D4", outline="#FFFFFF", width=1)
-
-            # Store node coordinates for hover inspection
-            self._node_coords.append({
-                "x": x,
-                "y": y,
-                "point": p,
-            })
-
-            # X-Axis month label
-            canvas.create_text(
-                x, pad_top + plot_h + 12,
-                text=p.get("period_display", p.get("period", "")),
-                fill=ui.COLOR_TEXT if idx == len(pts) - 1 else ui.COLOR_TEXT_DIM,
-                font=(ui.FONT_FAMILY, 9, "bold" if idx == len(pts) - 1 else "normal"),
-                anchor="center",
-            )
-
-    def _on_canvas_motion(self, event):
-        """Show interactive tooltip on closest data node."""
-        if not self._node_coords:
-            return
-        mx, my = event.x, event.y
+        # Find closest node by x distance
+        x_mouse = event.xdata
         closest = None
-        min_dist = 25.0  # 25px hit radius
+        min_dist = 0.45
 
-        for node in self._node_coords:
-            dist = math.hypot(mx - node["x"], my - node["y"])
+        for nr in self._node_records:
+            dist = abs(x_mouse - nr["x_val"])
             if dist < min_dist:
                 min_dist = dist
-                closest = node
+                closest = nr
 
-        canvas = self.chart_canvas
-        canvas.delete("tooltip")
+        if not closest:
+            if self._current_hover_idx is not None:
+                self._clear_hover()
+            return
 
-        if closest:
-            p = closest["point"]
-            nx, ny = closest["x"], closest["y"]
+        if closest["index"] == self._current_hover_idx:
+            return
 
-            # Draw crosshair circle
-            canvas.create_oval(nx - 7, ny - 7, nx + 7, ny + 7, outline="#FFFFFF", width=1, tags="tooltip")
+        self._current_hover_idx = closest["index"]
+        p = closest["point"]
+        x_pos = closest["x_val"]
+        y_pos = closest["y_val"]
 
-            # Build tooltip content
-            p_name = p.get("period_display", p.get("period", ""))
-            act_f = p.get("actual_formatted", "—")
-            bn_f = p.get("benchmark_formatted", "—")
-            hs_f = p.get("historical_formatted", "—")
-            obs = p.get("evaluable", 0)
+        # Clear previous hover artists
+        if self._hover_ann:
+            try:
+                self._hover_ann.remove()
+            except Exception:
+                pass
+            self._hover_ann = None
 
-            lines = [
-                f"{p_name}",
-                f"Actual: {act_f}",
-                f"Benchmark: {bn_f}",
-                f"Historical: {hs_f}",
-                f"Volume: {obs:,} obs",
-            ]
-            if p.get("is_regression"):
-                lines.append("⚠️ Regression Flagged")
-            if p.get("is_low_volume"):
-                lines.append("⚡ Low-Volume Period")
+        if self._hover_vline:
+            try:
+                self._hover_vline.remove()
+            except Exception:
+                pass
+            self._hover_vline = None
 
-            tip_text = "\n".join(lines)
+        # Add vertical guide line
+        self._hover_vline = self.chart_ax.axvline(
+            x_pos, color="#38BDF8", linestyle=":", linewidth=1.2, alpha=0.75, zorder=8
+        )
 
-            # Position tooltip box avoiding edge overflow
-            tw = 140
-            th = 20 + len(lines) * 14
-            tx = nx + 12 if nx + tw + 20 < canvas.winfo_width() else nx - tw - 12
-            ty = max(10, min(ny - 20, canvas.winfo_height() - th - 10))
+        # Tooltip text
+        p_name = p.get("period_display", p.get("period", ""))
+        act_f = p.get("actual_formatted", "—")
+        bn_f = p.get("benchmark_formatted", "—")
+        hs_f = p.get("historical_formatted", "—")
+        obs = p.get("evaluable", 0)
 
-            canvas.create_rectangle(
-                tx, ty, tx + tw, ty + th,
-                fill="#0F172A", outline="#334155", width=1, tags="tooltip"
-            )
-            canvas.create_text(
-                tx + 8, ty + 8,
-                text=tip_text,
-                fill=ui.COLOR_TEXT,
-                font=(ui.FONT_FAMILY, 9),
-                anchor="nw",
-                tags="tooltip",
-            )
+        tip_lines = [
+            f"{p_name}",
+            f"Actual: {act_f}",
+            f"{self._benchmark_label}: {bn_f}",
+            f"Historical: {hs_f}",
+            f"Volume: {obs:,} obs",
+        ]
+        if p.get("is_regression"):
+            tip_lines.append("⚠️ Regression Flagged")
+        if p.get("is_low_volume"):
+            tip_lines.append("⚡ Low-Volume Period")
 
-    def _on_canvas_leave(self, event):
-        self.chart_canvas.delete("tooltip")
+        tip_txt = "\n".join(tip_lines)
+
+        n_pts = len(self._node_records)
+        xy_off = (-135, 12) if x_pos > (n_pts / 2.0) else (15, 12)
+
+        self._hover_ann = self.chart_ax.annotate(
+            tip_txt,
+            xy=(x_pos, y_pos),
+            xytext=xy_off,
+            textcoords="offset points",
+            bbox=dict(
+                boxstyle="round,pad=0.5,rounding_size=0.3",
+                fc="#0B132B",
+                ec="#334155",
+                lw=1.2,
+                alpha=0.96,
+            ),
+            color="#F8FAFC",
+            fontsize=8,
+            fontfamily=CHART_THEME["font_family"],
+            zorder=10,
+        )
+        self.chart_canvas.canvas.draw_idle()
+
+    def _clear_hover(self):
+        self._current_hover_idx = None
+        changed = False
+        if self._hover_ann:
+            try:
+                self._hover_ann.remove()
+            except Exception:
+                pass
+            self._hover_ann = None
+            changed = True
+        if self._hover_vline:
+            try:
+                self._hover_vline.remove()
+            except Exception:
+                pass
+            self._hover_vline = None
+            changed = True
+        if changed:
+            self.chart_canvas.canvas.draw_idle()
+
+    def _on_mpl_leave(self, event):
+        self._clear_hover()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2545,6 +2432,7 @@ class WhatChangedWidget(ctk.CTkFrame):
     """
     Deterministic driver attribution card explaining the biggest contributors
     to the latest month-over-month movement (Business Units and exception categories).
+    Features a modern Matplotlib diverging horizontal bar chart centered on zero.
     """
     def __init__(self, parent, **kwargs):
         kwargs.setdefault("corner_radius", 10)
@@ -2554,6 +2442,8 @@ class WhatChangedWidget(ctk.CTkFrame):
         super().__init__(parent, **kwargs)
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(2, weight=1)
+
+        self._what_changed_data: Dict[str, Any] = {}
 
         # Header
         hdr = ctk.CTkFrame(self, fg_color="transparent")
@@ -2595,15 +2485,19 @@ class WhatChangedWidget(ctk.CTkFrame):
         )
         self.lbl_movement.grid(row=0, column=0, sticky="ew", padx=8, pady=6)
 
-        # Drivers List Container
-        self.drivers_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self.drivers_frame.grid(row=2, column=0, sticky="nsew", padx=10, pady=(0, 8))
-        self.drivers_frame.grid_columnconfigure(0, weight=1)
+        # Drivers Matplotlib Chart Container
+        self.chart_container = ctk.CTkFrame(self, fg_color="transparent")
+        self.chart_container.grid(row=2, column=0, sticky="nsew", padx=10, pady=(0, 8))
+        self.chart_container.grid_columnconfigure(0, weight=1)
+        self.chart_container.grid_rowconfigure(0, weight=1)
+
+        self.chart_canvas = ChartCanvas(self.chart_container, figsize=(4.5, 2.0), dpi=100)
+        self.chart_canvas.grid(row=0, column=0, sticky="nsew")
+        self.chart_ax = self.chart_canvas.fig.add_subplot(111)
 
     def update_data(self, what_changed: Dict[str, Any]):
-        """Render driver breakdown list from bundle."""
-        for child in self.drivers_frame.winfo_children():
-            child.destroy()
+        """Render driver breakdown using Matplotlib diverging bars and summary text."""
+        self._what_changed_data = what_changed or {}
 
         if not what_changed:
             return
@@ -2617,56 +2511,19 @@ class WhatChangedWidget(ctk.CTkFrame):
                 text="✓ Baseline period established • Stable trajectory across active scope",
                 text_color=ui.COLOR_SUCCESS,
             )
-            return
+        else:
+            is_inc = "+" in headline or "increased" in headline.lower()
+            self.lbl_movement.configure(
+                text=f"📈 {headline}" if is_inc else f"📉 {headline}",
+                text_color="#F43F5E" if is_inc else "#10B981",
+            )
 
-        is_inc = "+" in headline or "increased" in headline.lower()
-        self.lbl_movement.configure(
-            text=f"📈 {headline}" if is_inc else f"📉 {headline}",
-            text_color="#F43F5E" if is_inc else "#10B981",
+        render_what_changed_bars(
+            self.chart_canvas.fig,
+            self.chart_ax,
+            self._what_changed_data,
         )
-
-        # Render top drivers
-        for idx, drv in enumerate(drivers[:5]):
-            d_name = drv.get("driver", "Driver")
-            d_delta = drv.get("formatted_delta", "—")
-            d_val = drv.get("delta", 0.0)
-            d_type = drv.get("type", "BU")
-
-            d_row = ctk.CTkFrame(self.drivers_frame, fg_color="#131B2E", corner_radius=4)
-            d_row.pack(fill="x", pady=2)
-            d_row.grid_columnconfigure(1, weight=1)
-
-            # Icon tag
-            chip_bg = "#1E293B"
-            chip_txt = "BU" if d_type == "BU" else "CAT"
-            chip_box = ctk.CTkFrame(d_row, fg_color=chip_bg, corner_radius=3)
-            chip_box.grid(row=0, column=0, padx=(6, 4), pady=3, sticky="w")
-            ctk.CTkLabel(
-                chip_box,
-                text=chip_txt,
-                font=ctk.CTkFont(family=ui.FONT_FAMILY, size=8, weight="bold"),
-                text_color=ui.COLOR_TEXT_DIM,
-            ).pack(padx=4, pady=1)
-
-            # Driver Name
-            ctk.CTkLabel(
-                d_row,
-                text=d_name,
-                font=ctk.CTkFont(family=ui.FONT_FAMILY, size=10, weight="bold"),
-                text_color=ui.COLOR_TEXT,
-                anchor="w",
-            ).grid(row=0, column=1, sticky="w", padx=2, pady=3)
-
-            # Delta Badge (Right-aligned)
-            is_pos = d_val > 0
-            d_col = "#F43F5E" if is_pos else "#10B981"
-            ctk.CTkLabel(
-                d_row,
-                text=d_delta,
-                font=ctk.CTkFont(family=ui.FONT_FAMILY, size=10, weight="bold"),
-                text_color=d_col,
-                anchor="e",
-            ).grid(row=0, column=2, sticky="e", padx=(4, 10), pady=3)
+        self.chart_canvas.draw()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
