@@ -48,6 +48,7 @@ from workforce_intelligence.patterns import (
     PatternResult,
     PatternSummary,
 )
+from workforce_intelligence.metrics import build_employee_day_facts
 from workforce_intelligence.policy import evaluate_policy
 from workforce_intelligence.trends import (
     TREND_METRICS,
@@ -85,44 +86,54 @@ def _filter_workforce_df(
     employee: Optional[str] = None,
     date_range: Optional[Tuple[date, date]] = None,
 ) -> pd.DataFrame:
-    filtered = df.copy()
-    if filtered.empty:
-        return filtered
+    if df is None or df.empty:
+        return df if df is not None else pd.DataFrame()
+
+    filtered = df
 
     # 1. Business Unit
     if business_unit and str(business_unit).strip() not in ("All", "All Business Units", "", "None", "nan"):
         bu_clean = str(business_unit).strip().lower()
-        if bu_clean in ("unknown", "unknown / unassigned", "unassigned"):
-            filtered = filtered[
-                filtered["_eff_bu"].astype(str).str.strip().str.lower().isin(("unknown / unassigned", "unknown", "unassigned", "", "nan", "none"))
-            ]
+        if "_eff_bu" in filtered.columns:
+            bu_series = filtered["_eff_bu"].astype(str).str.strip().str.lower()
+        elif "Business Unit" in filtered.columns:
+            bu_series = filtered["Business Unit"].astype(str).str.strip().str.lower()
+        elif "_bu" in filtered.columns:
+            bu_series = filtered["_bu"].astype(str).str.strip().str.lower()
         else:
-            filtered = filtered[
-                (filtered["_eff_bu"].astype(str).str.strip().str.lower() == bu_clean) |
-                (filtered["_bu"].astype(str).str.strip().str.lower() == bu_clean)
-            ]
+            bu_series = None
+
+        if bu_series is not None:
+            if bu_clean in ("unknown", "unknown / unassigned", "unassigned"):
+                filtered = filtered[bu_series.isin(("unknown / unassigned", "unknown", "unassigned", "", "nan", "none"))]
+            else:
+                if "_bu" in filtered.columns and "_eff_bu" in filtered.columns:
+                    raw_bu_series = filtered["_bu"].astype(str).str.strip().str.lower()
+                    filtered = filtered[(bu_series == bu_clean) | (raw_bu_series == bu_clean)]
+                else:
+                    filtered = filtered[bu_series == bu_clean]
 
     # 2. Department
     if department and str(department).strip() not in ("All", "All Departments", "", "None", "nan"):
         dept_clean = str(department).strip().lower()
-        if dept_clean in ("unknown", "unknown / unassigned", "unassigned"):
-            filtered = filtered[
-                filtered["_dept"].isna() |
-                filtered["_dept"].astype(str).str.strip().str.lower().isin(("unknown / unassigned", "unknown", "unassigned", "", "nan", "none"))
-            ]
-        else:
-            filtered = filtered[filtered["_dept"].astype(str).str.strip().str.lower() == dept_clean]
+        dept_col = "_dept" if "_dept" in filtered.columns else ("Department" if "Department" in filtered.columns else None)
+        if dept_col:
+            dept_series = filtered[dept_col].astype(str).str.strip().str.lower()
+            if dept_clean in ("unknown", "unknown / unassigned", "unassigned"):
+                filtered = filtered[filtered[dept_col].isna() | dept_series.isin(("unknown / unassigned", "unknown", "unassigned", "", "nan", "none"))]
+            else:
+                filtered = filtered[dept_series == dept_clean]
 
     # 3. Manager
     if manager and str(manager).strip() not in ("All", "All Managers", "All Reporting Managers", "", "None", "nan"):
         mgr_clean = str(manager).strip().lower()
-        if mgr_clean in ("unknown", "unknown / unassigned", "unassigned"):
-            filtered = filtered[
-                filtered["_rm"].isna() |
-                filtered["_rm"].astype(str).str.strip().str.lower().isin(("unknown / unassigned", "unknown", "unassigned", "", "nan", "none"))
-            ]
-        else:
-            filtered = filtered[filtered["_rm"].astype(str).str.strip().str.lower() == mgr_clean]
+        mgr_col = "_rm" if "_rm" in filtered.columns else ("Reporting Manager" if "Reporting Manager" in filtered.columns else None)
+        if mgr_col:
+            mgr_series = filtered[mgr_col].astype(str).str.strip().str.lower()
+            if mgr_clean in ("unknown", "unknown / unassigned", "unassigned"):
+                filtered = filtered[filtered[mgr_col].isna() | mgr_series.isin(("unknown / unassigned", "unknown", "unassigned", "", "nan", "none"))]
+            else:
+                filtered = filtered[mgr_series == mgr_clean]
 
     # 4. Employee
     if employee and str(employee).strip() not in ("All", "All Employees", "", "None", "nan"):
@@ -134,12 +145,18 @@ def _filter_workforce_df(
         else:
             emp_id_key = emp_raw.lower()
 
-        filtered = filtered[
-            (filtered["_emp_num"].astype(str).str.strip().str.lower() == emp_id_key) |
-            (filtered["_emp_name"].astype(str).str.strip().str.lower() == emp_raw.lower())
-        ]
+        emp_num_col = "_emp_num" if "_emp_num" in filtered.columns else ("Employee Number" if "Employee Number" in filtered.columns else None)
+        emp_name_col = "_emp_name" if "_emp_name" in filtered.columns else ("Employee Name" if "Employee Name" in filtered.columns else None)
 
-    # 5. Date Range
+        if emp_num_col and emp_name_col:
+            filtered = filtered[
+                (filtered[emp_num_col].astype(str).str.strip().str.lower() == emp_id_key) |
+                (filtered[emp_name_col].astype(str).str.strip().str.lower() == emp_raw.lower())
+            ]
+        elif emp_num_col:
+            filtered = filtered[filtered[emp_num_col].astype(str).str.strip().str.lower() == emp_id_key]
+
+    # 5. Date Range (Vectorized)
     if date_range and len(date_range) == 2:
         raw_start, raw_end = date_range
         if raw_start is not None and raw_end is not None:
@@ -148,21 +165,10 @@ def _filter_workforce_df(
             if isinstance(start_d, date) and isinstance(end_d, date):
                 if start_d > end_d:
                     return filtered.iloc[0:0].copy()
-                if "_date" in filtered.columns:
-                    def _in_range(d_val):
-                        if d_val is None or pd.isna(d_val):
-                            return False
-                        if isinstance(d_val, datetime):
-                            d_val = d_val.date()
-                        elif isinstance(d_val, str) and d_val not in ("", "nan", "None"):
-                            try:
-                                d_val = tsa.parse_date_value(d_val)
-                            except Exception:
-                                return False
-                        if isinstance(d_val, date):
-                            return start_d <= d_val <= end_d
-                        return False
-                    filtered = filtered[filtered["_date"].apply(_in_range)]
+                d_col = "_date" if "_date" in filtered.columns else ("Date" if "Date" in filtered.columns else None)
+                if d_col and not filtered.empty:
+                    d_series = pd.to_datetime(filtered[d_col], errors="coerce").dt.date
+                    filtered = filtered[(d_series >= start_d) & (d_series <= end_d)]
 
     return filtered
 
@@ -261,13 +267,14 @@ class WorkforceIntelligenceBridge:
     """
     Decoupled analytical service interface for Transformers 2.0 Workforce Intelligence.
     Interacts with TimeSeriesSnapshotService and AnalyticalSnapshot.
-    Maintains a thread-safe, bounded LRU cache for workforce KPI requests.
+    Maintains a thread-safe, bounded LRU cache for workforce KPI requests and
+    precomputed canonical dataset foundations for instantaneous multi-metric switching.
     """
 
     def __init__(
         self,
         snapshot_service: Optional[TimeSeriesSnapshotService] = None,
-        max_cache_size: int = 256,
+        max_cache_size: int = 512,
     ):
         self._service = snapshot_service or default_snapshot_service
         self._max_cache_size = max_cache_size
@@ -275,13 +282,170 @@ class WorkforceIntelligenceBridge:
         self._last_dataset_id: Optional[str] = None
         self._lock = threading.RLock()
 
+        # Precomputed dataset-level analytical foundation
+        self._clean_org_df: Optional[pd.DataFrame] = None
+        self._org_eval_df: Optional[pd.DataFrame] = None
+        self._org_eval_reqs: Optional[List[Dict[str, Any]]] = None
+        self._org_employee_day_facts: Optional[pd.DataFrame] = None
+        self._all_bus: List[str] = []
+        self._bu_eval_dfs: Dict[str, pd.DataFrame] = {}
+        self._bu_eval_reqs: Dict[str, List[Dict[str, Any]]] = {}
+        self._bu_employee_day_facts: Dict[str, pd.DataFrame] = {}
+        self._pattern_cache: Dict[Tuple[Any, ...], List[Dict[str, Any]]] = {}
+        self._org_trends_cache: Dict[str, Dict[str, Any]] = {}
+        self._bu_trends_cache: Dict[Tuple[str, str], Dict[str, Any]] = {}
+
     def _sync_dataset_state(self, snap: Optional[AnalyticalSnapshot]) -> None:
         """Invalidate cached results if the active dataset has changed or been purged."""
         current_id = snap.dataset_id if snap and snap.is_valid() else None
         if current_id != self._last_dataset_id:
             with self._lock:
                 self._cache.clear()
+                self._pattern_cache.clear()
+                self._org_trends_cache.clear()
+                self._bu_trends_cache.clear()
+                self._clean_org_df = None
+                self._org_eval_df = None
+                self._org_eval_reqs = None
+                self._org_employee_day_facts = None
+                self._all_bus = []
+                self._bu_eval_dfs.clear()
+                self._bu_eval_reqs.clear()
+                self._bu_employee_day_facts.clear()
                 self._last_dataset_id = current_id
+
+    def _ensure_dataset_foundation(self, raw_df: pd.DataFrame) -> Tuple[pd.DataFrame, List[Dict[str, Any]], pd.DataFrame, List[str]]:
+        """
+        Compute or retrieve canonical evaluated org_eval_df, evaluated requests,
+        employee_day_facts, and BU partitions in a single unified pass.
+        """
+        with self._lock:
+            if self._org_eval_df is not None and self._org_employee_day_facts is not None:
+                return self._org_eval_df, self._org_eval_reqs or [], self._org_employee_day_facts, self._all_bus
+
+            org_df = ensure_clean_dataframe(raw_df)
+            org_eval_df, org_eval_reqs = evaluate_policy(org_df)
+            org_facts = build_employee_day_facts(org_eval_df)
+
+            # Discover all distinct BUs
+            if "_eff_bu" in org_eval_df.columns:
+                bu_col = org_eval_df["_eff_bu"]
+            else:
+                bu_col = org_eval_df.get("_bu", pd.Series([], dtype=str))
+            raw_bus = [str(b).strip() for b in bu_col.dropna().unique() if str(b).strip() not in ("", "nan", "None")]
+            all_bus = sorted(list(set(raw_bus)))
+
+            # Pre-partition BU slices for ultra-fast heatmap and peer benchmarks
+            bu_eval_dfs = {}
+            bu_facts = {}
+            bu_reqs = {}
+            for bu_name in all_bus:
+                b_clean = bu_name.strip().lower()
+                if b_clean in ("unknown", "unknown / unassigned", "unassigned"):
+                    bu_mask = org_eval_df["_eff_bu"].astype(str).str.strip().str.lower().isin(("unknown / unassigned", "unknown", "unassigned", "", "nan", "none"))
+                else:
+                    bu_mask = (org_eval_df["_eff_bu"].astype(str).str.strip().str.lower() == b_clean) | (org_eval_df.get("_bu", pd.Series([], dtype=str)).astype(str).str.strip().str.lower() == b_clean)
+                b_df = org_eval_df[bu_mask]
+                bu_eval_dfs[bu_name] = b_df
+                
+                # Partition requests
+                if not b_df.empty and "request_id" in b_df.columns:
+                    b_req_ids = set(b_df["request_id"].dropna().unique())
+                    bu_reqs[bu_name] = [r for r in org_eval_reqs if r.get("request_id") in b_req_ids]
+                else:
+                    bu_reqs[bu_name] = []
+
+                # Partition employee day facts
+                if not org_facts.empty and "Business Unit" in org_facts.columns:
+                    b_f_mask = org_facts["Business Unit"].astype(str).str.strip().str.lower() == b_clean
+                    bu_facts[bu_name] = org_facts[b_f_mask]
+                else:
+                    bu_facts[bu_name] = org_facts.iloc[0:0].copy()
+
+            self._clean_org_df = org_df
+            self._org_eval_df = org_eval_df
+            self._org_eval_reqs = org_eval_reqs
+            self._org_employee_day_facts = org_facts
+            self._all_bus = all_bus
+            self._bu_eval_dfs = bu_eval_dfs
+            self._bu_employee_day_facts = bu_facts
+            self._bu_eval_reqs = bu_reqs
+
+            return self._org_eval_df, self._org_eval_reqs, self._org_employee_day_facts, self._all_bus
+
+    def get_cached_trend_intelligence(
+        self,
+        metric_id: str = "attendance_exception_rate",
+        benchmark_type: str = "ORGANIZATION",
+        business_unit: Optional[str] = None,
+        department: Optional[str] = None,
+        manager: Optional[str] = None,
+        employee: Optional[str] = None,
+        date_range: Optional[Tuple[date, date]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Fast synchronous check for cached trend intelligence bundle (0ms response)."""
+        snap = self._service.get_active_snapshot()
+        if not snap or not snap.is_valid():
+            return None
+
+        current_id = snap.dataset_id if snap and snap.is_valid() else None
+        if current_id != self._last_dataset_id:
+            return None
+
+        bench_mode = str(benchmark_type or "ORGANIZATION").strip().upper()
+        if "HIST" in bench_mode:
+            bench_mode = "HISTORICAL"
+        elif "PEER" in bench_mode:
+            bench_mode = "PEER"
+        else:
+            bench_mode = "ORGANIZATION"
+
+        bu_key = _norm_str(business_unit)
+        dept_key = _norm_str(department)
+        mgr_key = _norm_str(manager)
+        emp_key = _norm_emp(employee)
+        dr_key = (date_range[0], date_range[1]) if date_range and len(date_range) == 2 else None
+
+        cache_key = (
+            "TREND_INTEL_V2",
+            metric_id,
+            bench_mode,
+            bu_key,
+            dept_key,
+            mgr_key,
+            emp_key,
+            dr_key,
+        )
+
+        with self._lock:
+            if cache_key in self._cache:
+                self._cache.move_to_end(cache_key)
+                return _defensive_copy_dict(self._cache[cache_key])
+        return None
+
+    def precompute_trend_metrics(
+        self,
+        benchmark_type: str = "ORGANIZATION",
+        business_unit: Optional[str] = None,
+        department: Optional[str] = None,
+        manager: Optional[str] = None,
+        employee: Optional[str] = None,
+        date_range: Optional[Tuple[date, date]] = None,
+    ) -> None:
+        """Precompute all 18 trend metrics for the active scope in the background."""
+        for m_id in TREND_METRICS.keys():
+            try:
+                self.get_trend_intelligence(
+                    metric_id=m_id,
+                    benchmark_type=benchmark_type,
+                    business_unit=business_unit,
+                    department=department,
+                    manager=manager,
+                    employee=employee,
+                    date_range=date_range,
+                )
+            except Exception:
+                pass
 
     def get_workforce_metrics(
         self,
@@ -500,62 +664,95 @@ class WorkforceIntelligenceBridge:
         if raw_df is None or len(raw_df) == 0:
             return _empty_trend_bundle(metric_id, bench_mode)
 
-        org_df = ensure_clean_dataframe(raw_df)
-        org_eval_df, org_eval_reqs = evaluate_policy(org_df)
+        # Single-pass evaluated dataset foundation
+        org_eval_df, org_eval_reqs, org_facts, all_bus = self._ensure_dataset_foundation(raw_df)
 
-        # 1. Scoped Dataset
-        scoped_df = _filter_workforce_df(
-            org_df,
-            business_unit=business_unit,
-            department=department,
-            manager=manager,
-            employee=employee,
-            date_range=date_range,
-        )
-        if scoped_df.empty:
-            scoped_eval_df, scoped_eval_reqs = org_eval_df.iloc[0:0].copy(), []
+        # 1. Scoped Dataset slice (fast filtering without re-evaluating policy)
+        is_global_scope = (bu_key is None and dept_key is None and mgr_key is None and emp_key is None and dr_key is None)
+        if is_global_scope:
+            scoped_eval_df = org_eval_df
+            scoped_eval_reqs = org_eval_reqs
+            scoped_facts = org_facts
         else:
-            scoped_eval_df, scoped_eval_reqs = evaluate_policy(scoped_df)
+            scoped_eval_df = _filter_workforce_df(
+                org_eval_df,
+                business_unit=business_unit,
+                department=department,
+                manager=manager,
+                employee=employee,
+                date_range=date_range,
+            )
+            if scoped_eval_df.empty:
+                scoped_eval_reqs = []
+                scoped_facts = org_facts.iloc[0:0].copy()
+            else:
+                if "request_id" in scoped_eval_df.columns:
+                    sc_req_ids = set(scoped_eval_df["request_id"].dropna().unique())
+                    scoped_eval_reqs = [r for r in org_eval_reqs if r.get("request_id") in sc_req_ids]
+                else:
+                    scoped_eval_reqs = org_eval_reqs
+                scoped_facts = _filter_workforce_df(
+                    org_facts,
+                    business_unit=business_unit,
+                    department=department,
+                    manager=manager,
+                    employee=employee,
+                    date_range=date_range,
+                )
 
-        # 2. Main Scoped Trend & Org Trend
+        # 2. Main Scoped Trend
         scope_trend = calculate_time_series_trends(
             scoped_eval_df,
             scoped_eval_reqs,
+            employee_day_facts=scoped_facts,
             metric_id=metric_id,
             analysis_as_of_date=analysis_as_of_date,
         )
-        org_trend = calculate_time_series_trends(
-            org_eval_df,
-            org_eval_reqs,
-            metric_id=metric_id,
-            analysis_as_of_date=analysis_as_of_date,
-        )
+
+        # Cached Org-level Trend per metric_id
+        with self._lock:
+            if metric_id in self._org_trends_cache:
+                org_trend = self._org_trends_cache[metric_id]
+            else:
+                org_trend = calculate_time_series_trends(
+                    org_eval_df,
+                    org_eval_reqs,
+                    employee_day_facts=org_facts,
+                    metric_id=metric_id,
+                    analysis_as_of_date=analysis_as_of_date,
+                )
+                self._org_trends_cache[metric_id] = org_trend
 
         org_series = org_trend.get("time_series", [])
         scope_series = scope_trend.get("time_series", [])
 
-        # 3. All Distinct Business Units across Dataset
-        if "_eff_bu" in org_df.columns:
-            bu_col = org_df["_eff_bu"]
-        else:
-            bu_col = org_df["_bu"]
-        raw_bus = [str(b).strip() for b in bu_col.dropna().unique() if str(b).strip() not in ("", "nan", "None")]
-        all_bus = sorted(list(set(raw_bus)))
-
-        # 4. Precompute BU-level time series for heatmap and peer benchmarks
+        # 3. BU-level time series for heatmap and peer benchmarks (cached per (bu, metric_id))
         bu_trends: Dict[str, Dict[str, Any]] = {}
         for bu_name in all_bus:
-            bu_df = _filter_workforce_df(org_df, business_unit=bu_name)
-            if not bu_df.empty:
-                bu_eval_df, bu_eval_reqs = evaluate_policy(bu_df)
-                bu_trends[bu_name] = calculate_time_series_trends(
-                    bu_eval_df,
-                    bu_eval_reqs,
+            bu_cache_k = (bu_name, metric_id)
+            with self._lock:
+                if bu_cache_k in self._bu_trends_cache:
+                    bu_trends[bu_name] = self._bu_trends_cache[bu_cache_k]
+                    continue
+
+            b_df = self._bu_eval_dfs.get(bu_name)
+            b_reqs = self._bu_eval_reqs.get(bu_name, [])
+            b_facts = self._bu_employee_day_facts.get(bu_name)
+
+            if b_df is not None and not b_df.empty:
+                b_tr = calculate_time_series_trends(
+                    b_df,
+                    b_reqs,
+                    employee_day_facts=b_facts,
                     metric_id=metric_id,
                     analysis_as_of_date=analysis_as_of_date,
                 )
             else:
-                bu_trends[bu_name] = {"time_series": []}
+                b_tr = {"time_series": []}
+
+            with self._lock:
+                self._bu_trends_cache[bu_cache_k] = b_tr
+            bu_trends[bu_name] = b_tr
 
         # 5. Peer Benchmark & Historical Baseline Series
         periods = [p["period"] for p in org_series]
@@ -925,43 +1122,54 @@ class WorkforceIntelligenceBridge:
                 "drivers": [],
             }
 
-        # 12. Emerging Patterns (Top 3-5)
-        try:
-            _, pattern_results = detect_patterns(scoped_eval_df, scoped_eval_reqs)
-        except Exception:
-            pattern_results = []
-
-        pattern_items = []
-        for p in pattern_results[:5]:
-            p_title = getattr(p, "pattern_title", getattr(p, "pattern_name", getattr(p, "pattern_type", "Governance Pattern")))
-            p_desc = getattr(p, "description", getattr(p, "why_detected", "Recurring behavioral or process pattern observed."))
-            p_why = getattr(p, "why_detected", p_desc)
-            p_scope = getattr(p, "entity_name", getattr(p, "entity_id", "Organisation"))
-            e_type = getattr(p, "entity_type", "EMPLOYEE")
-            if hasattr(e_type, "replace"):
-                scope_str = f"{e_type.replace('_', ' ').title()}: {p_scope}"
+        # 12. Emerging Patterns (Top 3-5, memoized per filter scope)
+        pat_cache_key = (bu_key, dept_key, mgr_key, emp_key, dr_key)
+        with self._lock:
+            if pat_cache_key in self._pattern_cache:
+                pattern_items = self._pattern_cache[pat_cache_key]
             else:
-                scope_str = f"Scope: {p_scope}"
-            pers = str(getattr(p, "persistence", "Single Period")).replace("_", " ").title()
-            ev_cnt = getattr(p, "event_count", len(getattr(p, "evidence_items", [])))
-            d_mo = getattr(p, "distinct_months", 1)
+                pattern_items = None
 
-            pattern_items.append({
-                "id": getattr(p, "pattern_id", "pat_item"),
-                "name": p_title,
-                "pattern_name": p_title,
-                "pattern_title": p_title,
-                "category": getattr(p, "pattern_category", "Attendance"),
-                "badge": getattr(p, "severity", "ATTENTION"),
-                "severity": getattr(p, "severity", "ATTENTION"),
-                "strength": getattr(p, "strength", "MEDIUM"),
-                "explanation": p_desc,
-                "scope": scope_str,
-                "persistence": pers,
-                "volume": f"{ev_cnt} events ({d_mo} mo)",
-                "why_detected": p_why,
-                "score": getattr(p, "pattern_score", 50.0),
-            })
+        if pattern_items is None:
+            try:
+                _, pattern_results = detect_patterns(scoped_eval_df, scoped_eval_reqs)
+            except Exception:
+                pattern_results = []
+
+            pattern_items = []
+            for p in pattern_results[:5]:
+                p_title = getattr(p, "pattern_title", getattr(p, "pattern_name", getattr(p, "pattern_type", "Governance Pattern")))
+                p_desc = getattr(p, "description", getattr(p, "why_detected", "Recurring behavioral or process pattern observed."))
+                p_why = getattr(p, "why_detected", p_desc)
+                p_scope = getattr(p, "entity_name", getattr(p, "entity_id", "Organisation"))
+                e_type = getattr(p, "entity_type", "EMPLOYEE")
+                if hasattr(e_type, "replace"):
+                    scope_str = f"{e_type.replace('_', ' ').title()}: {p_scope}"
+                else:
+                    scope_str = f"Scope: {p_scope}"
+                pers = str(getattr(p, "persistence", "Single Period")).replace("_", " ").title()
+                ev_cnt = getattr(p, "event_count", len(getattr(p, "evidence_items", [])))
+                d_mo = getattr(p, "distinct_months", 1)
+
+                pattern_items.append({
+                    "id": getattr(p, "pattern_id", "pat_item"),
+                    "name": p_title,
+                    "pattern_name": p_title,
+                    "pattern_title": p_title,
+                    "category": getattr(p, "pattern_category", "Attendance"),
+                    "badge": getattr(p, "severity", "ATTENTION"),
+                    "severity": getattr(p, "severity", "ATTENTION"),
+                    "strength": getattr(p, "strength", "MEDIUM"),
+                    "explanation": p_desc,
+                    "scope": scope_str,
+                    "persistence": pers,
+                    "volume": f"{ev_cnt} events ({d_mo} mo)",
+                    "why_detected": p_why,
+                    "score": getattr(p, "pattern_score", 50.0),
+                })
+
+            with self._lock:
+                self._pattern_cache[pat_cache_key] = pattern_items
 
         trend_pulse = [
             {

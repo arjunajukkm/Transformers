@@ -4798,12 +4798,42 @@ class WorkforceDashboardView(ctk.CTkFrame):
             self._on_bu_selected(bu_name)
 
     def _load_trend_metrics(self):
-        """Dispatch asynchronous background trend intelligence calculation."""
+        """Dispatch instantaneous cached or asynchronous background trend intelligence calculation."""
         snap = snapshot_service.get_active_snapshot()
         if not snap or not snap.is_valid():
             self._set_trends_state("empty")
             return
 
+        bu = self._filter_state.get("business_unit")
+        dept = self._filter_state.get("department")
+        mgr = self._filter_state.get("manager")
+        emp = self._filter_state.get("employee")
+        dr = self._filter_state.get("date_range")
+        metric_id = self._selected_trend_metric
+        bench_type = self._selected_benchmark_type
+        dataset_id = getattr(snap, "dataset_id", snap.key)
+
+        # 1. Fast Synchronous Cache Path (0ms UI latency)
+        cached_bundle = workforce_bridge.get_cached_trend_intelligence(
+            metric_id=metric_id,
+            benchmark_type=bench_type,
+            business_unit=bu,
+            department=dept,
+            manager=mgr,
+            employee=emp,
+            date_range=dr,
+        )
+        if cached_bundle is not None:
+            self._is_loading_trend = False
+            if hasattr(self, "filter_loading_bar"):
+                self.filter_loading_bar.stop()
+                self.filter_loading_bar.grid_remove()
+            self._last_trend_bundle = cached_bundle
+            self._render_trend_intelligence(cached_bundle)
+            self._set_trends_state("ready")
+            return
+
+        # 2. Asynchronous Background Calculation
         self._latest_trend_job_id += 1
         job_id = self._latest_trend_job_id
         self._is_loading_trend = True
@@ -4814,15 +4844,6 @@ class WorkforceDashboardView(ctk.CTkFrame):
                 self.filter_loading_bar.start()
         else:
             self._set_trends_state("loading")
-
-        dataset_id = getattr(snap, "dataset_id", snap.key)
-        bu = self._filter_state.get("business_unit")
-        dept = self._filter_state.get("department")
-        mgr = self._filter_state.get("manager")
-        emp = self._filter_state.get("employee")
-        dr = self._filter_state.get("date_range")
-        metric_id = self._selected_trend_metric
-        bench_type = self._selected_benchmark_type
 
         def _worker(jid: int, d_id: str, q: queue.Queue, m_id=metric_id, b_type=bench_type, b=bu, d=dept, m=mgr, e=emp, r=dr):
             try:
@@ -4881,6 +4902,26 @@ class WorkforceDashboardView(ctk.CTkFrame):
         self._last_trend_bundle = bundle
         self._render_trend_intelligence(bundle)
         self._set_trends_state("ready")
+
+        # Background pre-warm remaining metrics for active filter scope
+        bu = self._filter_state.get("business_unit")
+        dept = self._filter_state.get("department")
+        mgr = self._filter_state.get("manager")
+        emp = self._filter_state.get("employee")
+        dr = self._filter_state.get("date_range")
+        bench_type = self._selected_benchmark_type
+
+        def _prewarm_bg(b=bu, d=dept, m=mgr, e=emp, r=dr, bt=bench_type):
+            workforce_bridge.precompute_trend_metrics(
+                benchmark_type=bt,
+                business_unit=b,
+                department=d,
+                manager=m,
+                employee=e,
+                date_range=r,
+            )
+
+        threading.Thread(target=_prewarm_bg, daemon=True).start()
 
     def _on_trend_calc_error(self, error_msg: str, job_id: int):
         """Handle trend calculation failure on main UI thread."""

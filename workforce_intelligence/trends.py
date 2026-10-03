@@ -332,6 +332,12 @@ def extract_canonical_month(dt: Any) -> Optional[str]:
     """Extract canonical 'YYYY-MM-01' period string from any date representation."""
     if dt is None or pd.isna(dt):
         return None
+    if isinstance(dt, str):
+        # Fast path for standard ISO 'YYYY-MM-DD' strings
+        if len(dt) >= 7 and dt[4] == "-" and dt[:4].isdigit() and dt[5:7].isdigit():
+            return f"{dt[:7]}-01"
+    elif isinstance(dt, (date, datetime)):
+        return f"{dt.year:04d}-{dt.month:02d}-01"
     try:
         ts = pd.to_datetime(dt, errors="coerce")
         if pd.isna(ts):
@@ -357,7 +363,8 @@ def calculate_monthly_compliance(
         if req_df.empty or "request_start_date" not in req_df.columns:
             return []
 
-        req_df["_month"] = req_df["request_start_date"].apply(extract_canonical_month)
+        if "_month" not in req_df.columns:
+            req_df["_month"] = pd.to_datetime(req_df["request_start_date"], errors="coerce").dt.strftime("%Y-%m-01")
         valid_reqs = req_df[req_df["_month"].notna()].copy()
 
         # Filter by sub-category if applicable
@@ -405,7 +412,8 @@ def calculate_monthly_compliance(
         if wfh_df.empty or "Date" not in wfh_df.columns:
             return []
 
-        wfh_df["_month"] = wfh_df["Date"].apply(extract_canonical_month)
+        if "_month" not in wfh_df.columns:
+            wfh_df["_month"] = pd.to_datetime(wfh_df["Date"], errors="coerce").dt.strftime("%Y-%m-01")
         valid_wfh = wfh_df[wfh_df["_month"].notna()].copy()
 
         for p_month in sorted(valid_wfh["_month"].unique()):
@@ -452,7 +460,8 @@ def calculate_monthly_attendance(
         return []
 
     facts = employee_day_facts.copy()
-    facts["_month"] = facts["Date"].apply(extract_canonical_month)
+    if "_month" not in facts.columns:
+        facts["_month"] = pd.to_datetime(facts["Date"], errors="coerce").dt.strftime("%Y-%m-01")
     valid_facts = facts[facts["_month"].notna()].copy()
 
     points: List[TrendPoint] = []
@@ -509,7 +518,8 @@ def calculate_monthly_approvals(
         return []
 
     df = evaluated_df.copy()
-    df["_app_month"] = df["Applied On"].apply(extract_canonical_month)
+    if "_app_month" not in df.columns:
+        df["_app_month"] = pd.to_datetime(df["Applied On"], errors="coerce").dt.strftime("%Y-%m-01")
     valid_df = df[df["_app_month"].notna()].copy()
     if valid_df.empty:
         return []
@@ -531,6 +541,8 @@ def calculate_monthly_approvals(
         analysis_as_of_date = analysis_as_of_date.date()
 
     points: List[TrendPoint] = []
+    as_of_ts = pd.Timestamp(analysis_as_of_date) if analysis_as_of_date else pd.Timestamp(date.today())
+
     for p_month in sorted(valid_df["_app_month"].unique()):
         m_group = valid_df[valid_df["_app_month"] == p_month]
         
@@ -557,17 +569,15 @@ def calculate_monthly_approvals(
             fmt_type = "integer"
             valid_obs = pending_cnt
         elif metric_id == "average_pending_approval_age":
-            pending_ages = []
-            for _, r in pending_rows.iterrows():
-                app_on = r.get("Applied On")
-                if pd.notna(app_on):
-                    app_ts = pd.to_datetime(app_on, errors="coerce")
-                    if pd.notna(app_ts):
-                        age = (analysis_as_of_date - app_ts.date()).days
-                        if age >= 0:
-                            pending_ages.append(age)
-            val = round(float(np.mean(pending_ages)), 2) if pending_ages else None
-            valid_obs = len(pending_ages)
+            if not pending_rows.empty and "Applied On" in pending_rows.columns:
+                app_ts = pd.to_datetime(pending_rows["Applied On"], errors="coerce")
+                ages = (as_of_ts - app_ts).dt.days
+                valid_ages = ages[(ages >= 0) & ages.notna()]
+                val = round(float(valid_ages.mean()), 2) if not valid_ages.empty else None
+                valid_obs = len(valid_ages)
+            else:
+                val = None
+                valid_obs = 0
 
         vol_st = classify_volume_status(valid_obs)
         vol_lbl = f"Volume: {vol_st.capitalize()} · {valid_obs} observation{'s' if valid_obs != 1 else ''}"
@@ -594,7 +604,8 @@ def calculate_monthly_working_time(
         return []
 
     df = evaluated_df.copy()
-    df["_month"] = df["Date"].apply(extract_canonical_month)
+    if "_month" not in df.columns:
+        df["_month"] = pd.to_datetime(df["Date"], errors="coerce").dt.strftime("%Y-%m-01")
     valid_df = df[df["_month"].notna()].copy()
     if valid_df.empty:
         return []
