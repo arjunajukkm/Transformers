@@ -423,3 +423,164 @@ def render_what_changed_bars(
 
     # Margins
     fig.subplots_adjust(left=0.32, right=0.92, top=0.92, bottom=0.18)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 5. Business Unit Ranking Lollipop Chart Renderer
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _parse_numeric(v: Any) -> Optional[float]:
+    """Helper to safely extract float from numeric, percentage, or formatted string."""
+    if v is None or pd.isna(v):
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    s = str(v).replace("%", "").replace("pp", "").replace("days", "").replace("m", "").strip()
+    try:
+        return float(s)
+    except (ValueError, TypeError):
+        return None
+
+
+def render_bu_ranking_lollipop(
+    fig: Figure,
+    ax,
+    benchmark_table: Dict[str, Any],
+    lower_is_better: bool = True,
+):
+    """
+    Renders an executive-grade Business Unit Ranking Lollipop Chart:
+    - Stems connect the active benchmark baseline to each Business Unit's current value.
+    - Heads glow in Emerald-500 (favorable) or Rose-500 (unfavorable).
+    - Vertical dashed Amber line marks the Organisation Benchmark.
+    - Sorted by performance so the highest-performing BUs lead.
+    """
+    ax.clear()
+    apply_dark_theme(fig, ax)
+
+    rows = benchmark_table.get("rows", []) if benchmark_table else []
+    total = benchmark_table.get("total", {}) if benchmark_table else {}
+
+    if not rows:
+        ax.text(
+            0.5, 0.5, "No Business Unit ranking data available",
+            transform=ax.transAxes, ha="center", va="center",
+            color=CHART_THEME["text_dim"], fontsize=9.5,
+            fontfamily=CHART_THEME["font_family"]
+        )
+        return
+
+    # Extract org benchmark value
+    org_val = _parse_numeric(total.get("org_benchmark"))
+    if org_val is None:
+        for r in rows:
+            ob = _parse_numeric(r.get("org_benchmark"))
+            if ob is not None:
+                org_val = ob
+                break
+
+    parsed_rows = []
+    for r in rows:
+        b_name = r.get("business_unit", "Unknown")
+        c_val = _parse_numeric(r.get("current"))
+        if c_val is not None:
+            gap = r.get("gap_val")
+            if gap is None and org_val is not None:
+                gap = c_val - org_val
+            parsed_rows.append({
+                "bu": b_name,
+                "current": c_val,
+                "gap": gap or 0.0,
+                "formatted": r.get("current", f"{c_val:.1f}%"),
+            })
+
+    if not parsed_rows:
+        ax.text(
+            0.5, 0.5, "No numeric benchmark values to rank",
+            transform=ax.transAxes, ha="center", va="center",
+            color=CHART_THEME["text_dim"], fontsize=9.5,
+            fontfamily=CHART_THEME["font_family"]
+        )
+        return
+
+    # Sort: For lower_is_better (e.g. exception rate), lowest value is ranked #1 (at top of Y-axis)
+    # Since barh/yticks places index 0 at bottom, we sort such that best is at the highest index
+    if lower_is_better:
+        sorted_rows = sorted(parsed_rows, key=lambda x: x["current"], reverse=True)
+    else:
+        sorted_rows = sorted(parsed_rows, key=lambda x: x["current"], reverse=False)
+
+    n_items = len(sorted_rows)
+    y_pos = np.arange(n_items)
+    bu_names = [r["bu"] for r in sorted_rows]
+    curr_vals = [r["current"] for r in sorted_rows]
+    gaps = [r["gap"] for r in sorted_rows]
+    fmt_vals = [r["formatted"] for r in sorted_rows]
+
+    # Colors: is gap favorable?
+    colors = []
+    for g in gaps:
+        is_favorable = (g <= 0) if lower_is_better else (g >= 0)
+        colors.append(CHART_THEME["success"] if is_favorable else CHART_THEME["danger"])
+
+    # Draw vertical benchmark line if available
+    base_x = org_val if org_val is not None else 0.0
+    if org_val is not None:
+        ax.axvline(org_val, color=CHART_THEME["benchmark"], linestyle="--", linewidth=1.5, alpha=0.85, zorder=2)
+        ax.text(
+            org_val, n_items - 0.2, f"Org {org_val:.1f}%",
+            color=CHART_THEME["benchmark"], fontsize=7.5, fontweight="bold",
+            ha="center", va="bottom", fontfamily=CHART_THEME["font_family"], zorder=4
+        )
+
+    # Calculate X limits with padding
+    all_x = curr_vals + ([org_val] if org_val is not None else [0.0])
+    min_x = max(0.0, min(all_x) * 0.8 if min(all_x) > 0 else min(all_x) - 5)
+    max_x = max(all_x) * 1.25 if max(all_x) > 0 else 10.0
+    if max_x <= min_x:
+        max_x = min_x + 10.0
+
+    span_x = max_x - min_x
+
+    # Draw horizontal lollipop stems and heads
+    for idx, (y, c_val, col, txt) in enumerate(zip(y_pos, curr_vals, colors, fmt_vals)):
+        # Horizontal stem from baseline to current value
+        stem_start = min(base_x, c_val)
+        stem_end = max(base_x, c_val)
+        ax.hlines(y, xmin=stem_start, xmax=stem_end, color=col, alpha=0.55, linewidth=2.0, zorder=3)
+
+        # Glowing circular head
+        ax.scatter([c_val], [y], color=col, s=70, edgecolors="#FFFFFF", linewidth=1.2, zorder=5)
+
+        # Embedded value text offset
+        x_offset = span_x * 0.03
+        if c_val >= base_x:
+            t_x = c_val + x_offset
+            t_ha = "left"
+        else:
+            t_x = c_val - x_offset
+            t_ha = "right"
+
+        ax.text(
+            t_x, y, txt,
+            va="center", ha=t_ha,
+            color=col, fontsize=8.0, fontweight="bold",
+            fontfamily=CHART_THEME["font_family"], zorder=6
+        )
+
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels(
+        bu_names,
+        color=CHART_THEME["text_primary"],
+        fontsize=8.5,
+        fontweight="bold",
+        fontfamily=CHART_THEME["font_family"]
+    )
+
+    ax.set_xlim(min_x, max_x)
+    ax.set_ylim(-0.6, n_items - 0.3)
+    ax.xaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda v, pos: f"{v:.0f}%"))
+    ax.tick_params(axis="x", colors=CHART_THEME["text_dim"], labelsize=7.5)
+
+    fig.subplots_adjust(left=0.28, right=0.92, top=0.90, bottom=0.18)
+

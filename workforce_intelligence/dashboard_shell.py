@@ -49,6 +49,7 @@ from workforce_intelligence.charts import (
     ChartCanvas,
     render_trend_time_series,
     render_what_changed_bars,
+    render_bu_ranking_lollipop,
     CHART_THEME,
 )
 from workforce_intelligence.trends import (
@@ -2684,6 +2685,86 @@ TREND_BENCHMARK_COLUMNS: List[Tuple[str, str, int, str]] = [
     ("vol", "Confidence / Volume", 125, "w"),
 ]
 
+# ─────────────────────────────────────────────────────────────────────────────
+# 6. Business Unit Benchmark Ranking Lollipop Widget
+# ─────────────────────────────────────────────────────────────────────────────
+
+class BusinessUnitRankingLollipopWidget(ctk.CTkFrame):
+    """
+    Executive-grade Business Unit Ranking Lollipop Chart:
+    Visualizes ranking of Business Units against the Organisation Benchmark.
+    """
+    def __init__(self, parent, on_bu_click: Optional[Callable[[str], None]] = None, **kwargs):
+        kwargs.setdefault("corner_radius", 10)
+        kwargs.setdefault("fg_color", ui.COLOR_CARD)
+        kwargs.setdefault("border_width", 1)
+        kwargs.setdefault("border_color", ui.COLOR_BORDER)
+        super().__init__(parent, **kwargs)
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=1)
+        self._on_bu_click = on_bu_click
+        self._benchmark_data: Dict[str, Any] = {}
+
+        # Header
+        hdr = ctk.CTkFrame(self, fg_color="transparent")
+        hdr.grid(row=0, column=0, sticky="ew", padx=12, pady=(8, 4))
+        hdr.grid_columnconfigure(0, weight=1)
+
+        t_box = ctk.CTkFrame(hdr, fg_color="transparent")
+        t_box.grid(row=0, column=0, sticky="w")
+        self.lbl_title = ctk.CTkLabel(
+            t_box,
+            text="Business Unit Benchmark Ranking",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12, weight="bold"),
+            text_color=ui.COLOR_TEXT,
+            anchor="w",
+        )
+        self.lbl_title.pack(anchor="w")
+        self.lbl_sub = ctk.CTkLabel(
+            t_box,
+            text="Performance distribution relative to organisation baseline (Lollipop evaluation)",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=9),
+            text_color=ui.COLOR_TEXT_SEC,
+            anchor="w",
+        )
+        self.lbl_sub.pack(anchor="w")
+
+        # Chart Canvas
+        self.canvas_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self.canvas_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 8))
+        self.canvas_frame.grid_columnconfigure(0, weight=1)
+        self.canvas_frame.grid_rowconfigure(0, weight=1)
+
+        self.chart_canvas = ChartCanvas(self.canvas_frame, figsize=(8, 2.2), dpi=100)
+        self.chart_canvas.grid(row=0, column=0, sticky="nsew")
+        self.chart_ax = self.chart_canvas.fig.add_subplot(111)
+
+    def update_data(self, benchmark_table: Dict[str, Any], lower_is_better: bool = True):
+        self._benchmark_data = benchmark_table or {}
+        render_bu_ranking_lollipop(
+            self.chart_canvas.fig,
+            self.chart_ax,
+            self._benchmark_data,
+            lower_is_better=lower_is_better,
+        )
+        self.chart_canvas.draw()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 7. Multi-Dimension Business Unit Benchmark Comparison Table Widget
+# ─────────────────────────────────────────────────────────────────────────────
+
+TREND_BENCHMARK_COLUMNS: List[Tuple[str, str, int, str]] = [
+    ("bu", "Business Unit", 180, "w"),
+    ("curr", "Current", 85, "w"),
+    ("avg3m", "3M Average", 90, "w"),
+    ("org", "Organisation", 95, "w"),
+    ("hist", "Historical", 85, "w"),
+    ("gap", "Gap vs Org", 85, "w"),
+    ("trend", "Trajectory", 100, "w"),
+    ("vol", "Confidence / Volume", 125, "w"),
+]
+
 class TrendBenchmarkTableWidget(ctk.CTkFrame):
     """
     Multi-Dimension Benchmark Comparison Table:
@@ -2749,10 +2830,6 @@ class TrendBenchmarkTableWidget(ctk.CTkFrame):
         self._configure_columns(self.total_frame)
 
     def _configure_columns(self, container: ctk.CTkFrame):
-        # A shared `uniform` group forces column widths to be driven purely by
-        # weight (not by cell content), so the header, every data row and the
-        # total row - each a separate grid container of identical width - get
-        # pixel-identical column boundaries.
         weights = (4, 2, 2, 2, 2, 2, 3, 3)
         for c_idx, w in enumerate(weights):
             container.grid_columnconfigure(c_idx, weight=w, minsize=0, uniform="trend_bm_col")
@@ -2835,13 +2912,12 @@ class TrendBenchmarkTableWidget(ctk.CTkFrame):
             lbl_bu.grid(row=0, column=0, sticky="nsew", padx=10, pady=3)
             lbl_bu.bind("<Button-1>", _make_click())
 
-            # Numerical Columns (1 to 5) - Left-aligned directly under headers
+            # Numerical Columns (1 to 4) - Left-aligned directly under headers
             num_cols = [
                 (1, curr, ui.COLOR_TEXT, False),
                 (2, avg3m, ui.COLOR_TEXT_SEC, False),
                 (3, org_b, "#F59E0B", False),
                 (4, hist, "#8B5CF6", False),
-                (5, gap, gap_col, False),
             ]
             for c_idx, val_txt, col, is_b in num_cols:
                 lbl_num = ctk.CTkLabel(
@@ -2853,6 +2929,27 @@ class TrendBenchmarkTableWidget(ctk.CTkFrame):
                 )
                 lbl_num.grid(row=0, column=c_idx, sticky="nsew", padx=10, pady=3)
                 lbl_num.bind("<Button-1>", _make_click())
+
+            # Column 5: Gap vs Org (with visual pill indicator)
+            gap_bg = "#4C0519" if (gap_val and gap_val > 0) else ("#064E3B" if (gap_val and gap_val < 0) else "transparent")
+            gap_txt = gap
+            if gap_val is not None:
+                if gap_val > 0 and not str(gap).startswith("▲") and not str(gap).startswith("+"):
+                    gap_txt = f"▲ +{gap_val:.1f} pp"
+                elif gap_val < 0 and not str(gap).startswith("▼"):
+                    gap_txt = f"▼ {gap_val:.1f} pp"
+
+            lbl_gap = ctk.CTkLabel(
+                row_frame,
+                text=f"  {gap_txt}  " if gap_bg != "transparent" else gap_txt,
+                font=ctk.CTkFont(family=ui.FONT_FAMILY, size=9, weight="bold"),
+                text_color=gap_col,
+                fg_color=gap_bg,
+                corner_radius=3,
+                anchor="w",
+            )
+            lbl_gap.grid(row=0, column=5, sticky="w", padx=10, pady=3)
+            lbl_gap.bind("<Button-1>", _make_click())
 
             # Column 6: Trajectory Badge (Left-aligned)
             lbl_tr = ctk.CTkLabel(
@@ -4593,16 +4690,23 @@ class WorkforceDashboardView(ctk.CTkFrame):
         self.what_changed_widget = WhatChangedWidget(mid_frame)
         self.what_changed_widget.grid(row=0, column=1, sticky="nsew", padx=(4, 0))
 
-        # Section 4: Emerging Patterns
-        self.emerging_patterns_widget = EmergingPatternsWidget(self.trends_content_frame)
-        self.emerging_patterns_widget.grid(row=3, column=0, sticky="ew", pady=(0, 6))
+        # Section 4: Business Unit Benchmark Ranking (Lollipop chart)
+        self.bu_ranking_widget = BusinessUnitRankingLollipopWidget(
+            self.trends_content_frame,
+            on_bu_click=self._on_heatmap_bu_click,
+        )
+        self.bu_ranking_widget.grid(row=3, column=0, sticky="ew", pady=(0, 6))
 
-        # Section 5: Multi-Dimension BU Benchmark Comparison Table
+        # Section 5: Emerging Patterns
+        self.emerging_patterns_widget = EmergingPatternsWidget(self.trends_content_frame)
+        self.emerging_patterns_widget.grid(row=4, column=0, sticky="ew", pady=(0, 6))
+
+        # Section 6: Multi-Dimension BU Benchmark Comparison Table
         self.trend_benchmark_table = TrendBenchmarkTableWidget(
             self.trends_content_frame,
             on_bu_click=self._on_heatmap_bu_click,
         )
-        self.trend_benchmark_table.grid(row=4, column=0, sticky="ew", pady=(0, 10))
+        self.trend_benchmark_table.grid(row=5, column=0, sticky="ew", pady=(0, 10))
 
     def _set_trends_state(self, state: str, error_msg: str = ""):
         """Manage empty, loading, error, and ready state containers for Trends tab."""
@@ -4818,13 +4922,27 @@ class WorkforceDashboardView(ctk.CTkFrame):
         if hasattr(self, "what_changed_widget"):
             self.what_changed_widget.update_data(what_changed_data)
 
-        # 5. Emerging Patterns
+        # 5. BU Benchmark Ranking Lollipop
+        table_data = bundle.get("benchmark_table", {})
+        if hasattr(self, "bu_ranking_widget"):
+            metric_id = bundle.get("metric_id", "")
+            meta = TREND_METRICS.get(metric_id)
+            if meta is not None:
+                lower_is_better = getattr(meta, "direction", "lower_is_better") == "lower_is_better"
+            else:
+                metric_def = bundle.get("metric_def", {})
+                if isinstance(metric_def, dict):
+                    lower_is_better = metric_def.get("direction", "lower_is_better") == "lower_is_better"
+                else:
+                    lower_is_better = getattr(metric_def, "direction", "lower_is_better") == "lower_is_better"
+            self.bu_ranking_widget.update_data(table_data, lower_is_better=lower_is_better)
+
+        # 6. Emerging Patterns
         patterns_data = bundle.get("patterns", [])
         if hasattr(self, "emerging_patterns_widget"):
             self.emerging_patterns_widget.update_data(patterns_data)
 
-        # 6. Benchmark Table
-        table_data = bundle.get("benchmark_table", {})
+        # 7. Benchmark Table
         if hasattr(self, "trend_benchmark_table"):
             self.trend_benchmark_table.update_data(table_data)
 
