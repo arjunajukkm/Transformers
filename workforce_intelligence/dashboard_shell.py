@@ -2892,14 +2892,14 @@ class TrendBenchmarkTableWidget(ctk.CTkFrame):
         self._configure_columns(self.total_frame)
 
     def _configure_columns(self, container: ctk.CTkFrame):
-        container.grid_columnconfigure(0, weight=2, minsize=140)  # BU Name
-        container.grid_columnconfigure(1, weight=1, minsize=75)   # Current
-        container.grid_columnconfigure(2, weight=1, minsize=80)   # 3M Average
-        container.grid_columnconfigure(3, weight=1, minsize=85)   # Organisation
-        container.grid_columnconfigure(4, weight=1, minsize=75)   # Historical
-        container.grid_columnconfigure(5, weight=1, minsize=75)   # Gap vs Org
-        container.grid_columnconfigure(6, weight=1, minsize=100)  # Trajectory
-        container.grid_columnconfigure(7, weight=1, minsize=115)  # Confidence / Volume
+        # A shared `uniform` group forces column widths to be driven purely by
+        # weight (not by cell content), so the header, every data row and the
+        # total row - each a separate grid container of identical width - get
+        # pixel-identical column boundaries.
+        weights = (4, 2, 2, 2, 2, 2, 3, 3)
+        for c_idx, w in enumerate(weights):
+            container.grid_columnconfigure(c_idx, weight=w, minsize=0, uniform="trend_bm_col")
+        container.grid_rowconfigure(0, weight=1)
 
     def update_data(self, benchmark_table: Dict[str, Any]):
         """Render rows and total with compact 28px height and locked left-aligned column alignments."""
@@ -2998,22 +2998,18 @@ class TrendBenchmarkTableWidget(ctk.CTkFrame):
                 lbl_num.bind("<Button-1>", _make_click())
 
             # Column 6: Trajectory Badge (Left-aligned)
-            tr_cell = ctk.CTkFrame(row_frame, fg_color="transparent")
-            tr_cell.grid(row=0, column=6, sticky="nsew", padx=10, pady=2)
-            tr_cell.bind("<Button-1>", _make_click())
-
-            tr_box = ctk.CTkFrame(tr_cell, fg_color=tr_bg, corner_radius=3)
-            tr_box.pack(side="left", pady=1)
-            tr_box.bind("<Button-1>", _make_click())
-
             lbl_tr = ctk.CTkLabel(
-                tr_box,
-                text=trend,
+                row_frame,
+                text=f"  {trend}  ",
                 font=ctk.CTkFont(family=ui.FONT_FAMILY, size=8, weight="bold"),
                 text_color=tr_col,
+                fg_color=tr_bg,
+                corner_radius=3,
+                width=1,
+                height=20,
                 anchor="center",
             )
-            lbl_tr.pack(fill="both", expand=True, padx=8, pady=2)
+            lbl_tr.grid(row=0, column=6, sticky="w", padx=10, pady=3)
             lbl_tr.bind("<Button-1>", _make_click())
 
             # Column 7: Confidence / Volume (Left-aligned)
