@@ -4765,15 +4765,26 @@ class WorkforceDashboardView(ctk.CTkFrame):
         self.trend_pulse_widget = TrendPulseWidget(self.trends_content_frame)
         self.trend_pulse_widget.grid(row=0, column=0, sticky="ew", pady=(0, 6))
 
-        # Section 2: Main Trend Time-Series Chart
-        self.main_trend_chart = MainTrendChartWidget(self.trends_content_frame)
-        self.main_trend_chart.grid(row=1, column=0, sticky="ew", pady=(0, 6))
+        # Section 2: Hero Analytics Grid — Main Trend Time-Series (Left, 58%) + BU Benchmark Ranking Lollipop (Right, 42%)
+        hero_frame = ctk.CTkFrame(self.trends_content_frame, fg_color="transparent")
+        hero_frame.grid(row=1, column=0, sticky="ew", pady=(0, 6))
+        hero_frame.grid_columnconfigure(0, weight=7)
+        hero_frame.grid_columnconfigure(1, weight=5)
 
-        # Section 3: Middle Row — BU Trend Heatmap (Left) + What Changed? (Right)
+        self.main_trend_chart = MainTrendChartWidget(hero_frame)
+        self.main_trend_chart.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
+
+        self.bu_ranking_widget = BusinessUnitRankingLollipopWidget(
+            hero_frame,
+            on_bu_click=self._on_heatmap_bu_click,
+        )
+        self.bu_ranking_widget.grid(row=0, column=1, sticky="nsew", padx=(4, 0))
+
+        # Section 3: Middle Row — BU Trend Heatmap (Left, 58%) + What Changed? Driver Attribution (Right, 42%)
         mid_frame = ctk.CTkFrame(self.trends_content_frame, fg_color="transparent")
         mid_frame.grid(row=2, column=0, sticky="ew", pady=(0, 6))
-        mid_frame.grid_columnconfigure(0, weight=3)
-        mid_frame.grid_columnconfigure(1, weight=2)
+        mid_frame.grid_columnconfigure(0, weight=7)
+        mid_frame.grid_columnconfigure(1, weight=5)
 
         self.bu_heatmap_widget = BusinessUnitHeatmapWidget(
             mid_frame,
@@ -4784,23 +4795,16 @@ class WorkforceDashboardView(ctk.CTkFrame):
         self.what_changed_widget = WhatChangedWidget(mid_frame)
         self.what_changed_widget.grid(row=0, column=1, sticky="nsew", padx=(4, 0))
 
-        # Section 4: Business Unit Benchmark Ranking (Lollipop chart)
-        self.bu_ranking_widget = BusinessUnitRankingLollipopWidget(
-            self.trends_content_frame,
-            on_bu_click=self._on_heatmap_bu_click,
-        )
-        self.bu_ranking_widget.grid(row=3, column=0, sticky="ew", pady=(0, 6))
-
-        # Section 5: Emerging Patterns
+        # Section 4: Emerging Workforce Governance Patterns
         self.emerging_patterns_widget = EmergingPatternsWidget(self.trends_content_frame)
-        self.emerging_patterns_widget.grid(row=4, column=0, sticky="ew", pady=(0, 6))
+        self.emerging_patterns_widget.grid(row=3, column=0, sticky="ew", pady=(0, 6))
 
-        # Section 6: Multi-Dimension BU Benchmark Comparison Table
+        # Section 5: Multi-Dimension BU Benchmark Comparison Table
         self.trend_benchmark_table = TrendBenchmarkTableWidget(
             self.trends_content_frame,
             on_bu_click=self._on_heatmap_bu_click,
         )
-        self.trend_benchmark_table.grid(row=5, column=0, sticky="ew", pady=(0, 10))
+        self.trend_benchmark_table.grid(row=4, column=0, sticky="ew", pady=(0, 10))
 
     def _set_trends_state(self, state: str, error_msg: str = ""):
         """Manage empty, loading, error, and ready state containers for Trends tab."""

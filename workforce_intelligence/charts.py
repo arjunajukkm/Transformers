@@ -111,10 +111,19 @@ class ChartCanvas(ctk.CTkFrame):
         self.tk_widget.bind("<Configure>", self._on_configure)
 
     def _on_configure(self, event):
-        """Debounced idle redraw on container resize."""
+        """Responsive figure resize to fill 100% of container width & height."""
+        w = event.width
+        h = event.height
+        if w > 40 and h > 20:
+            dpi = self.fig.dpi or 100
+            new_w = w / dpi
+            new_h = h / dpi
+            curr_w, curr_h = self.fig.get_size_inches()
+            if abs(curr_w - new_w) > 0.05 or abs(curr_h - new_h) > 0.05:
+                self.fig.set_size_inches(new_w, new_h, forward=False)
         if self._resize_timer is not None:
             self.after_cancel(self._resize_timer)
-        self._resize_timer = self.after(40, self._do_resize_redraw)
+        self._resize_timer = self.after(30, self._do_resize_redraw)
 
     def _do_resize_redraw(self):
         self._resize_timer = None

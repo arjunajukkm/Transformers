@@ -23,6 +23,7 @@ from workforce_intelligence.policy import evaluate_policy
 from workforce_intelligence.trends import (
     TREND_METRICS,
     TrendPoint,
+    calculate_monthly_working_time,
     calculate_streak,
     calculate_trend_direction,
     classify_volume_status,
@@ -548,3 +549,29 @@ def test_26_cross_file_duplicate_detection():
     assert dup_findings[0]["severity"] == "WARNING"
     Path(path1).unlink(missing_ok=True)
     Path(path2).unlink(missing_ok=True)
+
+
+# 27. Working time arrival/exit/effective hours metrics with raw aliases
+def test_27_working_time_arrival_exit_metrics_with_raw_aliases():
+    """Verify median_arrival_time, average_arrival_time, and median_effective_hours compute with First In / Last Out."""
+    rows = [
+        {"Date": "2026-07-10", "First In": "09:00", "Last Out": "18:00", "Total Duration": "09:00", "Status": "P", "Attendance Type": "Present"},
+        {"Date": "2026-07-15", "First In": "09:30", "Last Out": "18:30", "Total Duration": "09:00", "Status": "P", "Attendance Type": "Present"},
+        {"Date": "2026-08-10", "First In": "10:00", "Last Out": "19:00", "Total Duration": "09:00", "Status": "P", "Attendance Type": "Present"},
+        {"Date": "2026-08-15", "First In": "10:30", "Last Out": "19:30", "Total Duration": "09:00", "Status": "P", "Attendance Type": "Present"},
+    ]
+    df = pd.DataFrame(rows)
+    pts_med_in = calculate_monthly_working_time(df, "median_arrival_time")
+    assert len(pts_med_in) == 2
+    # Jul median of 09:00 (540m) and 09:30 (570m) = 555.0m -> formatted "09:15 AM"
+    assert pts_med_in[0].value == 555.0
+    assert pts_med_in[0].formatted_value == "09:15 AM"
+    # Aug median of 10:00 (600m) and 10:30 (630m) = 615.0m -> formatted "10:15 AM"
+    assert pts_med_in[1].value == 615.0
+    assert pts_med_in[1].formatted_value == "10:15 AM"
+
+    pts_exit = calculate_monthly_working_time(df, "median_exit_time")
+    assert len(pts_exit) == 2
+    assert pts_exit[0].value == 1095.0  # Median of 18:00 (1080m) and 18:30 (1110m) is 1095.0m
+    assert pts_exit[0].formatted_value == "06:15 PM"
+

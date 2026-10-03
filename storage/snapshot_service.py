@@ -119,6 +119,16 @@ def normalize_dataset_dataframe(df: pd.DataFrame) -> pd.DataFrame:
         _calc_work_hrs(i, o, a) for i, o, a in zip(work_df["_in_mins"], work_df["_out_mins"], work_df["_att_type"])
     ]
 
+    # Guarantee canonical minute fields exist
+    if "in_time_minutes" not in work_df.columns:
+        work_df["in_time_minutes"] = work_df["_in_mins"]
+    if "out_time_minutes" not in work_df.columns:
+        work_df["out_time_minutes"] = work_df["_out_mins"]
+    if "effective_hours_minutes" not in work_df.columns:
+        work_df["effective_hours_minutes"] = [
+            int(round(h * 60)) if pd.notna(h) else pd.NA for h in work_df["_work_hours"]
+        ]
+
     # 5. Applied and Approved dates and roles
     work_df["_applied_on"] = work_df[canon_cols["applied_on"]].apply(tsa.parse_date_value) if "applied_on" in canon_cols else None
     work_df["_approved_on"] = work_df[canon_cols["approved_on"]].apply(tsa.parse_date_value) if "approved_on" in canon_cols else None

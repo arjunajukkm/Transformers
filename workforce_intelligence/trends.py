@@ -595,6 +595,56 @@ def calculate_monthly_approvals(
     return points
 
 
+def _extract_time_minutes_series(df: pd.DataFrame, kind: str) -> pd.Series:
+    """
+    Robustly extract minutes from midnight (0..1439) for arrival/exit or duration minutes.
+    Searches all canonical, internal, and source column aliases.
+    """
+    if df.empty:
+        return pd.Series([], dtype=float)
+
+    if kind == "in":
+        candidates = [
+            "in_time_minutes", "_in_mins", "In Time", "First In", "First In Time",
+            "in_time", "first_in", "first_in_time", "Punch In", "punch_in",
+            "Clock In", "clock_in", "arrival_time", "Arrival Time"
+        ]
+    elif kind == "out":
+        candidates = [
+            "out_time_minutes", "_out_mins", "Out Time", "Last Out", "Last Out Time",
+            "out_time", "last_out", "last_out_time", "Punch Out", "punch_out",
+            "Clock Out", "clock_out", "departure_time", "Departure Time", "exit_time", "Exit Time"
+        ]
+    else:  # duration / working hours
+        candidates = [
+            "effective_hours_minutes", "total_hours_minutes", "_work_hours",
+            "Effective Hours", "Total Hours", "Total Duration", "Duration",
+            "Work Hours", "effective_hours", "total_hours", "work_hours"
+        ]
+
+    for col in candidates:
+        if col in df.columns:
+            s = df[col].dropna()
+            if s.empty:
+                continue
+            if col in ("in_time_minutes", "_in_mins", "out_time_minutes", "_out_mins", "effective_hours_minutes", "total_hours_minutes"):
+                nums = pd.to_numeric(s, errors="coerce").dropna()
+                if not nums.empty:
+                    return nums.astype(float)
+            elif col == "_work_hours":
+                nums = pd.to_numeric(s, errors="coerce").dropna()
+                if not nums.empty:
+                    return (nums * 60.0).astype(float)
+            else:
+                from workforce_intelligence.normalization import parse_time_to_minutes, parse_duration_to_minutes
+                parse_fn = parse_duration_to_minutes if kind == "duration" else parse_time_to_minutes
+                parsed = s.apply(parse_fn).dropna()
+                if not parsed.empty:
+                    return parsed.astype(float)
+
+    return pd.Series([], dtype=float)
+
+
 def calculate_monthly_working_time(
     evaluated_df: pd.DataFrame,
     metric_id: str,
@@ -619,19 +669,19 @@ def calculate_monthly_working_time(
         valid_obs = 0
 
         if metric_id in ("average_effective_hours", "median_effective_hours"):
-            series = m_group["effective_hours_minutes"].dropna().astype(float) if "effective_hours_minutes" in m_group.columns else pd.Series([], dtype=float)
+            series = _extract_time_minutes_series(m_group, "duration")
             valid_obs = len(series)
             if not series.empty:
                 val = round(float(series.mean()), 1) if metric_id == "average_effective_hours" else round(float(series.median()), 1)
 
         elif metric_id in ("average_arrival_time", "median_arrival_time"):
-            series = m_group["in_time_minutes"].dropna().astype(float) if "in_time_minutes" in m_group.columns else pd.Series([], dtype=float)
+            series = _extract_time_minutes_series(m_group, "in")
             valid_obs = len(series)
             if not series.empty:
                 val = round(float(series.mean()), 1) if metric_id == "average_arrival_time" else round(float(series.median()), 1)
 
         elif metric_id in ("average_exit_time", "median_exit_time"):
-            series = m_group["out_time_minutes"].dropna().astype(float) if "out_time_minutes" in m_group.columns else pd.Series([], dtype=float)
+            series = _extract_time_minutes_series(m_group, "out")
             valid_obs = len(series)
             if not series.empty:
                 val = round(float(series.mean()), 1) if metric_id == "average_exit_time" else round(float(series.median()), 1)
