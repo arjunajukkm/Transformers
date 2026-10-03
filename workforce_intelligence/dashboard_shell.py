@@ -2817,14 +2817,14 @@ class EmergingPatternsWidget(ctk.CTkFrame):
 # ─────────────────────────────────────────────────────────────────────────────
 
 TREND_BENCHMARK_COLUMNS: List[Tuple[str, str, int, str]] = [
-    ("bu", "Business Unit", 150, "w"),
+    ("bu", "Business Unit", 200, "w"),
     ("curr", "Current", 85, "e"),
     ("avg3m", "3M Average", 85, "e"),
     ("org", "Organisation", 90, "e"),
     ("hist", "Historical", 85, "e"),
     ("gap", "Gap vs Org", 85, "e"),
-    ("trend", "Trajectory", 115, "center"),
-    ("vol", "Confidence / Volume", 130, "center"),
+    ("trend", "Trajectory", 110, "center"),
+    ("vol", "Confidence / Volume", 125, "center"),
 ]
 
 class TrendBenchmarkTableWidget(ctk.CTkFrame):
@@ -2873,7 +2873,7 @@ class TrendBenchmarkTableWidget(ctk.CTkFrame):
         self._configure_columns(self.hdr_frame)
 
         for c_idx, (col_id, col_name, col_w, anch) in enumerate(TREND_BENCHMARK_COLUMNS):
-            p_x = (10, 4) if anch == "w" else ((4, 10) if anch == "e" else 4)
+            p_x = (12, 6) if anch == "w" else ((6, 12) if anch == "e" else 6)
             ctk.CTkLabel(
                 self.hdr_frame,
                 text=col_name,
@@ -2893,14 +2893,14 @@ class TrendBenchmarkTableWidget(ctk.CTkFrame):
         self._configure_columns(self.total_frame)
 
     def _configure_columns(self, container: ctk.CTkFrame):
-        container.grid_columnconfigure(0, weight=1, minsize=140)  # BU Name absorbs remaining width
-        container.grid_columnconfigure(1, weight=0, minsize=80)   # Current
-        container.grid_columnconfigure(2, weight=0, minsize=80)   # 3M Average
-        container.grid_columnconfigure(3, weight=0, minsize=85)   # Organisation
-        container.grid_columnconfigure(4, weight=0, minsize=80)   # Historical
-        container.grid_columnconfigure(5, weight=0, minsize=80)   # Gap vs Org
-        container.grid_columnconfigure(6, weight=0, minsize=115)  # Trajectory
-        container.grid_columnconfigure(7, weight=0, minsize=125)  # Confidence / Volume
+        container.grid_columnconfigure(0, weight=3, minsize=160)  # BU Name (~25-30% width)
+        container.grid_columnconfigure(1, weight=1, minsize=75)   # Current
+        container.grid_columnconfigure(2, weight=1, minsize=80)   # 3M Average
+        container.grid_columnconfigure(3, weight=1, minsize=85)   # Organisation
+        container.grid_columnconfigure(4, weight=1, minsize=75)   # Historical
+        container.grid_columnconfigure(5, weight=1, minsize=75)   # Gap vs Org
+        container.grid_columnconfigure(6, weight=1, minsize=105)  # Trajectory
+        container.grid_columnconfigure(7, weight=1, minsize=115)  # Confidence / Volume
 
     def update_data(self, benchmark_table: Dict[str, Any]):
         """Render rows and total with compact 28px height and locked column alignments."""
@@ -2976,7 +2976,7 @@ class TrendBenchmarkTableWidget(ctk.CTkFrame):
                 text_color=ui.COLOR_TEXT,
                 anchor="w",
             )
-            lbl_bu.grid(row=0, column=0, sticky="nsew", padx=(10, 4), pady=3)
+            lbl_bu.grid(row=0, column=0, sticky="nsew", padx=(12, 6), pady=3)
             lbl_bu.bind("<Button-1>", _make_click())
 
             # Numerical Columns (1 to 5)
@@ -2995,16 +2995,16 @@ class TrendBenchmarkTableWidget(ctk.CTkFrame):
                     text_color=col,
                     anchor=anch,
                 )
-                lbl_num.grid(row=0, column=c_idx, sticky="nsew", padx=(4, 10), pady=3)
+                lbl_num.grid(row=0, column=c_idx, sticky="nsew", padx=(6, 12), pady=3)
                 lbl_num.bind("<Button-1>", _make_click())
 
             # Column 6: Trajectory Badge
-            tr_cell = ctk.CTkFrame(row_frame, fg_color="transparent", height=24)
-            tr_cell.grid(row=0, column=6, sticky="nsew", padx=4, pady=2)
+            tr_cell = ctk.CTkFrame(row_frame, fg_color="transparent")
+            tr_cell.grid(row=0, column=6, sticky="nsew", padx=6, pady=2)
             tr_cell.bind("<Button-1>", _make_click())
 
             tr_box = ctk.CTkFrame(tr_cell, fg_color=tr_bg, corner_radius=3)
-            tr_box.pack(fill="both", expand=True)
+            tr_box.pack(expand=True, pady=1, padx=4)
             tr_box.bind("<Button-1>", _make_click())
 
             lbl_tr = ctk.CTkLabel(
@@ -3014,7 +3014,7 @@ class TrendBenchmarkTableWidget(ctk.CTkFrame):
                 text_color=tr_col,
                 anchor="center",
             )
-            lbl_tr.pack(fill="both", expand=True, padx=2, pady=1)
+            lbl_tr.pack(fill="both", expand=True, padx=8, pady=2)
             lbl_tr.bind("<Button-1>", _make_click())
 
             # Column 7: Confidence / Volume
@@ -3025,7 +3025,7 @@ class TrendBenchmarkTableWidget(ctk.CTkFrame):
                 text_color=ui.COLOR_TEXT_DIM,
                 anchor="center",
             )
-            lbl_vol.grid(row=0, column=7, sticky="nsew", padx=4, pady=3)
+            lbl_vol.grid(row=0, column=7, sticky="nsew", padx=6, pady=3)
             lbl_vol.bind("<Button-1>", _make_click())
 
         # Render Total Pinned Row
@@ -3039,14 +3039,14 @@ class TrendBenchmarkTableWidget(ctk.CTkFrame):
         tot_vol = total.get("volume", "—")
 
         tot_vals = [
-            (0, tot_bu, "w", ui.COLOR_TEXT, True, (10, 4)),
-            (1, tot_curr, "e", ui.COLOR_TEXT, True, (4, 10)),
-            (2, tot_avg3m, "e", ui.COLOR_TEXT_SEC, False, (4, 10)),
-            (3, tot_org_b, "e", "#F59E0B", False, (4, 10)),
-            (4, tot_hist, "e", "#8B5CF6", False, (4, 10)),
-            (5, tot_gap, "e", ui.COLOR_TEXT, False, (4, 10)),
-            (6, tot_trend, "center", ui.COLOR_TEXT, False, 4),
-            (7, tot_vol, "center", ui.COLOR_TEXT_DIM, False, 4),
+            (0, tot_bu, "w", ui.COLOR_TEXT, True, (12, 6)),
+            (1, tot_curr, "e", ui.COLOR_TEXT, True, (6, 12)),
+            (2, tot_avg3m, "e", ui.COLOR_TEXT_SEC, False, (6, 12)),
+            (3, tot_org_b, "e", "#F59E0B", False, (6, 12)),
+            (4, tot_hist, "e", "#8B5CF6", False, (6, 12)),
+            (5, tot_gap, "e", ui.COLOR_TEXT, False, (6, 12)),
+            (6, tot_trend, "center", ui.COLOR_TEXT, False, 6),
+            (7, tot_vol, "center", ui.COLOR_TEXT_DIM, False, 6),
         ]
 
         for c_idx, txt, anch, col, is_bld, p_x in tot_vals:
