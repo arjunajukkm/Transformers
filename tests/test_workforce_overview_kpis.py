@@ -201,29 +201,12 @@ def synthetic_snapshot_b() -> AnalyticalSnapshot:
     return snap
 
 
-@pytest.fixture(scope="module")
-def desktop_app():
-    """Headless Desktop App instance reused across tests."""
-    snapshot_service.clear()
-    app = App()
-    app.withdraw()
-    app.update()
-
-    yield app
-
-    try:
-        app.destroy()
-    except Exception:
-        pass
-    snapshot_service.clear()
-
-
 # =========================================================================
 # =========================================================================
-# 1. Overview renders all ten KPI cards
+# 1. Overview renders all fifteen KPI cards
 # =========================================================================
 def test_overview_renders_all_ten_kpi_cards(desktop_app):
-    """Verify that all 10 expected KPI card instances are constructed in overview."""
+    """Verify that all 15 expected KPI card instances are constructed in overview."""
     wf_view: WorkforceDashboardView = desktop_app.workforce_dashboard_view
     expected_cards = [
         "kpi_1_emp_hc",
@@ -236,9 +219,14 @@ def test_overview_renders_all_ten_kpi_cards(desktop_app):
         "kpi_8_week_off",
         "kpi_absent",
         "kpi_9_attendance_exceptions",
+        "kpi_leave_compliance",
+        "kpi_approval_compliance",
+        "kpi_avg_in_time",
+        "kpi_avg_out_time",
+        "kpi_avg_working_hours",
     ]
 
-    assert len(wf_view.kpi_cards) == 10
+    assert len(wf_view.kpi_cards) == 15
     for cid in expected_cards:
         assert cid in wf_view.kpi_cards
         card = wf_view.kpi_cards[cid]
@@ -2073,10 +2061,10 @@ def test_bu_table_headers_and_cells_identical_column_widths(desktop_app):
 
 
 # =========================================================================
-# 62. Step 27A: Numeric table cells are right-aligned, BU is left-aligned
+# 62. Step 27A: Table cells under headers are left-aligned
 # =========================================================================
 def test_bu_table_alignments(desktop_app):
-    """Verify column 0 is left-aligned and columns 1-12 are right-aligned."""
+    """Verify column 0 and columns 1-12 under headers are left-aligned ('w')."""
     app = desktop_app
     wf_view = app.workforce_dashboard_view
     bu_widget = wf_view.bu_table_widget
@@ -2085,12 +2073,9 @@ def test_bu_table_alignments(desktop_app):
     assert len(rows) > 0
     row_cells = rows[0].winfo_children()
 
-    # Column 0: Business Unit -> anchor 'w'
-    assert row_cells[0].cget("anchor") == "w"
-
-    # Columns 1-12: All numerics -> anchor 'e'
-    for c_idx in range(1, 13):
-        assert row_cells[c_idx].cget("anchor") == "e"
+    # All columns 0-12 -> anchor 'w' (left indented/aligned under headers)
+    for c_idx in range(len(row_cells)):
+        assert row_cells[c_idx].cget("anchor") == "w"
 
 
 # =========================================================================
@@ -2198,9 +2183,10 @@ def test_bu_table_26_rows_bounded_viewport_and_vertical_scrollbar(desktop_app):
     assert len(rows) == 26
     assert "26 Business Units" in bu_widget.lbl_bu_count.cget("text")
 
-    # 2. Viewport height is bounded (approx 8 rows = 192px), NOT natural 26-row height (>600px)
+    # 2. Viewport height is bounded (approx 14 rows = 364px), NOT natural 26-row height (>600px)
     viewport_h = bu_widget.rows_canvas.cget("height")
-    assert int(viewport_h) <= 200
+    assert int(viewport_h) <= 400
+    assert int(viewport_h) < 600
 
     # 3. Vertical scrollbar is visible for 26 rows
     assert bu_widget.v_scrollbar.winfo_ismapped() or bu_widget.v_scrollbar.grid_info() != {}

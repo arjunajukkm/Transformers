@@ -744,12 +744,9 @@ def test_28_time_series_analysis_backward_compatible(transfer_and_lending_snapsh
 # Test 29: Desktop UI filter and reset live integration
 # ─────────────────────────────────────────────────────────────────────────────
 
-def test_29_desktop_ui_filter_and_reset_live_integration(transfer_and_lending_snapshot):
-    from app import App
+def test_29_desktop_ui_filter_and_reset_live_integration(desktop_app, transfer_and_lending_snapshot):
+    app = desktop_app
     snapshot_service.clear()
-    app = App()
-    app.withdraw()
-    app.update()
 
     try:
         wf_view: WorkforceDashboardView = app.workforce_dashboard_view
@@ -797,5 +794,4 @@ def test_29_desktop_ui_filter_and_reset_live_integration(transfer_and_lending_sn
         assert wf_view.kpi_cards["kpi_1_emp_hc"].lbl_val.cget("text") == "5"
         assert wf_view.combo_bu.get() == "All Business Units"
     finally:
-        app.destroy()
         snapshot_service.clear()

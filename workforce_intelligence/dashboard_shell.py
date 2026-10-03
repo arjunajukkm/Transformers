@@ -1297,21 +1297,21 @@ class DataQualityDetailDialog(ctk.CTkToplevel):
 
 TABLE_COLUMNS = [
     # (col_id, title, min_width, anchor)
-    ("bu", "Business Unit", 150, "w"),
-    ("hc", "Headcount", 55, "e"),
-    ("rec_days", "Rec. Days", 60, "e"),
-    ("present", "Present", 65, "e"),
-    ("pres_pct", "Pres %", 50, "e"),
-    ("leave", "Leave", 60, "e"),
-    ("leave_pct", "Leave %", 50, "e"),
-    ("wfh", "WFH", 65, "e"),
-    ("wfh_pct", "WFH %", 50, "e"),
-    ("od", "OD Days", 55, "e"),
-    ("absent", "Absent", 55, "e"),
-    ("exceptions", "Exceptions", 60, "e"),
-    ("excp_rate", "Excp Rate", 55, "e"),
+    ("bu", "Business Unit", 170, "w"),
+    ("hc", "Headcount", 75, "w"),
+    ("rec_days", "Rec. Days", 75, "w"),
+    ("present", "Present", 80, "w"),
+    ("pres_pct", "Pres %", 65, "w"),
+    ("leave", "Leave", 75, "w"),
+    ("leave_pct", "Leave %", 65, "w"),
+    ("wfh", "WFH", 75, "w"),
+    ("wfh_pct", "WFH %", 65, "w"),
+    ("od", "OD Days", 70, "w"),
+    ("absent", "Absent", 70, "w"),
+    ("exceptions", "Exceptions", 75, "w"),
+    ("excp_rate", "Excp Rate", 75, "w"),
 ]
-TOTAL_TABLE_WIDTH = sum(c[2] for c in TABLE_COLUMNS)  # exactly 780 logical width (~1,170px at 1.5x scaling)
+TOTAL_TABLE_WIDTH = sum(c[2] for c in TABLE_COLUMNS)  # ~990 logical width
 TOTAL_TABLE_MIN_WIDTH = TOTAL_TABLE_WIDTH  # Backwards compatibility alias
 
 
@@ -1596,13 +1596,13 @@ class BusinessUnitComparisonTableWidget(ctk.CTkFrame):
 
         # 3. Update Rows Canvas Viewport
         row_count = len(self._bu_data)
-        visible_rows = min(8, max(4, row_count)) if row_count > 0 else 4
-        canvas_h = visible_rows * 24
+        visible_rows = min(14, max(6, row_count)) if row_count > 0 else 6
+        canvas_h = visible_rows * 26
         req_rows_h = max(canvas_h, self.rows_inner_frame.winfo_reqheight())
         self.rows_canvas.configure(height=canvas_h, scrollregion=(0, 0, table_real_w, req_rows_h))
 
         # 4. Show/hide vertical scrollbar and spacers depending on row count
-        if row_count > 8:
+        if row_count > 14:
             self.v_scrollbar.grid(row=1, column=1, sticky="ns", padx=(2, 0))
             self.header_spacer.grid(row=0, column=1, sticky="ns")
             self.total_spacer.grid(row=2, column=1, sticky="ns")
@@ -1617,7 +1617,7 @@ class BusinessUnitComparisonTableWidget(ctk.CTkFrame):
             self.h_scrollbar_spacer.grid_remove()
         else:
             self.h_scrollbar.grid(row=3, column=0, sticky="ew", pady=(3, 2))
-            if row_count > 8:
+            if row_count > 14:
                 self.h_scrollbar_spacer.grid(row=3, column=1, sticky="ns")
             else:
                 self.h_scrollbar_spacer.grid_remove()
@@ -1683,7 +1683,7 @@ class BusinessUnitComparisonTableWidget(ctk.CTkFrame):
                 height=20,
                 anchor=anchor,
             )
-            lbl.grid(row=0, column=idx, sticky="nsew", padx=2, pady=3)
+            lbl.grid(row=0, column=idx, sticky="nsew", padx=(6, 2), pady=3)
             lbl.bind("<Shift-MouseWheel>", self._on_shift_mousewheel)
 
     def _render_rows(self):
@@ -1693,7 +1693,7 @@ class BusinessUnitComparisonTableWidget(ctk.CTkFrame):
         row_count = len(self._bu_data)
         for row_idx, b in enumerate(self._bu_data):
             row_bg = "transparent" if row_idx % 2 == 0 else "#0D1424"
-            row_box = ctk.CTkFrame(self.rows_inner_frame, fg_color=row_bg, corner_radius=2, height=24)
+            row_box = ctk.CTkFrame(self.rows_inner_frame, fg_color=row_bg, corner_radius=2, height=26)
             row_box.grid(row=row_idx, column=0, sticky="ew", pady=1)
             self._configure_frame_columns(row_box)
 
@@ -1715,18 +1715,18 @@ class BusinessUnitComparisonTableWidget(ctk.CTkFrame):
 
             cells = [
                 (disp_name, "w", ui.COLOR_TEXT, True),
-                (f"{hc:,}", "e", ui.COLOR_TEXT, False),
-                (f"{rec_days:,}", "e", ui.COLOR_TEXT, False),
-                (_fmt_days(pres_d), "e", ui.COLOR_TEXT, False),
-                (f"{pres_pct:.1f}%", "e", "#10B981", False),
-                (_fmt_days(lv_d), "e", ui.COLOR_TEXT, False),
-                (f"{lv_pct:.1f}%", "e", "#8B5CF6", False),
-                (_fmt_days(wfh_d), "e", ui.COLOR_TEXT, False),
-                (f"{wfh_pct:.1f}%", "e", "#6366F1", False),
-                (_fmt_days(od_d), "e", ui.COLOR_TEXT, False),
-                (_fmt_days(ab_d), "e", ui.COLOR_ERROR if ab_d > 0 else ui.COLOR_TEXT_SEC, False),
-                (f"{excp_d:,}", "e", "#F43F5E" if excp_d > 0 else ui.COLOR_TEXT_SEC, False),
-                (f"{excp_rate:.1f}%", "e", "#F43F5E" if excp_d > 0 else ui.COLOR_TEXT_SEC, False),
+                (f"{hc:,}", "w", ui.COLOR_TEXT, False),
+                (f"{rec_days:,}", "w", ui.COLOR_TEXT, False),
+                (_fmt_days(pres_d), "w", ui.COLOR_TEXT, False),
+                (f"{pres_pct:.1f}%", "w", "#10B981", False),
+                (_fmt_days(lv_d), "w", ui.COLOR_TEXT, False),
+                (f"{lv_pct:.1f}%", "w", "#8B5CF6", False),
+                (_fmt_days(wfh_d), "w", ui.COLOR_TEXT, False),
+                (f"{wfh_pct:.1f}%", "w", "#6366F1", False),
+                (_fmt_days(od_d), "w", ui.COLOR_TEXT, False),
+                (_fmt_days(ab_d), "w", ui.COLOR_ERROR if ab_d > 0 else ui.COLOR_TEXT_SEC, False),
+                (f"{excp_d:,}", "w", "#F43F5E" if excp_d > 0 else ui.COLOR_TEXT_SEC, False),
+                (f"{excp_rate:.1f}%", "w", "#F43F5E" if excp_d > 0 else ui.COLOR_TEXT_SEC, False),
             ]
 
             row_box.bind("<Enter>", lambda e, rec=b: self._on_row_enter(rec))
@@ -1742,10 +1742,10 @@ class BusinessUnitComparisonTableWidget(ctk.CTkFrame):
                     font=ctk.CTkFont(family=ui.FONT_FAMILY, size=9, weight="bold" if is_b else "normal"),
                     text_color=col,
                     width=col_w,
-                    height=20,
+                    height=22,
                     anchor=anch,
                 )
-                lbl.grid(row=0, column=c_idx, sticky="nsew", padx=2, pady=1)
+                lbl.grid(row=0, column=c_idx, sticky="nsew", padx=(6, 2), pady=1)
                 lbl.bind("<Enter>", lambda e, rec=b: self._on_row_enter(rec))
                 lbl.bind("<Leave>", lambda e: self._on_row_leave())
                 lbl.bind("<MouseWheel>", self._on_rows_mousewheel)
@@ -1775,18 +1775,18 @@ class BusinessUnitComparisonTableWidget(ctk.CTkFrame):
 
         cells = [
             ("Total (Organization-Wide)", "w", ui.COLOR_TEXT),
-            (f"{tot_hc:,}", "e", ui.COLOR_TEXT),
-            (f"{tot_rec:,}", "e", ui.COLOR_TEXT),
-            (_fmt_days(tot_pres_d), "e", ui.COLOR_TEXT),
-            (f"{tot_pres_pct:.1f}%", "e", "#10B981"),
-            (_fmt_days(tot_lv_d), "e", ui.COLOR_TEXT),
-            (f"{tot_lv_pct:.1f}%", "e", "#8B5CF6"),
-            (_fmt_days(tot_wfh_d), "e", ui.COLOR_TEXT),
-            (f"{tot_wfh_pct:.1f}%", "e", "#6366F1"),
-            (_fmt_days(tot_od_d), "e", ui.COLOR_TEXT),
-            (_fmt_days(tot_ab_d), "e", ui.COLOR_ERROR if tot_ab_d > 0 else ui.COLOR_TEXT),
-            (f"{tot_excp_d:,}", "e", "#F43F5E" if tot_excp_d > 0 else ui.COLOR_TEXT),
-            (f"{tot_excp_rate:.1f}%", "e", "#F43F5E" if tot_excp_d > 0 else ui.COLOR_TEXT),
+            (f"{tot_hc:,}", "w", ui.COLOR_TEXT),
+            (f"{tot_rec:,}", "w", ui.COLOR_TEXT),
+            (_fmt_days(tot_pres_d), "w", ui.COLOR_TEXT),
+            (f"{tot_pres_pct:.1f}%", "w", "#10B981"),
+            (_fmt_days(tot_lv_d), "w", ui.COLOR_TEXT),
+            (f"{tot_lv_pct:.1f}%", "w", "#8B5CF6"),
+            (_fmt_days(tot_wfh_d), "w", ui.COLOR_TEXT),
+            (f"{tot_wfh_pct:.1f}%", "w", "#6366F1"),
+            (_fmt_days(tot_od_d), "w", ui.COLOR_TEXT),
+            (_fmt_days(tot_ab_d), "w", ui.COLOR_ERROR if tot_ab_d > 0 else ui.COLOR_TEXT),
+            (f"{tot_excp_d:,}", "w", "#F43F5E" if tot_excp_d > 0 else ui.COLOR_TEXT),
+            (f"{tot_excp_rate:.1f}%", "w", "#F43F5E" if tot_excp_d > 0 else ui.COLOR_TEXT),
         ]
 
         for c_idx, (txt, anch, col) in enumerate(cells):
@@ -1797,10 +1797,10 @@ class BusinessUnitComparisonTableWidget(ctk.CTkFrame):
                 font=ctk.CTkFont(family=ui.FONT_FAMILY, size=9, weight="bold"),
                 text_color=col,
                 width=col_w,
-                height=20,
+                height=22,
                 anchor=anch,
             )
-            lbl.grid(row=0, column=c_idx, sticky="nsew", padx=2, pady=3)
+            lbl.grid(row=0, column=c_idx, sticky="nsew", padx=(6, 2), pady=3)
             lbl.bind("<Shift-MouseWheel>", self._on_shift_mousewheel)
 
 
@@ -2798,9 +2798,35 @@ class WorkforceDashboardView(ctk.CTkFrame):
             card.grid(row=0, column=col, sticky="nsew", padx=2, pady=2)
             self.kpi_cards[cid] = card
 
+        # ── Row 3: 5 Cards for Compliance, Biometric Swipes & Working Hours (Uniform columns 0–4) ──
+        row3_frame = ctk.CTkFrame(self.overview_kpi_frame, fg_color="transparent")
+        row3_frame.grid(row=2, column=0, sticky="ew", pady=(0, 4))
+        row3_frame.grid_columnconfigure((0, 1, 2, 3, 4), weight=1, uniform="kpi_r3")
+        row3_frame.grid_rowconfigure(0, weight=1)
+
+        card_configs_r3 = [
+            ("kpi_leave_compliance", "11. LEAVE COMPLIANCE", "#8B5CF6", "days", "Average lead time to apply leaves from availed date"),
+            ("kpi_approval_compliance", "12. APPROVAL COMPLIANCE", "#06B6D4", "days", "Average days to approve Leave & WFH requests"),
+            ("kpi_avg_in_time", "13. AVG IN TIME", "#10B981", "", "Average first biometric punch-in time (Present & Missing Swipes)"),
+            ("kpi_avg_out_time", "14. AVG OUT TIME", "#F59E0B", "", "Average last biometric punch-out time (Present & Missing Swipes)"),
+            ("kpi_avg_working_hours", "15. AVG WORKING HOURS", "#3B82F6", "", "Average working hours duration (Present & Missing Swipes)"),
+        ]
+
+        for col, (cid, title, color, unit, tip) in enumerate(card_configs_r3):
+            card = ExecutiveKPICard(
+                row3_frame,
+                card_id=cid,
+                title=title,
+                accent_color=color,
+                default_unit=unit,
+                tooltip_text=tip,
+            )
+            card.grid(row=0, column=col, sticky="nsew", padx=2, pady=2)
+            self.kpi_cards[cid] = card
+
         # ── Reconciliation & Composition Transparency Card ──
         self.recon_card = ui.create_card(self.overview_kpi_frame)
-        self.recon_card.grid(row=2, column=0, sticky="ew", pady=(0, 4))
+        self.recon_card.grid(row=3, column=0, sticky="ew", pady=(0, 4))
         self.recon_card.grid_columnconfigure(0, weight=1)
 
         r_inner = ctk.CTkFrame(self.recon_card, fg_color="transparent")
@@ -2838,7 +2864,7 @@ class WorkforceDashboardView(ctk.CTkFrame):
 
         # ── Middle Row: 2 Analytical Visualizations Side-by-Side ──
         self.charts_row_frame = ctk.CTkFrame(self.overview_kpi_frame, fg_color="transparent")
-        self.charts_row_frame.grid(row=3, column=0, sticky="nsew", pady=(0, 5))
+        self.charts_row_frame.grid(row=4, column=0, sticky="nsew", pady=(0, 5))
         self.charts_row_frame.grid_columnconfigure((0, 1), weight=1, uniform="overview_charts")
         self.charts_row_frame.grid_rowconfigure(0, weight=1)
 
@@ -2850,7 +2876,7 @@ class WorkforceDashboardView(ctk.CTkFrame):
 
         # ── Bottom Row: Business Unit Comparison Table ──
         self.bu_table_frame = ctk.CTkFrame(self.overview_kpi_frame, fg_color="transparent")
-        self.bu_table_frame.grid(row=4, column=0, sticky="nsew", pady=(0, 6))
+        self.bu_table_frame.grid(row=5, column=0, sticky="nsew", pady=(0, 6))
         self.bu_table_frame.grid_columnconfigure(0, weight=1)
 
         self.bu_table_widget = BusinessUnitComparisonTableWidget(self.bu_table_frame)
@@ -3109,6 +3135,64 @@ class WorkforceDashboardView(ctk.CTkFrame):
             secondary=f"{excp_rate:.1f}% of recorded employee-days",
             note=f"{affected_emps:,} {emp_unit}",
         )
+
+        # 11. Leave Compliance
+        leave_avg_lead = bundle.get("leave_avg_lead_time_days", bundle.get("avg_leave_apply_days", 0.0))
+        emp_apply_pct = bundle.get("leave_applied_by_emp_pct", bundle.get("applied_by_emp_pct", 0.0))
+        admin_apply_pct = bundle.get("leave_applied_by_admin_pct", bundle.get("applied_by_admin_pct", 0.0))
+        lead_unit = "day" if abs(leave_avg_lead) == 1.0 else "days"
+        prior_pct = bundle.get("leave_prior_pct", 0.0)
+        retro_pct = bundle.get("leave_retro_pct", 0.0)
+        if "kpi_leave_compliance" in self.kpi_cards:
+            self.kpi_cards["kpi_leave_compliance"].update_values(
+                primary=f"{leave_avg_lead:.1f} {lead_unit}",
+                secondary=f"{emp_apply_pct:.1f}% by Emp • {admin_apply_pct:.1f}% Admin",
+                note=f"Prior: {prior_pct:.1f}% | Retro: {retro_pct:.1f}%",
+            )
+
+        # 12. Approval Compliance
+        appr_days = bundle.get("leave_avg_approval_turnaround_days", bundle.get("avg_approval_days", 0.0))
+        mgr_appr_pct = bundle.get("leave_approved_by_mgr_pct", bundle.get("appr_mgr_pct", 0.0))
+        admin_appr_pct = bundle.get("leave_approved_by_admin_pct", bundle.get("appr_admin_pct", 0.0))
+        appr_unit = "day" if abs(appr_days) == 1.0 else "days"
+        completed_apprs = bundle.get("leave_completed_approvals", 0)
+        if "kpi_approval_compliance" in self.kpi_cards:
+            self.kpi_cards["kpi_approval_compliance"].update_values(
+                primary=f"{appr_days:.1f} {appr_unit}",
+                secondary=f"{mgr_appr_pct:.1f}% by Mgr • {admin_appr_pct:.1f}% Admin",
+                note=f"Completed approvals: {completed_apprs:,}",
+            )
+
+        # 13. AVG In Time
+        in_time_val = bundle.get("avg_in_time", "--:--") or "--:--"
+        complete_pct = bundle.get("complete_swipe_pct", 0.0)
+        if "kpi_avg_in_time" in self.kpi_cards:
+            self.kpi_cards["kpi_avg_in_time"].update_values(
+                primary=in_time_val,
+                secondary=f"{complete_pct:.1f}% complete swipes",
+                note="First biometric punch-in",
+            )
+
+        # 14. AVG Out Time
+        out_time_val = bundle.get("avg_out_time", "--:--") or "--:--"
+        total_phys = bundle.get("total_physical_days", 0)
+        phys_unit = "physical day" if total_phys == 1 else "physical days"
+        if "kpi_avg_out_time" in self.kpi_cards:
+            self.kpi_cards["kpi_avg_out_time"].update_values(
+                primary=out_time_val,
+                secondary=f"{total_phys:,} {phys_unit}",
+                note="Last biometric punch-out",
+            )
+
+        # 15. AVG Working Hours
+        work_hrs_val = bundle.get("avg_working_hours", "--:--") or "--:--"
+        work_hrs_dec = bundle.get("avg_working_hours_decimal", 0.0)
+        if "kpi_avg_working_hours" in self.kpi_cards:
+            self.kpi_cards["kpi_avg_working_hours"].update_values(
+                primary=work_hrs_val,
+                secondary=f"{work_hrs_dec:.2f} hrs decimal",
+                note="Net recorded daily duration",
+            )
 
         # Dynamic Data Quality Status Indicator (Concise dataset-derived status)
         self._current_bundle = bundle
