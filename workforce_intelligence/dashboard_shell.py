@@ -220,7 +220,18 @@ class ExecutiveKPICard(ctk.CTkFrame):
             justify="left",
             wraplength=160,
         )
-        self.lbl_note.grid(row=3, column=0, sticky="ew", padx=7, pady=(0, 5))
+        self.lbl_note.grid(row=3, column=0, sticky="ew", padx=7, pady=(0, 2))
+
+        # Sparkline canvas (Row 4)
+        self.sparkline_canvas = tk.Canvas(
+            self,
+            height=14,
+            bg=ui.COLOR_CARD,
+            bd=0,
+            highlightthickness=0,
+        )
+        self.sparkline_canvas.grid(row=4, column=0, sticky="ew", padx=7, pady=(0, 4))
+        self._sparkline_data: List[float] = []
 
         self.bind("<Configure>", self._on_card_configure)
 
@@ -238,6 +249,7 @@ class ExecutiveKPICard(ctk.CTkFrame):
         self.lbl_val.configure(wraplength=inner_w)
         self.lbl_sub.configure(wraplength=inner_w)
         self.lbl_note.configure(wraplength=inner_w)
+        self._draw_sparkline()
 
     def update_values(
         self,
@@ -245,6 +257,7 @@ class ExecutiveKPICard(ctk.CTkFrame):
         secondary: str = "",
         note: Optional[str] = None,
         val_color: Optional[str] = None,
+        sparkline_data: Optional[List[float]] = None,
     ):
         """Update displayed card values on the main thread."""
         self.lbl_val.configure(
@@ -257,6 +270,55 @@ class ExecutiveKPICard(ctk.CTkFrame):
         )
         if note is not None:
             self.lbl_note.configure(text=note)
+
+        if sparkline_data is not None:
+            self._sparkline_data = [float(v) for v in sparkline_data if v is not None and not pd.isna(v)]
+            self._draw_sparkline()
+        elif not self._sparkline_data:
+            self.sparkline_canvas.delete("all")
+
+    def _draw_sparkline(self):
+        self.sparkline_canvas.delete("all")
+        if not self._sparkline_data or len(self._sparkline_data) < 2:
+            return
+        w = self.sparkline_canvas.winfo_width()
+        if w <= 10:
+            w = 120
+        h = 14
+        pad_x = 3.0
+        pad_y = 2.0
+        w_avail = max(10.0, w - 2 * pad_x)
+        h_avail = max(4.0, h - 2 * pad_y)
+
+        vals = self._sparkline_data
+        min_v = min(vals)
+        max_v = max(vals)
+        v_range = max_v - min_v if max_v > min_v else 1.0
+
+        n = len(vals)
+        step_x = w_avail / max(1, n - 1)
+        pts = []
+        for i, v in enumerate(vals):
+            x = pad_x + i * step_x
+            norm = (v - min_v) / v_range
+            y = pad_y + (1.0 - norm) * h_avail
+            pts.extend([x, y])
+
+        if len(pts) >= 4:
+            smooth_opt = True if len(pts) >= 6 else False
+            self.sparkline_canvas.create_line(
+                pts, fill=self.accent_color, width=1.5, smooth=smooth_opt, splinesteps=12
+            )
+            # Glowing endpoint marker
+            end_x, end_y = pts[-2], pts[-1]
+            self.sparkline_canvas.create_oval(
+                end_x - 3.0, end_y - 3.0, end_x + 3.0, end_y + 3.0,
+                fill="", outline=self.accent_color, width=1
+            )
+            self.sparkline_canvas.create_oval(
+                end_x - 1.8, end_y - 1.8, end_x + 1.8, end_y + 1.8,
+                fill=self.accent_color, outline=ui.COLOR_CARD, width=1
+            )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -687,7 +749,11 @@ class DailyAttendanceTrendWidget(ctk.CTkFrame):
         self._hover_coords = []
         visible_w = self.chart_canvas.winfo_width()
         h = self.chart_canvas.winfo_height()
-        if visible_w <= 40 or h <= 20 or not self._trend_data:
+        if visible_w <= 40:
+            visible_w = 400
+        if h <= 20:
+            h = 135
+        if not self._trend_data:
             return
 
         pad_top = 16.0
@@ -774,11 +840,20 @@ class DailyAttendanceTrendWidget(ctk.CTkFrame):
                 pts.extend([x, y])
 
             if len(pts) >= 4:
-                self.chart_canvas.create_line(pts, fill=s_color, width=2)
+                smooth_opt = True if len(pts) >= 6 else False
+                self.chart_canvas.create_line(
+                    pts, fill=s_color, width=2.5, smooth=smooth_opt, splinesteps=16
+                )
             for j in range(0, len(pts), 2):
                 px, py = pts[j], pts[j + 1]
+                # Outer glow ring
                 self.chart_canvas.create_oval(
-                    px - 2.5, py - 2.5, px + 2.5, py + 2.5,
+                    px - 3.8, py - 3.8, px + 3.8, py + 3.8,
+                    fill="", outline=s_color, width=1
+                )
+                # Core point
+                self.chart_canvas.create_oval(
+                    px - 2.2, py - 2.2, px + 2.2, py + 2.2,
                     fill=s_color, outline=ui.COLOR_CARD, width=1
                 )
 
@@ -839,14 +914,18 @@ class DailyAttendanceTrendWidget(ctk.CTkFrame):
         # Vertical guide line
         self.chart_canvas.create_line(
             nearest_x, pad_top, nearest_x, h - pad_bottom,
-            fill="#3B82F6", width=1, dash=(2, 2), tags="hover_indicator"
+            fill="#3B82F6", width=1.5, dash=(3, 3), tags="hover_indicator"
         )
-        # Highlight points on hover
+        # Highlight points on hover with glowing rings
         for s_key, s_col in [("present_days", "#10B981"), ("wfh_days", "#6366F1"), ("leave_days", "#8B5CF6")]:
             val = float(nearest_rec.get(s_key, 0.0))
             y_pt = pad_top + (1.0 - (val / self._max_val)) * h_avail
             self.chart_canvas.create_oval(
-                nearest_x - 4.5, y_pt - 4.5, nearest_x + 4.5, y_pt + 4.5,
+                nearest_x - 6.0, y_pt - 6.0, nearest_x + 6.0, y_pt + 6.0,
+                fill="", outline=s_col, width=1.5, tags="hover_indicator"
+            )
+            self.chart_canvas.create_oval(
+                nearest_x - 3.5, y_pt - 3.5, nearest_x + 3.5, y_pt + 3.5,
                 fill=s_col, outline="#FFFFFF", width=1.5, tags="hover_indicator"
             )
 
@@ -4270,6 +4349,15 @@ class WorkforceDashboardView(ctk.CTkFrame):
 
         self._update_active_scope_label()
 
+        # Extract daily series for mini sparklines
+        trend_list = bundle.get("daily_attendance_trend", [])
+        pres_series = [float(d.get("present_days", 0.0)) for d in trend_list] if trend_list else None
+        wfh_series = [float(d.get("wfh_days", 0.0)) for d in trend_list] if trend_list else None
+        leave_series = [float(d.get("leave_days", 0.0)) for d in trend_list] if trend_list else None
+        ab_series = [float(d.get("absent_days", 0.0)) for d in trend_list] if trend_list else None
+        rec_series = [float(d.get("recorded_days", 0.0)) for d in trend_list] if trend_list else None
+        excp_series = [float(d.get("missing_swipe_days", 0) + d.get("regularized_days", 0)) for d in trend_list] if trend_list else None
+
         # 1. EMP HC
         emp_hc = bundle.get("kpi_1_emp_hc", 0)
         hc_unit = "employee" if emp_hc == 1 else "employees"
@@ -4286,6 +4374,7 @@ class WorkforceDashboardView(ctk.CTkFrame):
             primary=f"{att_days:,} {att_unit}",
             secondary="100.0% of recorded period",
             note="Distinct employee-day records",
+            sparkline_data=rec_series,
         )
 
         # 3. Present
@@ -4295,6 +4384,7 @@ class WorkforceDashboardView(ctk.CTkFrame):
             primary=_fmt_days(q_pres),
             secondary=f"{pct_pres:.1f}% of recorded days",
             note="Physical attendance days (inc. single swipes)",
+            sparkline_data=pres_series,
         )
 
         # 4. On Duty
@@ -4313,6 +4403,7 @@ class WorkforceDashboardView(ctk.CTkFrame):
             primary=_fmt_days(q_leave),
             secondary=f"{pct_leave:.1f}% of recorded days",
             note="Quantity-weighted leave days",
+            sparkline_data=leave_series,
         )
 
         # 6. WFH
@@ -4322,6 +4413,7 @@ class WorkforceDashboardView(ctk.CTkFrame):
             primary=_fmt_days(q_wfh),
             secondary=f"{pct_wfh:.1f}% of recorded days",
             note="Work from home days",
+            sparkline_data=wfh_series,
         )
 
         # 7. Holiday
@@ -4349,6 +4441,7 @@ class WorkforceDashboardView(ctk.CTkFrame):
             primary=_fmt_days(q_ab),
             secondary=f"{pct_ab:.1f}% of recorded days",
             note="Recorded employee absence days",
+            sparkline_data=ab_series,
         )
 
         # 10. Attendance Exceptions
@@ -4361,6 +4454,7 @@ class WorkforceDashboardView(ctk.CTkFrame):
             primary=f"{excp_days:,} {excp_day_unit}",
             secondary=f"{excp_rate:.1f}% of recorded employee-days",
             note=f"{affected_emps:,} {emp_unit}",
+            sparkline_data=excp_series,
         )
 
         # 11. Leave Compliance
