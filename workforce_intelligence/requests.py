@@ -117,7 +117,7 @@ def build_leave_requests(
     approval_st_series = leave_df["Approval Status"] if "Approval Status" in leave_df.columns else pd.Series(None, index=leave_df.index)
 
     # Sort to ensure chronological continuity
-    leave_df["_sort_date"] = pd.to_datetime(leave_df["Date"]) if "Date" in leave_df.columns else pd.NaT
+    leave_df["_sort_date"] = pd.to_datetime(leave_df["Date"], errors="coerce") if "Date" in leave_df.columns else pd.NaT
     leave_df["_orig_idx"] = leave_df.index
     leave_df = leave_df.sort_values(by=["Employee Number", "_sort_date", "_orig_idx"])
 
@@ -135,7 +135,8 @@ def build_leave_requests(
         apr_on_str = apr_on.isoformat() if pd.notna(apr_on) and hasattr(apr_on, "isoformat") else str(apr_on)
         apr_by = str(row.get("Approved By")).strip().lower()
         apr_st = str(row.get("Approval Status")).strip().lower()
-        evt_date = pd.to_datetime(row.get("Date")) if pd.notna(row.get("Date")) else None
+        evt_dt_raw = pd.to_datetime(row.get("Date"), errors="coerce")
+        evt_date = evt_dt_raw if pd.notna(evt_dt_raw) else None
 
         if prev_row is None:
             curr_group_id = 1
@@ -187,7 +188,7 @@ def build_leave_requests(
         is_pl = config.is_pl_leave(leave_name_norm or "", str(status_val))
 
         # Dates & Quantity
-        valid_dates = pd.to_datetime(group["Date"]).dropna()
+        valid_dates = pd.to_datetime(group["Date"], errors="coerce").dropna()
         start_date: Optional[date] = valid_dates.min().date() if not valid_dates.empty else None
         end_date: Optional[date] = valid_dates.max().date() if not valid_dates.empty else None
 
@@ -200,13 +201,15 @@ def build_leave_requests(
 
         # Application & Approval metadata
         applied_on_val = first_row.get("Applied On")
+        app_dt_raw = pd.to_datetime(applied_on_val, errors="coerce")
         applied_dt: Optional[datetime] = (
-            pd.to_datetime(applied_on_val).to_pydatetime() if pd.notna(applied_on_val) else None
+            app_dt_raw.to_pydatetime() if pd.notna(app_dt_raw) else None
         )
 
         approved_on_val = first_row.get("Approved On")
+        apr_dt_raw = pd.to_datetime(approved_on_val, errors="coerce")
         approved_dt: Optional[datetime] = (
-            pd.to_datetime(approved_on_val).to_pydatetime() if pd.notna(approved_on_val) else None
+            apr_dt_raw.to_pydatetime() if pd.notna(apr_dt_raw) else None
         )
 
         approval_status = first_row.get("Approval Status")

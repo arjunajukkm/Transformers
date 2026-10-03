@@ -440,7 +440,13 @@ def normalize_workforce_dataframe(
             app_on = row["Applied On"]
             evt_date = row["Date"]
             if pd.notna(app_on) and pd.notna(evt_date):
-                return (pd.to_datetime(app_on).floor("D") - pd.to_datetime(evt_date).floor("D")).days
+                try:
+                    ts_app = pd.to_datetime(app_on, errors="coerce")
+                    ts_evt = pd.to_datetime(evt_date, errors="coerce")
+                    if pd.notna(ts_app) and pd.notna(ts_evt):
+                        return (ts_app.floor("D") - ts_evt.floor("D")).days
+                except Exception:
+                    return None
             return None
 
         df["application_lag_days"] = df.apply(calc_lag, axis=1).astype("Int64")
@@ -452,7 +458,13 @@ def normalize_workforce_dataframe(
             app_on = row["Applied On"]
             apr_on = row["Approved On"]
             if pd.notna(app_on) and pd.notna(apr_on):
-                return (pd.to_datetime(apr_on).floor("D") - pd.to_datetime(app_on).floor("D")).days
+                try:
+                    ts_apr = pd.to_datetime(apr_on, errors="coerce")
+                    ts_app = pd.to_datetime(app_on, errors="coerce")
+                    if pd.notna(ts_apr) and pd.notna(ts_app):
+                        return (ts_apr.floor("D") - ts_app.floor("D")).days
+                except Exception:
+                    return None
             return None
 
         df["approval_turnaround_days"] = df.apply(calc_turnaround, axis=1).astype("Int64")

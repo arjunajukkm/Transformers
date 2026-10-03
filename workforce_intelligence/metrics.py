@@ -326,8 +326,12 @@ def calculate_core_metrics(
 
     # Reference date for pending age
     if analysis_as_of_date is None:
-        if "Date" in df_eval.columns and not df_eval["Date"].dropna().empty:
-            analysis_as_of_date = pd.to_datetime(df_eval["Date"]).dropna().max().date()
+        if "Date" in df_eval.columns:
+            d_series = pd.to_datetime(df_eval["Date"], errors="coerce").dropna()
+            if not d_series.empty:
+                analysis_as_of_date = d_series.max().date()
+            else:
+                analysis_as_of_date = date.today()
         else:
             analysis_as_of_date = date.today()
     elif isinstance(analysis_as_of_date, datetime):
@@ -350,10 +354,12 @@ def calculate_core_metrics(
         for _, r in pending_records.iterrows():
             app_on = r.get("Applied On")
             if pd.notna(app_on):
-                app_date = pd.to_datetime(app_on).date()
-                age = (analysis_as_of_date - app_date).days
-                if age >= 0:
-                    pending_ages.append(age)
+                app_ts = pd.to_datetime(app_on, errors="coerce")
+                if pd.notna(app_ts):
+                    app_date = app_ts.date()
+                    age = (analysis_as_of_date - app_date).days
+                    if age >= 0:
+                        pending_ages.append(age)
 
     avg_pending_age: Optional[float] = round(float(np.mean(pending_ages)), 2) if pending_ages else None
     max_pending_age: Optional[int] = int(np.max(pending_ages)) if pending_ages else None

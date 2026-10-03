@@ -491,22 +491,56 @@ def _calculate_pattern_score_and_badges(
     return total_score, score_components, strength_label, pers_label, status_label
 
 
+def _safe_to_date(d: Any) -> Optional[date]:
+    """Safely extract datetime.date from any object, returning None on failure."""
+    if d is None or pd.isna(d):
+        return None
+    if isinstance(d, date) and not isinstance(d, datetime):
+        return d
+    if isinstance(d, datetime):
+        return d.date()
+    try:
+        ts = pd.to_datetime(d, errors="coerce")
+        if pd.notna(ts):
+            return ts.date()
+    except Exception:
+        pass
+    return None
+
+
+def _safe_dt_str(d: Any, fmt: str = "%Y-%m-%d") -> str:
+    """Safely format date-like value to string, handling strings like 'NA', nulls, etc."""
+    if d is None or pd.isna(d):
+        return ""
+    try:
+        ts = pd.to_datetime(d, errors="coerce")
+        if pd.notna(ts):
+            return ts.strftime(fmt)
+    except Exception:
+        pass
+    return ""
+
+
+def _safe_days_since(max_date: Optional[date], last_d: Any) -> int:
+    """Safely calculate days since last date."""
+    if not max_date or last_d is None or pd.isna(last_d):
+        return 0
+    ld = _safe_to_date(last_d)
+    if not ld:
+        return 0
+    diff = (max_date - ld).days
+    return max(0, diff)
+
+
 def _extract_date_metadata(dates: Sequence[Union[date, str, datetime]]) -> Tuple[Optional[str], Optional[str], List[str], int]:
     """Extract first date, last date, distinct month labels (e.g. 'Sep 2026'), and count."""
     clean_dates: List[date] = []
     for d in dates:
         if d is None or pd.isna(d):
             continue
-        if isinstance(d, datetime):
-            clean_dates.append(d.date())
-        elif isinstance(d, date):
-            clean_dates.append(d)
-        else:
-            try:
-                dt = pd.to_datetime(d).date()
-                clean_dates.append(dt)
-            except Exception:
-                pass
+        cd = _safe_to_date(d)
+        if cd is not None:
+            clean_dates.append(cd)
 
     if not clean_dates:
         return None, None, [], 0
@@ -515,7 +549,10 @@ def _extract_date_metadata(dates: Sequence[Union[date, str, datetime]]) -> Tuple
     first_d = sorted_dates[0].strftime("%Y-%m-%d")
     last_d = sorted_dates[-1].strftime("%Y-%m-%d")
 
-    month_keys = sorted(list({d.strftime("%b %Y") for d in sorted_dates}), key=lambda m: pd.to_datetime(m))
+    month_keys = sorted(
+        list({d.strftime("%b %Y") for d in sorted_dates}),
+        key=lambda m: pd.to_datetime(m, errors="coerce")
+    )
     return first_d, last_d, month_keys, len(month_keys)
 
 
@@ -552,7 +589,10 @@ class PatternContext:
                     apr_on = row.get("Approved On")
                     if pd.notna(app_on) and pd.notna(apr_on):
                         try:
-                            return (pd.to_datetime(apr_on).floor("D") - pd.to_datetime(app_on).floor("D")).days
+                            ts_apr = pd.to_datetime(apr_on, errors="coerce")
+                            ts_app = pd.to_datetime(app_on, errors="coerce")
+                            if pd.notna(ts_apr) and pd.notna(ts_app):
+                                return (ts_apr.floor("D") - ts_app.floor("D")).days
                         except Exception:
                             return None
                     return None
@@ -577,10 +617,12 @@ class PatternContext:
 
         # 4. Max dataset date for recency calculation
         self.dataset_max_date: Optional[date] = None
-        if "Date" in self.df.columns and not self.df["Date"].dropna().empty:
-            self.dataset_max_date = pd.to_datetime(self.df["Date"]).dropna().max().date()
-        elif not self.facts.empty and "Date" in self.facts.columns and not self.facts["Date"].dropna().empty:
-            self.dataset_max_date = pd.to_datetime(self.facts["Date"]).dropna().max().date()
+        if "Date" in self.df.columns:
+            d_s = pd.to_datetime(self.df["Date"], errors="coerce").dropna()
+            self.dataset_max_date = d_s.max().date() if not d_s.empty else None
+        elif not self.facts.empty and "Date" in self.facts.columns:
+            d_s = pd.to_datetime(self.facts["Date"], errors="coerce").dropna()
+            self.dataset_max_date = d_s.max().date() if not d_s.empty else None
         else:
             self.dataset_max_date = date.today()
 
@@ -623,7 +665,7 @@ def detect_weekday_exception_patterns(ctx: PatternContext) -> List[PatternResult
     if eval_facts.empty or "Date" not in eval_facts.columns:
         return results
 
-    eval_facts["weekday_name"] = pd.to_datetime(eval_facts["Date"]).dt.day_name()
+    eval_facts["weekday_name"] = pd.to_datetime(eval_facts["Date"], errors="coerce").dt.day_name()
 
     # Detect at Employee level
     for (emp_num, emp_name), group in eval_facts.groupby(["Employee Number", "Employee Name"]):
@@ -651,7 +693,7 @@ def detect_weekday_exception_patterns(ctx: PatternContext) -> List[PatternResult
             dates = w_exc_rows["Date"].tolist()
             first_d, last_d, months_active, dist_months = _extract_date_metadata(dates)
 
-            days_since = (ctx.dataset_max_date - pd.to_datetime(last_d).date()).days if last_d and ctx.dataset_max_date else 0
+            days_since = _safe_days_since(ctx.dataset_max_date, last_d)
             score, components, strength, persistence, status = _calculate_pattern_score_and_badges(
                 event_count=w_exc_count,
                 opportunity_count=w_eligible_days,
@@ -664,7 +706,7 @@ def detect_weekday_exception_patterns(ctx: PatternContext) -> List[PatternResult
             # Build evidence
             evidence_items = []
             for _, r in w_exc_rows.iterrows():
-                dt_str = pd.to_datetime(r["Date"]).strftime("%Y-%m-%d") if pd.notna(r["Date"]) else ""
+                dt_str = _safe_dt_str(r.get("Date"))
                 evidence_items.append(
                     PatternEvidenceItem(
                         date=dt_str,
@@ -753,7 +795,7 @@ def detect_attendance_recurrence_patterns(ctx: PatternContext) -> List[PatternRe
             dates = matched_rows["Date"].tolist()
             first_d, last_d, months_active, dist_months = _extract_date_metadata(dates)
 
-            days_since = (ctx.dataset_max_date - pd.to_datetime(last_d).date()).days if last_d and ctx.dataset_max_date else 0
+            days_since = _safe_days_since(ctx.dataset_max_date, last_d)
             score, components, strength, persistence, status = _calculate_pattern_score_and_badges(
                 event_count=count,
                 opportunity_count=total_opp,
@@ -764,7 +806,7 @@ def detect_attendance_recurrence_patterns(ctx: PatternContext) -> List[PatternRe
 
             evidence_items = []
             for _, r in matched_rows.iterrows():
-                dt_str = pd.to_datetime(r["Date"]).strftime("%Y-%m-%d") if pd.notna(r["Date"]) else ""
+                dt_str = _safe_dt_str(r.get("Date"))
                 evidence_items.append(
                     PatternEvidenceItem(
                         date=dt_str,
@@ -853,7 +895,7 @@ def detect_leave_wfh_timing_patterns(ctx: PatternContext) -> List[PatternResult]
                 hist_count = len(hist_reqs)
                 enf_count = len(enf_reqs)
 
-                days_since = (ctx.dataset_max_date - pd.to_datetime(last_d).date()).days if last_d and ctx.dataset_max_date else 0
+                days_since = _safe_days_since(ctx.dataset_max_date, last_d)
                 score, components, strength, persistence, status = _calculate_pattern_score_and_badges(
                     event_count=late_count,
                     opportunity_count=total_reqs,
@@ -955,7 +997,7 @@ def detect_leave_wfh_timing_patterns(ctx: PatternContext) -> List[PatternResult]
                 hist_missing = missing_app_reqs[missing_app_reqs["request_start_date"].astype(str) < POLICY_EFFECTIVE_DATE_STR]
                 enf_missing = missing_app_reqs[missing_app_reqs["request_start_date"].astype(str) >= POLICY_EFFECTIVE_DATE_STR]
 
-                days_since = (ctx.dataset_max_date - pd.to_datetime(last_d).date()).days if last_d and ctx.dataset_max_date else 0
+                days_since = _safe_days_since(ctx.dataset_max_date, last_d)
                 score, components, strength, persistence, status = _calculate_pattern_score_and_badges(
                     event_count=missing_count,
                     opportunity_count=total_reqs,
@@ -1042,7 +1084,7 @@ def detect_leave_wfh_timing_patterns(ctx: PatternContext) -> List[PatternResult]
                     hist_count = len(hist_wfh)
                     enf_count = len(enf_wfh)
 
-                    days_since = (ctx.dataset_max_date - pd.to_datetime(last_d).date()).days if last_d and ctx.dataset_max_date else 0
+                    days_since = _safe_days_since(ctx.dataset_max_date, last_d)
                     score, components, strength, persistence, status = _calculate_pattern_score_and_badges(
                         event_count=late_count,
                         opportunity_count=total_wfh,
@@ -1053,7 +1095,7 @@ def detect_leave_wfh_timing_patterns(ctx: PatternContext) -> List[PatternResult]
 
                     evidence_items = []
                     for _, r in late_wfh.iterrows():
-                        dt_str = pd.to_datetime(r["Date"]).strftime("%Y-%m-%d") if pd.notna(r["Date"]) else ""
+                        dt_str = _safe_dt_str(r.get("Date"))
                         evidence_items.append(
                             PatternEvidenceItem(
                                 date=dt_str,
@@ -1171,7 +1213,7 @@ def detect_approval_delay_patterns(ctx: PatternContext) -> List[PatternResult]:
         dates = long_approvals["Date"].dropna().tolist()
         first_d, last_d, months_active, dist_months = _extract_date_metadata(dates)
 
-        days_since = (ctx.dataset_max_date - pd.to_datetime(last_d).date()).days if last_d and ctx.dataset_max_date else 0
+        days_since = _safe_days_since(ctx.dataset_max_date, last_d)
         score, components, strength, persistence, status = _calculate_pattern_score_and_badges(
             event_count=long_count,
             opportunity_count=total_appr,
@@ -1182,7 +1224,7 @@ def detect_approval_delay_patterns(ctx: PatternContext) -> List[PatternResult]:
 
         evidence_items = []
         for _, r in long_approvals.iterrows():
-            dt_str = pd.to_datetime(r["Date"]).strftime("%Y-%m-%d") if pd.notna(r["Date"]) else ""
+            dt_str = _safe_dt_str(r.get("Date"))
             evidence_items.append(
                 PatternEvidenceItem(
                     date=dt_str,
@@ -1258,15 +1300,15 @@ def detect_calendar_patterns(ctx: PatternContext) -> List[PatternResult]:
     if eval_facts.empty or "Date" not in eval_facts.columns:
         return results
 
-    eval_facts["dt"] = pd.to_datetime(eval_facts["Date"]).dt.date
-    eval_facts["weekday_num"] = pd.to_datetime(eval_facts["Date"]).dt.weekday  # Mon=0, Fri=4, Sat=5, Sun=6
+    eval_facts["dt"] = pd.to_datetime(eval_facts["Date"], errors="coerce").dt.date
+    eval_facts["weekday_num"] = pd.to_datetime(eval_facts["Date"], errors="coerce").dt.weekday  # Mon=0, Fri=4, Sat=5, Sun=6
     eval_facts["is_mon_or_fri"] = eval_facts["weekday_num"].isin([0, 4])
 
     # Find holiday dates present in source
     holiday_dates = set()
     if "has_holiday" in ctx.facts.columns:
         hol_rows = ctx.facts[ctx.facts["has_holiday"] == True]
-        holiday_dates = set(pd.to_datetime(hol_rows["Date"]).dt.date.dropna())
+        holiday_dates = set(pd.to_datetime(hol_rows["Date"], errors="coerce").dt.date.dropna())
 
     for (emp_num, emp_name), group in eval_facts.groupby(["Employee Number", "Employee Name"]):
         emp_num_str = str(emp_num)
@@ -1285,7 +1327,7 @@ def detect_calendar_patterns(ctx: PatternContext) -> List[PatternResult]:
                 dates = mon_fri_events["Date"].tolist()
                 first_d, last_d, months_active, dist_months = _extract_date_metadata(dates)
 
-                days_since = (ctx.dataset_max_date - pd.to_datetime(last_d).date()).days if last_d and ctx.dataset_max_date else 0
+                days_since = _safe_days_since(ctx.dataset_max_date, last_d)
                 score, components, strength, persistence, status = _calculate_pattern_score_and_badges(
                     event_count=mon_fri_count,
                     opportunity_count=tot_target,
@@ -1297,8 +1339,8 @@ def detect_calendar_patterns(ctx: PatternContext) -> List[PatternResult]:
 
                 evidence_items = []
                 for _, r in mon_fri_events.iterrows():
-                    dt_str = pd.to_datetime(r["Date"]).strftime("%Y-%m-%d")
-                    w_name = pd.to_datetime(r["Date"]).strftime("%A")
+                    dt_str = _safe_dt_str(r.get("Date"))
+                    w_name = _safe_dt_str(r.get("Date"), "%A")
                     evidence_items.append(
                         PatternEvidenceItem(
                             date=dt_str,
@@ -1353,7 +1395,7 @@ def detect_calendar_patterns(ctx: PatternContext) -> List[PatternResult]:
                 dates = adj_rows["Date"].tolist()
                 first_d, last_d, months_active, dist_months = _extract_date_metadata(dates)
 
-                days_since = (ctx.dataset_max_date - pd.to_datetime(last_d).date()).days if last_d and ctx.dataset_max_date else 0
+                days_since = _safe_days_since(ctx.dataset_max_date, last_d)
                 score, components, strength, persistence, status = _calculate_pattern_score_and_badges(
                     event_count=adj_count,
                     opportunity_count=tot_leave,
@@ -1365,8 +1407,8 @@ def detect_calendar_patterns(ctx: PatternContext) -> List[PatternResult]:
 
                 evidence_items = []
                 for _, r in adj_rows.iterrows():
-                    dt_str = pd.to_datetime(r["Date"]).strftime("%Y-%m-%d")
-                    w_name = pd.to_datetime(r["Date"]).strftime("%A")
+                    dt_str = _safe_dt_str(r.get("Date"))
+                    w_name = _safe_dt_str(r.get("Date"), "%A")
                     evidence_items.append(
                         PatternEvidenceItem(
                             date=dt_str,
@@ -1425,7 +1467,7 @@ def detect_calendar_patterns(ctx: PatternContext) -> List[PatternResult]:
                 dates = [r["Date"] for r in hol_adj_items]
                 first_d, last_d, months_active, dist_months = _extract_date_metadata(dates)
 
-                days_since = (ctx.dataset_max_date - pd.to_datetime(last_d).date()).days if last_d and ctx.dataset_max_date else 0
+                days_since = _safe_days_since(ctx.dataset_max_date, last_d)
                 score, components, strength, persistence, status = _calculate_pattern_score_and_badges(
                     event_count=hol_adj_count,
                     opportunity_count=tot_leave,
@@ -1436,7 +1478,7 @@ def detect_calendar_patterns(ctx: PatternContext) -> List[PatternResult]:
 
                 evidence_items = []
                 for r in hol_adj_items:
-                    dt_str = pd.to_datetime(r["Date"]).strftime("%Y-%m-%d")
+                    dt_str = _safe_dt_str(r.get("Date"))
                     evidence_items.append(
                         PatternEvidenceItem(
                             date=dt_str,
@@ -1498,7 +1540,7 @@ def detect_sequence_patterns(ctx: PatternContext) -> List[PatternResult]:
     if eval_facts.empty or "Date" not in eval_facts.columns:
         return results
 
-    eval_facts["dt"] = pd.to_datetime(eval_facts["Date"]).dt.date
+    eval_facts["dt"] = pd.to_datetime(eval_facts["Date"], errors="coerce").dt.date
     eval_facts = eval_facts.sort_values(["Employee Number", "dt"])
 
     for (emp_num, emp_name), group in eval_facts.groupby(["Employee Number", "Employee Name"]):
@@ -1539,7 +1581,7 @@ def detect_sequence_patterns(ctx: PatternContext) -> List[PatternResult]:
             dates = [p[0]["Date"] for p in l_to_wfh_matches]
             first_d, last_d, months_active, dist_months = _extract_date_metadata(dates)
 
-            days_since = (ctx.dataset_max_date - pd.to_datetime(last_d).date()).days if last_d and ctx.dataset_max_date else 0
+            days_since = _safe_days_since(ctx.dataset_max_date, last_d)
             score, components, strength, persistence, status = _calculate_pattern_score_and_badges(
                 event_count=count,
                 opportunity_count=None,
@@ -1550,8 +1592,8 @@ def detect_sequence_patterns(ctx: PatternContext) -> List[PatternResult]:
 
             evidence_items = []
             for c, n in l_to_wfh_matches:
-                d1 = pd.to_datetime(c["Date"]).strftime("%Y-%m-%d")
-                d2 = pd.to_datetime(n["Date"]).strftime("%Y-%m-%d")
+                d1 = _safe_dt_str(c.get("Date"))
+                d2 = _safe_dt_str(n.get("Date"))
                 evidence_items.append(
                     PatternEvidenceItem(
                         date=d1,
@@ -1601,7 +1643,7 @@ def detect_sequence_patterns(ctx: PatternContext) -> List[PatternResult]:
             dates = [p[0]["Date"] for p in wfh_to_l_matches]
             first_d, last_d, months_active, dist_months = _extract_date_metadata(dates)
 
-            days_since = (ctx.dataset_max_date - pd.to_datetime(last_d).date()).days if last_d and ctx.dataset_max_date else 0
+            days_since = _safe_days_since(ctx.dataset_max_date, last_d)
             score, components, strength, persistence, status = _calculate_pattern_score_and_badges(
                 event_count=count,
                 opportunity_count=None,
@@ -1612,8 +1654,8 @@ def detect_sequence_patterns(ctx: PatternContext) -> List[PatternResult]:
 
             evidence_items = []
             for c, n in wfh_to_l_matches:
-                d1 = pd.to_datetime(c["Date"]).strftime("%Y-%m-%d")
-                d2 = pd.to_datetime(n["Date"]).strftime("%Y-%m-%d")
+                d1 = _safe_dt_str(c.get("Date"))
+                d2 = _safe_dt_str(n.get("Date"))
                 evidence_items.append(
                     PatternEvidenceItem(
                         date=d1,
@@ -1663,7 +1705,7 @@ def detect_sequence_patterns(ctx: PatternContext) -> List[PatternResult]:
             dates = [p[0]["Date"] for p in remote_bridge_matches]
             first_d, last_d, months_active, dist_months = _extract_date_metadata(dates)
 
-            days_since = (ctx.dataset_max_date - pd.to_datetime(last_d).date()).days if last_d and ctx.dataset_max_date else 0
+            days_since = _safe_days_since(ctx.dataset_max_date, last_d)
             score, components, strength, persistence, status = _calculate_pattern_score_and_badges(
                 event_count=count,
                 opportunity_count=None,
@@ -1674,8 +1716,8 @@ def detect_sequence_patterns(ctx: PatternContext) -> List[PatternResult]:
 
             evidence_items = []
             for c, n in remote_bridge_matches:
-                d1 = pd.to_datetime(c["Date"]).strftime("%Y-%m-%d")
-                d2 = pd.to_datetime(n["Date"]).strftime("%Y-%m-%d")
+                d1 = _safe_dt_str(c.get("Date"))
+                d2 = _safe_dt_str(n.get("Date"))
                 t1 = "WFH" if c.get("has_wfh") else "Leave"
                 t2 = "Leave" if n.get("has_leave") else "WFH"
                 evidence_items.append(
@@ -1771,7 +1813,7 @@ def detect_process_non_compliance_patterns(ctx: PatternContext) -> List[PatternR
             emp_num = str(r.get("Employee Number") or "UNKNOWN")
             if emp_num not in emp_failures:
                 emp_failures[emp_num] = []
-            dt_str = pd.to_datetime(r["Date"]).strftime("%Y-%m-%d") if pd.notna(r.get("Date")) else ""
+            dt_str = _safe_dt_str(r.get("Date"))
             emp_failures[emp_num].append({
                 "date": dt_str,
                 "type": "Work From Home",
@@ -1803,7 +1845,7 @@ def detect_process_non_compliance_patterns(ctx: PatternContext) -> List[PatternR
         dates = list(distinct_dates)
         first_d, last_d, months_active, dist_months = _extract_date_metadata(dates)
 
-        days_since = (ctx.dataset_max_date - pd.to_datetime(last_d).date()).days if last_d and ctx.dataset_max_date else 0
+        days_since = _safe_days_since(ctx.dataset_max_date, last_d)
         score, components, strength, persistence, status = _calculate_pattern_score_and_badges(
             event_count=count,
             opportunity_count=None,
@@ -1923,7 +1965,7 @@ def detect_group_concentration_patterns(ctx: PatternContext) -> List[PatternResu
             dates = group_df[group_df["is_attendance_exception"] == True]["Date"].tolist()
             first_d, last_d, months_active, dist_months = _extract_date_metadata(dates)
 
-            days_since = (ctx.dataset_max_date - pd.to_datetime(last_d).date()).days if last_d and ctx.dataset_max_date else 0
+            days_since = _safe_days_since(ctx.dataset_max_date, last_d)
             score, components, strength, persistence, status = _calculate_pattern_score_and_badges(
                 event_count=exc_count,
                 opportunity_count=opp_count,
@@ -1936,7 +1978,7 @@ def detect_group_concentration_patterns(ctx: PatternContext) -> List[PatternResu
             evidence_items = []
             exc_rows = group_df[group_df["is_attendance_exception"] == True]
             for _, r in exc_rows.iterrows():
-                dt_str = pd.to_datetime(r["Date"]).strftime("%Y-%m-%d") if pd.notna(r["Date"]) else ""
+                dt_str = _safe_dt_str(r.get("Date"))
                 evidence_items.append(
                     PatternEvidenceItem(
                         date=dt_str,
@@ -2021,7 +2063,7 @@ def detect_month_boundary_patterns(ctx: PatternContext) -> List[PatternResult]:
     if eval_facts.empty or "Date" not in eval_facts.columns:
         return results
 
-    eval_facts["dt"] = pd.to_datetime(eval_facts["Date"])
+    eval_facts["dt"] = pd.to_datetime(eval_facts["Date"], errors="coerce")
     eval_facts["day_of_month"] = eval_facts["dt"].dt.day
     eval_facts["days_in_month"] = eval_facts["dt"].dt.days_in_month
     eval_facts["is_month_start"] = eval_facts["day_of_month"] <= MONTH_BOUNDARY_DAYS
@@ -2044,7 +2086,7 @@ def detect_month_boundary_patterns(ctx: PatternContext) -> List[PatternResult]:
             dates = end_rows["Date"].tolist()
             first_d, last_d, months_active, dist_months = _extract_date_metadata(dates)
 
-            days_since = (ctx.dataset_max_date - pd.to_datetime(last_d).date()).days if last_d and ctx.dataset_max_date else 0
+            days_since = _safe_days_since(ctx.dataset_max_date, last_d)
             score, components, strength, persistence, status = _calculate_pattern_score_and_badges(
                 event_count=end_count,
                 opportunity_count=tot_exc,
@@ -2056,7 +2098,7 @@ def detect_month_boundary_patterns(ctx: PatternContext) -> List[PatternResult]:
 
             evidence_items = []
             for _, r in end_rows.iterrows():
-                dt_str = pd.to_datetime(r["Date"]).strftime("%Y-%m-%d")
+                dt_str = _safe_dt_str(r.get("Date"))
                 evidence_items.append(
                     PatternEvidenceItem(
                         date=dt_str,
@@ -2108,7 +2150,7 @@ def detect_month_boundary_patterns(ctx: PatternContext) -> List[PatternResult]:
             dates = start_rows["Date"].tolist()
             first_d, last_d, months_active, dist_months = _extract_date_metadata(dates)
 
-            days_since = (ctx.dataset_max_date - pd.to_datetime(last_d).date()).days if last_d and ctx.dataset_max_date else 0
+            days_since = _safe_days_since(ctx.dataset_max_date, last_d)
             score, components, strength, persistence, status = _calculate_pattern_score_and_badges(
                 event_count=start_count,
                 opportunity_count=tot_exc,
@@ -2120,7 +2162,7 @@ def detect_month_boundary_patterns(ctx: PatternContext) -> List[PatternResult]:
 
             evidence_items = []
             for _, r in start_rows.iterrows():
-                dt_str = pd.to_datetime(r["Date"]).strftime("%Y-%m-%d")
+                dt_str = _safe_dt_str(r.get("Date"))
                 evidence_items.append(
                     PatternEvidenceItem(
                         date=dt_str,

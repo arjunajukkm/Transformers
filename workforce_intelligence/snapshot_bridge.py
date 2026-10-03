@@ -691,7 +691,9 @@ class WorkforceIntelligenceBridge:
             if v_bn is not None:
                 all_chart_vals.append(v_bn)
 
-            is_post_pol = bool(pd.to_datetime(period_str).date() >= pd.to_datetime(POLICY_EFFECTIVE_DATE_STR).date())
+            p_dt = pd.to_datetime(period_str, errors="coerce")
+            pol_dt = pd.to_datetime(POLICY_EFFECTIVE_DATE_STR, errors="coerce")
+            is_post_pol = bool(pd.notna(p_dt) and pd.notna(pol_dt) and p_dt.date() >= pol_dt.date())
             is_low_vol = bool(sc_p.get("volume_status") == "LOW")
 
             chart_points.append({

@@ -420,3 +420,55 @@ def test_trends_ui_heatmap_click_to_filter(desktop_app, multi_month_snapshot):
 
     assert wf_view._filter_state.get("business_unit") == "Lending"
     assert wf_view.combo_bu.get() == "Lending"
+
+
+# =========================================================================
+# 15. Robustness: Dirty / Unparseable Date Strings ("NA", "N/A", "-", "")
+# =========================================================================
+def test_trends_with_dirty_unparseable_datetime_strings(desktop_app):
+    """Verify trends calculation and pattern detectors never crash on string 'NA' or invalid dates."""
+    records = []
+    # Mix valid dates with "NA", "N/A", "-", None, and empty strings in date columns
+    raw_dates = ["2026-10-01", "2026-10-02", "NA", "N/A", "-", "", None, "2026-10-03"]
+    applied_dates = ["2026-09-28", "NA", "N/A", "-", "", None, "2026-09-30", "2026-10-01"]
+    approved_dates = ["2026-09-29", "NA", "N/A", "-", "", None, "2026-10-01", "2026-10-02"]
+
+    for i in range(40):
+        d_val = raw_dates[i % len(raw_dates)]
+        app_val = applied_dates[i % len(applied_dates)]
+        apr_val = approved_dates[i % len(approved_dates)]
+        records.append({
+            "Date": d_val,
+            "Employee Number": f"EMP{100 + (i % 5)}",
+            "Employee Name": f"Employee {i % 5}",
+            "Business Unit": "Engineering" if i % 2 == 0 else "Product",
+            "Department": "Core",
+            "Reporting Manager": "Manager A",
+            "Attendance Type": "Leave" if i % 3 == 0 else "Present",
+            "Status": "On Leave" if i % 3 == 0 else "Present",
+            "Applied On": app_val,
+            "Approved On": apr_val,
+            "Approval Status": "Approved" if i % 2 == 0 else "Pending",
+            "Approved By": "Manager A",
+            "Quantity": 1.0 if i % 3 == 0 else 0.0,
+            "include_in_analysis": True,
+            "policy_event_type": "LEAVE" if i % 3 == 0 else "ATTENDANCE",
+        })
+
+    df = pd.DataFrame(records)
+    snap = AnalyticalSnapshot(
+        key="test_dirty_dates_snap",
+        fact_df=df,
+        metadata={"min_date": "2026-10-01", "max_date": "2026-10-03", "employee_count": 5},
+        raw_source="Dirty_Master.xlsx",
+    )
+    snapshot_cache.set_active_snapshot(snap)
+    workforce_bridge.clear_cache()
+
+    # Should run smoothly without raising ValueError
+    bundle = workforce_bridge.get_trend_intelligence(metric_id="attendance_exception_rate")
+    assert bundle is not None
+    assert "chart" in bundle
+    assert "trend_pulse" in bundle
+    assert "patterns" in bundle
+    assert "benchmark_table" in bundle

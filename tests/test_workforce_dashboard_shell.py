@@ -24,7 +24,7 @@ import pandas as pd
 import pytest
 
 from app import App
-from storage.cache_manager import AnalyticalSnapshot
+from storage.cache_manager import AnalyticalSnapshot, snapshot_cache
 from storage import snapshot_service
 import ui_components as ui
 from workforce_intelligence.dashboard_shell import (
@@ -232,6 +232,7 @@ def test_snapshot_state_synchronization_and_legacy_compatibility(desktop_app):
     wf_view: WorkforceDashboardView = desktop_app.workforce_dashboard_view
 
     # Initially empty snapshot
+    snapshot_cache.clear()
     wf_view.sync_snapshot_state(None)
     assert wf_view.lbl_dataset_name.cget("text") == "No dataset loaded"
     assert "Awaiting" in wf_view.lbl_status_text.cget("text")

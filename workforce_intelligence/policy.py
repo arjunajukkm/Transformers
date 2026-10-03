@@ -198,7 +198,8 @@ def evaluate_policy(
     for idx, row in df.iterrows():
         ev_type = row["policy_event_type"]
         req_id = row.get("request_id")
-        evt_date = pd.to_datetime(row.get("Date")).date() if pd.notna(row.get("Date")) else None
+        evt_ts = pd.to_datetime(row.get("Date"), errors="coerce")
+        evt_date = evt_ts.date() if pd.notna(evt_ts) else None
         is_post_policy = bool(evt_date and evt_date >= config.policy_effective_date)
         period = "POST_POLICY" if is_post_policy else "PRE_POLICY"
 
@@ -246,8 +247,9 @@ def evaluate_policy(
             else:
                 lag = row.get("application_lag_days")
                 if lag is None or pd.isna(lag):
-                    app_on = pd.to_datetime(row.get("Applied On"))
-                    lag = (app_on.floor("D") - pd.to_datetime(evt_date).floor("D")).days if app_on and evt_date else None
+                    app_on = pd.to_datetime(row.get("Applied On"), errors="coerce")
+                    evt_p_ts = pd.to_datetime(evt_date, errors="coerce")
+                    lag = (app_on.floor("D") - evt_p_ts.floor("D")).days if pd.notna(app_on) and pd.notna(evt_p_ts) else None
 
                 lag_val = int(lag) if lag is not None and not pd.isna(lag) else 0
                 is_comp = (lag_val <= allowed_post)

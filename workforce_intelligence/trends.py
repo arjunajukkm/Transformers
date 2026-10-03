@@ -333,7 +333,7 @@ def extract_canonical_month(dt: Any) -> Optional[str]:
     if dt is None or pd.isna(dt):
         return None
     try:
-        ts = pd.to_datetime(dt)
+        ts = pd.to_datetime(dt, errors="coerce")
         if pd.isna(ts):
             return None
         return ts.strftime("%Y-%m-01")
@@ -374,7 +374,8 @@ def calculate_monthly_compliance(
             
             # Compliance uses benchmark_compliant before 2026-10-01 and policy_compliant on or after
             # Evaluated per request start date
-            is_post_policy = pd.to_datetime(p_month).date() >= POLICY_EFFECTIVE_DATE
+            p_dt = pd.to_datetime(p_month, errors="coerce")
+            is_post_policy = bool(pd.notna(p_dt) and p_dt.date() >= POLICY_EFFECTIVE_DATE)
             if is_post_policy:
                 comp_num = int((m_group["policy_compliant"] == True).sum())
             else:
@@ -413,7 +414,8 @@ def calculate_monthly_compliance(
             dq_ex = int((m_group["compliance_status"] == "DATA_QUALITY_UNCERTAIN").sum())
             evaluable = tot - dq_ex
             
-            is_post_policy = pd.to_datetime(p_month).date() >= POLICY_EFFECTIVE_DATE
+            p_dt = pd.to_datetime(p_month, errors="coerce")
+            is_post_policy = bool(pd.notna(p_dt) and p_dt.date() >= POLICY_EFFECTIVE_DATE)
             if is_post_policy:
                 comp_num = int((m_group["policy_compliant"] == True).sum())
             else:
@@ -517,8 +519,12 @@ def calculate_monthly_approvals(
 
     # As of date for pending age
     if analysis_as_of_date is None:
-        if "Date" in evaluated_df.columns and not evaluated_df["Date"].dropna().empty:
-            analysis_as_of_date = pd.to_datetime(evaluated_df["Date"]).dropna().max().date()
+        if "Date" in evaluated_df.columns:
+            d_series = pd.to_datetime(evaluated_df["Date"], errors="coerce").dropna()
+            if not d_series.empty:
+                analysis_as_of_date = d_series.max().date()
+            else:
+                analysis_as_of_date = date.today()
         else:
             analysis_as_of_date = date.today()
     elif isinstance(analysis_as_of_date, datetime):
@@ -555,9 +561,11 @@ def calculate_monthly_approvals(
             for _, r in pending_rows.iterrows():
                 app_on = r.get("Applied On")
                 if pd.notna(app_on):
-                    age = (analysis_as_of_date - pd.to_datetime(app_on).date()).days
-                    if age >= 0:
-                        pending_ages.append(age)
+                    app_ts = pd.to_datetime(app_on, errors="coerce")
+                    if pd.notna(app_ts):
+                        age = (analysis_as_of_date - app_ts.date()).days
+                        if age >= 0:
+                            pending_ages.append(age)
             val = round(float(np.mean(pending_ages)), 2) if pending_ages else None
             valid_obs = len(pending_ages)
 
