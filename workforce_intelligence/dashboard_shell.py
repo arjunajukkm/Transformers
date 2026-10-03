@@ -2831,7 +2831,8 @@ class TrendBenchmarkTableWidget(ctk.CTkFrame):
     """
     Multi-Dimension Benchmark Comparison Table:
     Columns: Business Unit | Current | 3M Average | Organisation | Historical | Gap vs Org | Trajectory | Confidence / Volume
-    Renders directly in page flow with pixel-perfect column alignment across header, rows, and pinned total row.
+    Renders directly in page flow with pixel-perfect column alignment across header, rows, and pinned total row
+    using a unified master grid container.
     """
     def __init__(self, parent, on_bu_click: Optional[Callable[[str], None]] = None, **kwargs):
         kwargs.setdefault("corner_radius", 10)
@@ -2843,7 +2844,7 @@ class TrendBenchmarkTableWidget(ctk.CTkFrame):
         self._on_bu_click = on_bu_click
         self._table_data: Dict[str, Any] = {}
 
-        # Header Block
+        # Header Title Block
         hdr = ctk.CTkFrame(self, fg_color="transparent")
         hdr.grid(row=0, column=0, sticky="ew", padx=12, pady=(8, 4))
         hdr.grid_columnconfigure(0, weight=1)
@@ -2867,48 +2868,25 @@ class TrendBenchmarkTableWidget(ctk.CTkFrame):
         )
         lbl_sub.pack(anchor="w")
 
-        # Table Header Row (Row 1)
-        self.hdr_frame = ctk.CTkFrame(self, fg_color="#1E293B", corner_radius=4, height=28)
-        self.hdr_frame.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 2))
-        self._configure_table_columns(self.hdr_frame)
+        # Single Master Table Container (Guarantees unified column geometry across all rows)
+        self.table_container = ctk.CTkFrame(self, fg_color="transparent")
+        self.table_container.grid(row=1, column=0, sticky="nsew", padx=10, pady=(2, 8))
+        self._configure_columns()
 
-        for c_idx, (col_id, col_name, col_w, anch) in enumerate(TREND_BENCHMARK_COLUMNS):
-            p_x = (10, 4) if anch == "w" else ((4, 10) if anch == "e" else 4)
-            ctk.CTkLabel(
-                self.hdr_frame,
-                text=col_name,
-                font=ctk.CTkFont(family=ui.FONT_FAMILY, size=9, weight="bold"),
-                text_color=ui.COLOR_TEXT_DIM,
-                anchor=anch,
-                width=col_w,
-            ).grid(row=0, column=c_idx, sticky="nsew", padx=p_x, pady=4)
-
-        # Rows Container (Row 2 - without nested scrollbar for clean alignment)
-        self.rows_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self.rows_frame.grid(row=2, column=0, sticky="nsew", padx=10, pady=(0, 2))
-        self.rows_frame.grid_columnconfigure(0, weight=1)
-
-        # Pinned Total Row (Row 3)
-        self.total_frame = ctk.CTkFrame(self, fg_color="#1E293B", corner_radius=4, height=28, border_width=1, border_color="#334155")
-        self.total_frame.grid(row=3, column=0, sticky="ew", padx=10, pady=(2, 8))
-        self._configure_table_columns(self.total_frame)
-
-    def _configure_table_columns(self, container: ctk.CTkFrame):
-        container.grid_columnconfigure(0, minsize=150, weight=3)
-        container.grid_columnconfigure(1, minsize=85, weight=1)
-        container.grid_columnconfigure(2, minsize=85, weight=1)
-        container.grid_columnconfigure(3, minsize=90, weight=1)
-        container.grid_columnconfigure(4, minsize=85, weight=1)
-        container.grid_columnconfigure(5, minsize=85, weight=1)
-        container.grid_columnconfigure(6, minsize=115, weight=1)
-        container.grid_columnconfigure(7, minsize=130, weight=1)
+    def _configure_columns(self):
+        self.table_container.grid_columnconfigure(0, weight=3, minsize=150)
+        self.table_container.grid_columnconfigure(1, weight=1, minsize=80)
+        self.table_container.grid_columnconfigure(2, weight=1, minsize=80)
+        self.table_container.grid_columnconfigure(3, weight=1, minsize=85)
+        self.table_container.grid_columnconfigure(4, weight=1, minsize=80)
+        self.table_container.grid_columnconfigure(5, weight=1, minsize=80)
+        self.table_container.grid_columnconfigure(6, weight=1, minsize=115)
+        self.table_container.grid_columnconfigure(7, weight=1, minsize=125)
 
     def update_data(self, benchmark_table: Dict[str, Any]):
-        """Render rows and total from bundle with exact column alignments."""
+        """Render header, rows, and total in a single master grid container."""
         self._table_data = benchmark_table or {}
-        for child in self.rows_frame.winfo_children():
-            child.destroy()
-        for child in self.total_frame.winfo_children():
+        for child in self.table_container.winfo_children():
             child.destroy()
 
         rows = self._table_data.get("rows", [])
@@ -2916,15 +2894,32 @@ class TrendBenchmarkTableWidget(ctk.CTkFrame):
 
         if not rows:
             ctk.CTkLabel(
-                self.rows_frame,
+                self.table_container,
                 text="No Business Unit comparison data available",
                 font=ctk.CTkFont(family=ui.FONT_FAMILY, size=10),
                 text_color=ui.COLOR_TEXT_DIM,
-            ).pack(pady=15)
+            ).grid(row=0, column=0, columnspan=8, pady=15)
             return
 
-        # Render rows
+        # 1. Render Table Header (Row 0)
+        hdr_bg = ctk.CTkFrame(self.table_container, fg_color="#1E293B", corner_radius=4, height=28)
+        hdr_bg.grid(row=0, column=0, columnspan=8, sticky="nsew", pady=(0, 3))
+
+        for c_idx, (col_id, col_name, col_w, anch) in enumerate(TREND_BENCHMARK_COLUMNS):
+            p_x = (10, 4) if anch == "w" else ((4, 10) if anch == "e" else 4)
+            lbl_h = ctk.CTkLabel(
+                self.table_container,
+                text=col_name,
+                font=ctk.CTkFont(family=ui.FONT_FAMILY, size=9, weight="bold"),
+                text_color=ui.COLOR_TEXT_DIM,
+                anchor=anch,
+                fg_color="transparent",
+            )
+            lbl_h.grid(row=0, column=c_idx, sticky="nsew", padx=p_x, pady=4)
+
+        # 2. Render Data Rows (Rows 1 to N)
         for r_idx, r in enumerate(rows):
+            grid_row = r_idx + 1
             bu_name = r.get("business_unit", "Unknown")
             curr = r.get("current", "—")
             avg3m = r.get("three_month_avg", "—")
@@ -2935,19 +2930,19 @@ class TrendBenchmarkTableWidget(ctk.CTkFrame):
             trend = r.get("trend", "Stable")
             vol = r.get("volume", "—")
 
-            row_frame = ctk.CTkFrame(
-                self.rows_frame,
+            # Row background bar spanning all 8 columns
+            row_bg = ctk.CTkFrame(
+                self.table_container,
                 fg_color="#131B2E" if r_idx % 2 == 0 else "#0F172A",
                 corner_radius=4,
                 cursor="hand2",
             )
-            row_frame.pack(fill="x", pady=1)
-            self._configure_table_columns(row_frame)
+            row_bg.grid(row=grid_row, column=0, columnspan=8, sticky="nsew", pady=1)
 
             def _make_click(bname=bu_name):
                 return lambda e: self._on_bu_click(bname) if self._on_bu_click else None
 
-            row_frame.bind("<Button-1>", _make_click())
+            row_bg.bind("<Button-1>", _make_click())
 
             gap_col = ui.COLOR_TEXT
             if gap_val is not None:
@@ -2970,40 +2965,45 @@ class TrendBenchmarkTableWidget(ctk.CTkFrame):
 
             # Column 0: BU Name
             lbl_bu = ctk.CTkLabel(
-                row_frame,
+                self.table_container,
                 text=bu_name,
                 font=ctk.CTkFont(family=ui.FONT_FAMILY, size=9, weight="bold"),
                 text_color=ui.COLOR_TEXT,
                 anchor="w",
-                width=150,
+                fg_color="transparent",
             )
-            lbl_bu.grid(row=0, column=0, sticky="nsew", padx=(10, 4), pady=3)
+            lbl_bu.grid(row=grid_row, column=0, sticky="nsew", padx=(10, 4), pady=3)
             lbl_bu.bind("<Button-1>", _make_click())
 
             # Numerical Columns (1 to 5)
             num_cols = [
-                (1, curr, "e", ui.COLOR_TEXT, False, 85),
-                (2, avg3m, "e", ui.COLOR_TEXT_SEC, False, 85),
-                (3, org_b, "e", "#F59E0B", False, 90),
-                (4, hist, "e", "#8B5CF6", False, 85),
-                (5, gap, "e", gap_col, False, 85),
+                (1, curr, "e", ui.COLOR_TEXT, False),
+                (2, avg3m, "e", ui.COLOR_TEXT_SEC, False),
+                (3, org_b, "e", "#F59E0B", False),
+                (4, hist, "e", "#8B5CF6", False),
+                (5, gap, "e", gap_col, False),
             ]
-            for c_idx, val_txt, anch, col, is_b, w_val in num_cols:
+            for c_idx, val_txt, anch, col, is_b in num_cols:
                 lbl_num = ctk.CTkLabel(
-                    row_frame,
+                    self.table_container,
                     text=val_txt,
                     font=ctk.CTkFont(family=ui.FONT_FAMILY, size=9, weight="bold" if is_b else "normal"),
                     text_color=col,
                     anchor=anch,
-                    width=w_val,
+                    fg_color="transparent",
                 )
-                lbl_num.grid(row=0, column=c_idx, sticky="nsew", padx=(4, 10), pady=3)
+                lbl_num.grid(row=grid_row, column=c_idx, sticky="nsew", padx=(4, 10), pady=3)
                 lbl_num.bind("<Button-1>", _make_click())
 
             # Column 6: Trajectory Badge
-            tr_box = ctk.CTkFrame(row_frame, fg_color=tr_bg, corner_radius=3)
-            tr_box.grid(row=0, column=6, sticky="nsew", padx=4, pady=2)
+            tr_cell = ctk.CTkFrame(self.table_container, fg_color="transparent")
+            tr_cell.grid(row=grid_row, column=6, sticky="nsew", padx=4, pady=2)
+            tr_cell.bind("<Button-1>", _make_click())
+
+            tr_box = ctk.CTkFrame(tr_cell, fg_color=tr_bg, corner_radius=3)
+            tr_box.pack(fill="both", expand=True)
             tr_box.bind("<Button-1>", _make_click())
+
             lbl_tr = ctk.CTkLabel(
                 tr_box,
                 text=trend,
@@ -3016,17 +3016,28 @@ class TrendBenchmarkTableWidget(ctk.CTkFrame):
 
             # Column 7: Confidence / Volume
             lbl_vol = ctk.CTkLabel(
-                row_frame,
+                self.table_container,
                 text=vol,
                 font=ctk.CTkFont(family=ui.FONT_FAMILY, size=8),
                 text_color=ui.COLOR_TEXT_DIM,
                 anchor="center",
-                width=130,
+                fg_color="transparent",
             )
-            lbl_vol.grid(row=0, column=7, sticky="nsew", padx=4, pady=3)
+            lbl_vol.grid(row=grid_row, column=7, sticky="nsew", padx=4, pady=3)
             lbl_vol.bind("<Button-1>", _make_click())
 
-        # Render Total Pinned Row
+        # 3. Render Total Pinned Row (Row N+1)
+        tot_grid_row = len(rows) + 1
+        tot_bg = ctk.CTkFrame(
+            self.table_container,
+            fg_color="#1E293B",
+            corner_radius=4,
+            height=28,
+            border_width=1,
+            border_color="#334155"
+        )
+        tot_bg.grid(row=tot_grid_row, column=0, columnspan=8, sticky="nsew", pady=(3, 2))
+
         tot_bu = total.get("business_unit", "Total (Organisation-Wide)")
         tot_curr = total.get("current", "—")
         tot_avg3m = total.get("three_month_avg", "—")
@@ -3037,25 +3048,25 @@ class TrendBenchmarkTableWidget(ctk.CTkFrame):
         tot_vol = total.get("volume", "—")
 
         tot_vals = [
-            (0, tot_bu, "w", ui.COLOR_TEXT, True, 150, (10, 4)),
-            (1, tot_curr, "e", ui.COLOR_TEXT, True, 85, (4, 10)),
-            (2, tot_avg3m, "e", ui.COLOR_TEXT_SEC, False, 85, (4, 10)),
-            (3, tot_org_b, "e", "#F59E0B", False, 90, (4, 10)),
-            (4, tot_hist, "e", "#8B5CF6", False, 85, (4, 10)),
-            (5, tot_gap, "e", ui.COLOR_TEXT, False, 85, (4, 10)),
-            (6, tot_trend, "center", ui.COLOR_TEXT, False, 115, 4),
-            (7, tot_vol, "center", ui.COLOR_TEXT_DIM, False, 130, 4),
+            (0, tot_bu, "w", ui.COLOR_TEXT, True, (10, 4)),
+            (1, tot_curr, "e", ui.COLOR_TEXT, True, (4, 10)),
+            (2, tot_avg3m, "e", ui.COLOR_TEXT_SEC, False, (4, 10)),
+            (3, tot_org_b, "e", "#F59E0B", False, (4, 10)),
+            (4, tot_hist, "e", "#8B5CF6", False, (4, 10)),
+            (5, tot_gap, "e", ui.COLOR_TEXT, False, (4, 10)),
+            (6, tot_trend, "center", ui.COLOR_TEXT, False, 4),
+            (7, tot_vol, "center", ui.COLOR_TEXT_DIM, False, 4),
         ]
 
-        for c_idx, txt, anch, col, is_bld, w_val, p_x in tot_vals:
+        for c_idx, txt, anch, col, is_bld, p_x in tot_vals:
             ctk.CTkLabel(
-                self.total_frame,
+                self.table_container,
                 text=txt,
                 font=ctk.CTkFont(family=ui.FONT_FAMILY, size=9, weight="bold" if is_bld else "normal"),
                 text_color=col,
                 anchor=anch,
-                width=w_val,
-            ).grid(row=0, column=c_idx, sticky="nsew", padx=p_x, pady=4)
+                fg_color="transparent",
+            ).grid(row=tot_grid_row, column=c_idx, sticky="nsew", padx=p_x, pady=4)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

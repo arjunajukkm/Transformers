@@ -3023,12 +3023,16 @@ class App(ctk.CTk):
 
     def open_workforce_sync_dialog(self):
         """
-        Open a modern modal dialog for syncing Time & Leave data with customizable Date Range.
-        Allows pulling live from Keka API or selecting existing generated reports.
+        Open a modern modal dialog for Multi-Month Historical Synchronization & Archive Management.
+        Bypasses Keka's 1-month API restriction by partitioning multi-month syncs into sequential
+        calendar-month requests, saving each into local_data/historical_archive, and assembling
+        unified multi-month time series for analysis.
         """
+        from workforce_intelligence.historical_sync import historical_sync_manager
+
         top = ctk.CTkToplevel(self)
-        top.title("Sync Time & Leave Master")
-        top.geometry("520x460")
+        top.title("Workforce Data Sync Center & Historical Archive")
+        top.geometry("680x590")
         top.resizable(False, False)
         top.configure(fg_color=ui.COLOR_BG)
         top.transient(self)
@@ -3037,183 +3041,205 @@ class App(ctk.CTk):
         # Center dialog
         top.update_idletasks()
         try:
-            x = self.winfo_rootx() + (self.winfo_width() - 520) // 2
-            y = self.winfo_rooty() + (self.winfo_height() - 460) // 2
-            top.geometry(f"+{max(50, x)}+{max(50, y)}")
+            x = self.winfo_rootx() + (self.winfo_width() - 680) // 2
+            y = self.winfo_rooty() + (self.winfo_height() - 590) // 2
+            top.geometry(f"+{max(30, x)}+{max(30, y)}")
         except Exception:
             pass
 
         # Container Card
         card = ui.create_card(top)
-        card.pack(fill="both", expand=True, padx=16, pady=16)
+        card.pack(fill="both", expand=True, padx=14, pady=14)
         card.grid_columnconfigure(0, weight=1)
 
         # Header
         hdr = ctk.CTkFrame(card, fg_color="transparent")
-        hdr.pack(fill="x", padx=16, pady=(14, 8))
-        
+        hdr.pack(fill="x", padx=14, pady=(10, 6))
+
         ctk.CTkLabel(
-            hdr, text="⚡ Sync Time & Leave Master",
-            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=16, weight="bold"),
+            hdr, text="⚡ Workforce Data Sync Center & Historical Archive",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=15, weight="bold"),
             text_color=ui.COLOR_TEXT
         ).pack(anchor="w")
-        
+
         ctk.CTkLabel(
-            hdr, text="Select the date range to synchronize into Workforce Intelligence.",
-            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12),
+            hdr, text="Sync multiple historical months from Keka (bypassing 1-month API limits), re-sync any month, and manage local time-series archive.",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11),
             text_color=ui.COLOR_TEXT_SEC
         ).pack(anchor="w", pady=(2, 0))
 
-        # Date Range Selection Box
-        dates_box = ctk.CTkFrame(card, fg_color=ui.COLOR_INPUT_BG, corner_radius=8, border_width=1, border_color=ui.COLOR_BORDER)
-        dates_box.pack(fill="x", padx=16, pady=(4, 10))
-
-        # Default dates: 1st of current month to today
-        from datetime import datetime, timedelta
-        now_dt = datetime.now()
-        first_day_of_month = now_dt.replace(day=1)
-        
-        from_var = ctk.StringVar(value=self.tl_from_date_var.get() or first_day_of_month.strftime("%d-%m-%Y"))
-        to_var = ctk.StringVar(value=self.tl_to_date_var.get() or now_dt.strftime("%d-%m-%Y"))
-
-        # Presets row
-        presets_row = ctk.CTkFrame(dates_box, fg_color="transparent")
-        presets_row.pack(fill="x", padx=12, pady=(10, 6))
+        # Presets Bar
+        presets_bar = ctk.CTkFrame(card, fg_color=ui.COLOR_INPUT_BG, corner_radius=6)
+        presets_bar.pack(fill="x", padx=14, pady=(2, 8))
 
         ctk.CTkLabel(
-            presets_row, text="Presets:",
+            presets_bar, text="Quick Select:",
             font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11, weight="bold"),
             text_color=ui.COLOR_TEXT_DIM
-        ).pack(side="left", padx=(0, 6))
+        ).pack(side="left", padx=(10, 6), pady=6)
 
-        def _set_this_month():
-            from_var.set(now_dt.replace(day=1).strftime("%d-%m-%Y"))
-            to_var.set(now_dt.strftime("%d-%m-%Y"))
+        months_data = historical_sync_manager.get_available_months_grid(past_n_months=12)
+        month_vars: Dict[str, ctk.BooleanVar] = {}
 
-        def _set_last_month():
-            first_this_month = now_dt.replace(day=1)
-            last_day_prev = first_this_month - timedelta(days=1)
-            first_day_prev = last_day_prev.replace(day=1)
-            from_var.set(first_day_prev.strftime("%d-%m-%Y"))
-            to_var.set(last_day_prev.strftime("%d-%m-%Y"))
+        def _select_preset(n_months: int):
+            for i, m_info in enumerate(months_data):
+                m_key = m_info["month_key"]
+                if m_key in month_vars:
+                    month_vars[m_key].set(i < n_months)
 
-        def _set_last_30_days():
-            from_var.set((now_dt - timedelta(days=30)).strftime("%d-%m-%Y"))
-            to_var.set(now_dt.strftime("%d-%m-%Y"))
+        def _select_all_synced():
+            for m_info in months_data:
+                m_key = m_info["month_key"]
+                if m_key in month_vars:
+                    month_vars[m_key].set(m_info["is_synced"])
 
-        def _set_last_14_days():
-            from_var.set((now_dt - timedelta(days=14)).strftime("%d-%m-%Y"))
-            to_var.set(now_dt.strftime("%d-%m-%Y"))
+        ui.create_secondary_button(presets_bar, "Current Month", lambda: _select_preset(1), width=90, height=24).pack(side="left", padx=2, pady=6)
+        ui.create_secondary_button(presets_bar, "Trailing 3 Months", lambda: _select_preset(3), width=105, height=24).pack(side="left", padx=2, pady=6)
+        ui.create_secondary_button(presets_bar, "Trailing 6 Months", lambda: _select_preset(6), width=105, height=24).pack(side="left", padx=2, pady=6)
+        ui.create_secondary_button(presets_bar, "All Synced", _select_all_synced, width=80, height=24).pack(side="left", padx=2, pady=6)
 
-        for label, fn in [("This Month", _set_this_month), ("Last Month", _set_last_month), ("Last 30 Days", _set_last_30_days), ("Last 14 Days", _set_last_14_days)]:
-            ui.create_secondary_button(presets_row, label, fn, width=80, height=24).pack(side="left", padx=2)
+        # Historical Months Archive List (Scrollable)
+        list_container = ctk.CTkFrame(card, fg_color="transparent")
+        list_container.pack(fill="both", expand=True, padx=14, pady=(0, 6))
 
-        # Date Pickers Row
-        pickers_row = ctk.CTkFrame(dates_box, fg_color="transparent")
-        pickers_row.pack(fill="x", padx=12, pady=(4, 12))
+        # List Header
+        list_hdr = ctk.CTkFrame(list_container, fg_color="#1E293B", corner_radius=4, height=24)
+        list_hdr.pack(fill="x", pady=(0, 2))
+        list_hdr.grid_columnconfigure(0, weight=3, minsize=140)
+        list_hdr.grid_columnconfigure(1, weight=3, minsize=160)
+        list_hdr.grid_columnconfigure(2, weight=2, minsize=130)
+        list_hdr.grid_columnconfigure(3, weight=2, minsize=110)
 
-        ctk.CTkLabel(
-            pickers_row, text="From:",
-            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12, weight="bold"),
-            text_color=ui.COLOR_TEXT_DIM
-        ).pack(side="left", padx=(0, 4))
+        ctk.CTkLabel(list_hdr, text="Month / Period", font=ctk.CTkFont(family=ui.FONT_FAMILY, size=9, weight="bold"), text_color=ui.COLOR_TEXT_DIM, anchor="w").grid(row=0, column=0, sticky="nsew", padx=8, pady=2)
+        ctk.CTkLabel(list_hdr, text="Archive Status & Volume", font=ctk.CTkFont(family=ui.FONT_FAMILY, size=9, weight="bold"), text_color=ui.COLOR_TEXT_DIM, anchor="w").grid(row=0, column=1, sticky="nsew", padx=4, pady=2)
+        ctk.CTkLabel(list_hdr, text="Last Synced", font=ctk.CTkFont(family=ui.FONT_FAMILY, size=9, weight="bold"), text_color=ui.COLOR_TEXT_DIM, anchor="w").grid(row=0, column=2, sticky="nsew", padx=4, pady=2)
+        ctk.CTkLabel(list_hdr, text="Action", font=ctk.CTkFont(family=ui.FONT_FAMILY, size=9, weight="bold"), text_color=ui.COLOR_TEXT_DIM, anchor="center").grid(row=0, column=3, sticky="nsew", padx=4, pady=2)
 
-        from_entry = ctk.CTkEntry(
-            pickers_row, textvariable=from_var, width=105, height=30,
-            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12),
-            fg_color=ui.COLOR_CARD, border_color=ui.COLOR_BORDER,
-            border_width=1, corner_radius=6, text_color=ui.COLOR_TEXT
-        )
-        from_entry.pack(side="left", padx=(0, 3))
+        scroll_list = ctk.CTkScrollableFrame(list_container, fg_color="transparent", height=180)
+        scroll_list.pack(fill="both", expand=True)
+        scroll_list.grid_columnconfigure(0, weight=1)
 
-        ui.create_secondary_button(
-            pickers_row, "",
-            lambda: self._open_calendar_dialog(from_var, "Select From Date"),
-            width=32, height=30, icon="calendar"
-        ).pack(side="left", padx=(0, 14))
+        def _refresh_list():
+            for child in scroll_list.winfo_children():
+                child.destroy()
 
-        ctk.CTkLabel(
-            pickers_row, text="To:",
-            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12, weight="bold"),
-            text_color=ui.COLOR_TEXT_DIM
-        ).pack(side="left", padx=(0, 4))
+            current_grid = historical_sync_manager.get_available_months_grid(past_n_months=12)
+            for r_idx, m_info in enumerate(current_grid):
+                m_key = m_info["month_key"]
+                if m_key not in month_vars:
+                    # Default: select trailing 3 months
+                    month_vars[m_key] = ctk.BooleanVar(value=(r_idx < 3))
 
-        to_entry = ctk.CTkEntry(
-            pickers_row, textvariable=to_var, width=105, height=30,
-            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12),
-            fg_color=ui.COLOR_CARD, border_color=ui.COLOR_BORDER,
-            border_width=1, corner_radius=6, text_color=ui.COLOR_TEXT
-        )
-        to_entry.pack(side="left", padx=(0, 3))
+                row_box = ctk.CTkFrame(scroll_list, fg_color="#131B2E" if r_idx % 2 == 0 else "#0F172A", corner_radius=4, height=30)
+                row_box.pack(fill="x", pady=1)
+                row_box.grid_columnconfigure(0, weight=3, minsize=140)
+                row_box.grid_columnconfigure(1, weight=3, minsize=160)
+                row_box.grid_columnconfigure(2, weight=2, minsize=130)
+                row_box.grid_columnconfigure(3, weight=2, minsize=110)
 
-        ui.create_secondary_button(
-            pickers_row, "",
-            lambda: self._open_calendar_dialog(to_var, "Select To Date"),
-            width=32, height=30, icon="calendar"
-        ).pack(side="left")
+                # Col 0: Checkbox + Month
+                chk_box = ctk.CTkFrame(row_box, fg_color="transparent")
+                chk_box.grid(row=0, column=0, sticky="nsew", padx=6, pady=2)
+                chk = ctk.CTkCheckBox(
+                    chk_box, text=m_info["display_name"], variable=month_vars[m_key],
+                    font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11, weight="bold"),
+                    text_color=ui.COLOR_TEXT, checkbox_width=16, checkbox_height=16,
+                    border_width=1, corner_radius=3, fg_color=ui.COLOR_ACCENT
+                )
+                chk.pack(side="left", padx=2)
 
-        # Live Progress & Status Container inside dialog
-        status_box = ctk.CTkFrame(card, fg_color=ui.COLOR_INPUT_BG, corner_radius=8)
-        status_box.pack(fill="x", padx=16, pady=(0, 10))
+                # Col 1: Status & Records
+                if m_info["is_synced"]:
+                    st_text = f"✓ {m_info['record_count']:,} rows ({m_info['headcount']} emps)"
+                    st_col = "#10B981"
+                else:
+                    st_text = "○ Not Synced"
+                    st_col = ui.COLOR_TEXT_DIM
+
+                ctk.CTkLabel(
+                    row_box, text=st_text,
+                    font=ctk.CTkFont(family=ui.FONT_FAMILY, size=10, weight="bold" if m_info["is_synced"] else "normal"),
+                    text_color=st_col, anchor="w"
+                ).grid(row=0, column=1, sticky="nsew", padx=4, pady=2)
+
+                # Col 2: Last Synced
+                ctk.CTkLabel(
+                    row_box, text=m_info["last_synced"],
+                    font=ctk.CTkFont(family=ui.FONT_FAMILY, size=9),
+                    text_color=ui.COLOR_TEXT_SEC, anchor="w"
+                ).grid(row=0, column=2, sticky="nsew", padx=4, pady=2)
+
+                # Col 3: Action Buttons (Re-sync & Delete)
+                act_box = ctk.CTkFrame(row_box, fg_color="transparent")
+                act_box.grid(row=0, column=3, sticky="nsew", padx=4, pady=2)
+
+                def _make_resync(mk=m_key):
+                    return lambda: _do_sync_months([mk])
+
+                def _make_delete(mk=m_key):
+                    def _del():
+                        historical_sync_manager.delete_month(mk)
+                        _refresh_list()
+                    return _del
+
+                ui.create_secondary_button(act_box, "🔄 Re-sync", _make_resync(), width=68, height=22).pack(side="left", padx=2)
+                if m_info["is_synced"]:
+                    ui.create_secondary_button(act_box, "✕", _make_delete(), width=22, height=22).pack(side="left", padx=2)
+
+        _refresh_list()
+
+        # Live Progress & Status
+        status_box = ctk.CTkFrame(card, fg_color=ui.COLOR_INPUT_BG, corner_radius=6)
+        status_box.pack(fill="x", padx=14, pady=(4, 8))
 
         dlg_status_lbl = ctk.CTkLabel(
-            status_box, text="⚡ Ready to synchronize workforce data.",
+            status_box, text="⚡ Ready. Select target months to sync or load archived history.",
             font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11, weight="bold"),
             text_color=ui.COLOR_TEXT_SEC, anchor="w"
         )
-        dlg_status_lbl.pack(fill="x", padx=12, pady=(8, 4))
+        dlg_status_lbl.pack(fill="x", padx=10, pady=(6, 2))
 
         dlg_prog = ctk.CTkProgressBar(
-            status_box, height=6, corner_radius=3,
+            status_box, height=5, corner_radius=3,
             progress_color=ui.COLOR_ACCENT, fg_color=ui.COLOR_CARD
         )
         dlg_prog.set(0.0)
-        dlg_prog.pack(fill="x", padx=12, pady=(0, 8))
+        dlg_prog.pack(fill="x", padx=10, pady=(0, 6))
         dlg_prog.pack_forget()
 
         # Action Buttons Row
         actions_frame = ctk.CTkFrame(card, fg_color="transparent")
-        actions_frame.pack(fill="x", padx=16, pady=(4, 12))
+        actions_frame.pack(fill="x", padx=14, pady=(2, 6))
 
-        def _do_sync_keka():
-            from_str = from_var.get().strip()
-            to_str = to_var.get().strip()
-            self.tl_from_date_var.set(from_str)
-            self.tl_to_date_var.set(to_str)
+        def _get_selected_month_keys() -> List[str]:
+            return [mk for mk, v in month_vars.items() if v.get()]
 
-            btn_keka.configure(state="disabled")
-            btn_local.configure(state="disabled")
-            dlg_prog.pack(fill="x", padx=12, pady=(0, 8))
+        def _do_sync_months(target_month_keys: Optional[List[str]] = None):
+            selected = target_month_keys or _get_selected_month_keys()
+            if not selected:
+                messagebox.showwarning("No Months Selected", "Please select at least one month to synchronize.")
+                return
+
+            btn_sync.configure(state="disabled")
+            btn_load.configure(state="disabled")
+            dlg_prog.pack(fill="x", padx=10, pady=(0, 6))
             dlg_prog.start()
-            dlg_status_lbl.configure(text="Connecting to Keka API & fetching unified report...", text_color=ui.COLOR_ACCENT)
 
-            def _progress(pct, step, detail=""):
-                top.after(0, lambda: dlg_status_lbl.configure(text=f"{step} ({int(pct*100)}%)"))
+            def _batch_prog(idx, total, m_name, pct, msg):
+                disp_pct = int(((idx - 1 + pct) / total) * 100)
+                top.after(0, lambda: dlg_status_lbl.configure(
+                    text=f"[{idx}/{total}] {m_name}: {msg} ({disp_pct}%)",
+                    text_color=ui.COLOR_ACCENT
+                ))
 
             def _worker():
                 try:
-                    # Convert to ISO
-                    def _to_iso(ds):
-                        for fmt in ("%d-%m-%Y", "%Y-%m-%d", "%d/%m/%Y"):
-                            try:
-                                return datetime.strptime(ds, fmt).strftime("%Y-%m-%d")
-                            except ValueError:
-                                pass
-                        return ds
-
-                    from_iso = _to_iso(from_str)
-                    to_iso = _to_iso(to_str)
-
                     subdomain = id_card.clean_keka_subdomain(self.keka_subdomain_var.get() or os.getenv("KEKA_SUBDOMAIN", "moshpit"))
                     client_id = (self.keka_client_id_var.get() or os.getenv("KEKA_CLIENT_ID", "")).strip()
                     client_secret = (self.keka_client_secret_var.get() or os.getenv("KEKA_CLIENT_SECRET", "")).strip()
                     api_key = (self.keka_api_key_var.get() or os.getenv("KEKA_API_KEY", "")).strip()
                     keka_email = (self.keka_login_email_var.get() or os.getenv("KEKA_LOGIN_EMAIL", "")).strip()
                     keka_password = (self.keka_login_password_var.get() or os.getenv("KEKA_LOGIN_PASSWORD", "")).strip()
-
-                    out_dir = Path.home() / "Downloads"
-                    out_dir.mkdir(parents=True, exist_ok=True)
-                    out_path = out_dir / f"Time_and_Leave_Master_Unified_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
 
                     from keka_data_fetcher import KekaDataFetcher
                     fetcher = KekaDataFetcher(
@@ -3224,50 +3250,116 @@ class App(ctk.CTk):
                         keka_email=keka_email,
                         keka_password=keka_password,
                     )
-                    res = fetcher.fetch_unified_time_leave_reports(
-                        from_date=from_iso,
-                        to_date=to_iso,
-                        output_file_path=str(out_path),
-                        progress_callback=_progress
-                    )
-                    
-                    def _on_success():
-                        top.destroy()
-                        self.sync_workforce_from_time_leave(str(out_path), show_feedback=True)
 
-                    top.after(0, _on_success)
-                except Exception as e:
-                    err_m = str(e)
-                    def _on_err():
-                        btn_keka.configure(state="normal")
-                        btn_local.configure(state="normal")
+                    res = historical_sync_manager.sync_multiple_months_keka(
+                        month_keys=selected,
+                        keka_fetcher=fetcher,
+                        batch_progress_callback=_batch_prog
+                    )
+
+                    def _on_finish():
+                        btn_sync.configure(state="normal")
+                        btn_load.configure(state="normal")
                         dlg_prog.stop()
                         dlg_prog.pack_forget()
-                        messagebox.showerror("Keka Sync Error", f"Failed to pull live data from Keka:\n\n{err_m}")
+                        _refresh_list()
+
+                        if res["errors"]:
+                            err_str = "\n".join(res["errors"])
+                            messagebox.showwarning("Sync Completed with Notices", f"Synced {res['total_synced']} of {res['total_requested']} months.\n\nNotices:\n{err_str}")
+                        else:
+                            dlg_status_lbl.configure(
+                                text=f"✓ Successfully synced {res['total_synced']} months ({res['total_records']:,} total records)!",
+                                text_color="#10B981"
+                            )
+
+                    top.after(0, _on_finish)
+                except Exception as e:
+                    err_msg = str(e)
+                    def _on_err():
+                        btn_sync.configure(state="normal")
+                        btn_load.configure(state="normal")
+                        dlg_prog.stop()
+                        dlg_prog.pack_forget()
+                        messagebox.showerror("Sync Error", f"Historical sync encountered an error:\n\n{err_msg}")
                     top.after(0, _on_err)
 
             threading.Thread(target=_worker, daemon=True).start()
 
-        def _do_sync_local():
+        def _do_load_archive():
+            selected = _get_selected_month_keys()
             top.destroy()
-            self.sync_workforce_from_time_leave(show_feedback=True)
+            self.load_workforce_from_historical_archive(month_keys=selected, show_feedback=True)
 
-        btn_keka = ui.create_primary_button(
-            actions_frame, "⚡ Pull Live from Keka & Sync", _do_sync_keka,
-            width=230, height=34, icon="refresh"
+        btn_sync = ui.create_primary_button(
+            actions_frame, "⚡ Sync Selected Months", lambda: _do_sync_months(),
+            width=190, height=34, icon="refresh"
         )
-        btn_keka.pack(side="left", padx=(0, 8))
+        btn_sync.pack(side="left", padx=(0, 6))
 
-        btn_local = ui.create_secondary_button(
-            actions_frame, "📂 Sync Latest File", _do_sync_local,
-            width=150, height=34, icon="sync"
+        btn_load = ui.create_primary_button(
+            actions_frame, "📊 Load Archive into Dashboard", _do_load_archive,
+            width=220, height=34, icon="sync"
         )
-        btn_local.pack(side="left", padx=(0, 8))
+        btn_load.pack(side="left", padx=(0, 6))
 
         ui.create_secondary_button(
-            actions_frame, "Cancel", top.destroy,
-            width=75, height=34
+            actions_frame, "Close", top.destroy,
+            width=70, height=34
         ).pack(side="right")
+
+    def load_workforce_from_historical_archive(self, month_keys: Optional[List[str]] = None, show_feedback: bool = True):
+        """
+        Load multi-month historical time series directly from local archive into active snapshot.
+        Eliminates workbook I/O overhead while providing full multi-month analytics.
+        """
+        from workforce_intelligence.historical_sync import historical_sync_manager
+        df_unified, summary = historical_sync_manager.load_unified_history(month_keys=month_keys)
+
+        if df_unified.empty:
+            if show_feedback:
+                messagebox.showinfo(
+                    "No Archived History Found",
+                    "No synced historical months were found in your local archive.\n\n"
+                    "Please click '⚡ Sync Time & Leave' to pull historical months from Keka first."
+                )
+            return False
+
+        self.is_ts_loading = True
+        if hasattr(self, "btn_ts_load"):
+            self.btn_ts_load.configure(state="disabled")
+        if hasattr(self, "ts_prog"):
+            self.ts_prog.grid()
+            self.ts_prog.start()
+        if hasattr(self, "ts_dot") and hasattr(self, "ts_lbl"):
+            ui.update_status(self.ts_dot, self.ts_lbl, f"Activating {summary['months_count']} historical months ({summary['total_records']:,} rows)...", "processing")
+
+        self._latest_ts_job_id += 1
+        job_id = self._latest_ts_job_id
+
+        def _worker():
+            try:
+                # Prepare dataset directly from unified DataFrame
+                snapshot = snapshot_service.prepare_dataset(df_unified)
+                def _on_success():
+                    self._ts_load_success(snapshot, f"Historical Archive ({summary['months_count']} Months)", job_id)
+                    if show_feedback:
+                        messagebox.showinfo(
+                            "Historical Archive Loaded",
+                            f"Successfully activated Workforce Intelligence Historical Archive!\n\n"
+                            f"• Total Months: {summary['months_count']} ({', '.join(summary['months'])})\n"
+                            f"• Total Records: {snapshot.row_count:,}\n"
+                            f"• Active Headcount: {snapshot.metadata.get('employee_count', 0):,}\n"
+                            f"• Date Span: {snapshot.metadata.get('min_date', 'N/A')} to {snapshot.metadata.get('max_date', 'N/A')}\n\n"
+                            f"Executive Overview, 3-Month Moving Averages, Trajectories, Heatmaps, and Driver Attributions are now live."
+                        )
+                self.after(0, _on_success)
+            except Exception as e:
+                err_msg = str(e)
+                self.after(0, lambda m=err_msg: self._ts_load_error(m, job_id))
+
+        threading.Thread(target=_worker, daemon=True).start()
+        return True
 
     def sync_workforce_from_time_leave(self, file_path: Optional[str] = None, show_feedback: bool = True):
         """
