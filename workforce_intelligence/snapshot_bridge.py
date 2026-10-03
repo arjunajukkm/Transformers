@@ -634,18 +634,15 @@ class WorkforceIntelligenceBridge:
         curr_val = scope_trend.get("current_value")
         if curr_val is not None and current_bench_val is not None:
             gap_val = round(curr_val - current_bench_val, 2)
+            sign_str = "+" if gap_val > 0 else ""
             if metric_def.format == "percentage":
-                sign_str = "+" if gap_val > 0 else ""
-                gap_fmt = f"{sign_str}{gap_val:.1f} pp vs {bench_label.lower()}"
+                gap_fmt = f"{sign_str}{gap_val:.1f} pp"
             elif metric_def.format == "days":
-                sign_str = "+" if gap_val > 0 else ""
-                gap_fmt = f"{sign_str}{gap_val:.1f} d vs {bench_label.lower()}"
+                gap_fmt = f"{sign_str}{gap_val:.1f} d"
             elif metric_def.format in ("duration", "time"):
-                sign_str = "+" if gap_val > 0 else ""
-                gap_fmt = f"{sign_str}{gap_val:.0f}m vs {bench_label.lower()}"
+                gap_fmt = f"{sign_str}{gap_val:.0f}m"
             else:
-                sign_str = "+" if gap_val > 0 else ""
-                gap_fmt = f"{sign_str}{gap_val:.1f} vs {bench_label.lower()}"
+                gap_fmt = f"{sign_str}{gap_val:.1f}"
         else:
             gap_val = None
             gap_fmt = "—"
@@ -655,13 +652,13 @@ class WorkforceIntelligenceBridge:
         if mom_change is not None:
             sign_str = "+" if mom_change > 0 else ""
             if metric_def.format == "percentage":
-                mom_change_fmt = f"{sign_str}{mom_change:.1f} pp vs last month"
+                mom_change_fmt = f"{sign_str}{mom_change:.1f} pp"
             elif metric_def.format == "days":
-                mom_change_fmt = f"{sign_str}{mom_change:.1f} d vs last month"
+                mom_change_fmt = f"{sign_str}{mom_change:.1f} d"
             elif metric_def.format in ("duration", "time"):
-                mom_change_fmt = f"{sign_str}{mom_change:.0f}m vs last month"
+                mom_change_fmt = f"{sign_str}{mom_change:.0f}m"
             else:
-                mom_change_fmt = f"{sign_str}{mom_change:.1f} vs last month"
+                mom_change_fmt = f"{sign_str}{mom_change:.1f}"
         else:
             mom_change_fmt = "Baseline (First Month)"
 
@@ -991,13 +988,13 @@ class WorkforceIntelligenceBridge:
             {
                 "title": "Benchmark Gap",
                 "value": gap_fmt,
-                "sub": f"Benchmark: {current_bench_fmt}",
-                "note": f"Comparison vs {bench_label.lower()}",
+                "sub": f"vs {bench_label} ({current_bench_fmt})",
+                "note": f"Benchmark: {bench_label}",
                 "color": "#F43F5E" if (gap_val and gap_val > 0 and metric_def.direction == "lower_is_better") else ("#10B981" if gap_val and gap_val < 0 and metric_def.direction == "lower_is_better" else None),
             },
             {
                 "title": "Data Confidence",
-                "value": f"{vol_status.capitalize()} confidence",
+                "value": f"{vol_status.capitalize()} Confidence",
                 "sub": f"{valid_obs:,} observations",
                 "note": f"Evaluated across {len(periods)} months",
                 "color": "#10B981" if vol_status == "HIGH" else ("#F59E0B" if vol_status == "MODERATE" else None),

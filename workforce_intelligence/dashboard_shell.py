@@ -1794,7 +1794,6 @@ class BusinessUnitComparisonTableWidget(ctk.CTkFrame):
         tot_ab_d = tot.get("absent_days", 0.0)
         tot_excp_d = tot.get("exception_days", 0)
         tot_excp_rate = tot.get("exception_rate_pct", 0.0)
-
         cells = [
             ("Total (Organization-Wide)", "w", ui.COLOR_TEXT),
             (f"{tot_hc:,}", "w", ui.COLOR_TEXT),
@@ -1897,7 +1896,7 @@ class TrendPulseWidget(ctk.CTkFrame):
             )
             lbl_title.grid(row=0, column=1, sticky="ew")
 
-            # Primary value label with bold high-contrast styling
+            # Primary value label with bold high-contrast styling (adaptive font size)
             lbl_val = ctk.CTkLabel(
                 card_frame,
                 text="—",
@@ -1946,16 +1945,23 @@ class TrendPulseWidget(ctk.CTkFrame):
         for idx, item in enumerate(pulse_data[:5]):
             card = self.cards[idx]
             title = item.get("title", "")
-            val = item.get("value", "—")
-            sub = item.get("sub", "")
-            note = item.get("note", "")
+            val = str(item.get("value", "—"))
+            sub = str(item.get("sub", ""))
+            note = str(item.get("note", ""))
             col = item.get("color")
 
             if title:
                 card["lbl_title"].configure(text=title)
-            card["lbl_val"].configure(text=str(val), text_color=col or ui.COLOR_TEXT)
-            card["lbl_sub"].configure(text=str(sub), text_color=col or card["accent"])
-            card["lbl_note"].configure(text=str(note))
+
+            # Adapt font size so longer phrases (e.g. "Insufficient Data", "High Confidence") never clip
+            font_sz = 14 if len(val) > 13 else 20
+            card["lbl_val"].configure(
+                text=val,
+                font=ctk.CTkFont(family=ui.FONT_FAMILY, size=font_sz, weight="bold"),
+                text_color=col or ui.COLOR_TEXT,
+            )
+            card["lbl_sub"].configure(text=sub, text_color=col or card["accent"])
+            card["lbl_note"].configure(text=note)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2053,7 +2059,7 @@ class MainTrendChartWidget(ctk.CTkFrame):
             bd=0,
             highlightthickness=0,
             relief="flat",
-            height=220,
+            height=200,
         )
         self.chart_canvas.grid(row=0, column=0, sticky="nsew")
         self.chart_canvas.bind("<Configure>", lambda e: self._draw_chart())
@@ -2176,11 +2182,11 @@ class MainTrendChartWidget(ctk.CTkFrame):
                 px = x_coords[i]
                 canvas.create_line(px, pad_top - 4, px, pad_top + plot_h, fill="#06B6D4", dash=(4, 3), width=1)
                 canvas.create_text(
-                    px + 4, pad_top - 10,
+                    px - 4 if px > w - 100 else px + 4, pad_top - 10,
                     text="⚡ Policy Effective",
                     fill="#06B6D4",
                     font=(ui.FONT_FAMILY, 8, "bold"),
-                    anchor="w",
+                    anchor="e" if px > w - 100 else "w",
                 )
                 break
 
@@ -2337,7 +2343,6 @@ class BusinessUnitHeatmapWidget(ctk.CTkFrame):
         kwargs.setdefault("border_color", ui.COLOR_BORDER)
         super().__init__(parent, **kwargs)
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(1, weight=1)
         self._on_bu_click = on_bu_click
         self._heatmap_data: Dict[str, Any] = {}
 
@@ -2365,15 +2370,21 @@ class BusinessUnitHeatmapWidget(ctk.CTkFrame):
         )
         lbl_sub.pack(anchor="w")
 
-        # Scrollable table container
-        self.scroll_frame = ctk.CTkScrollableFrame(self, fg_color="transparent", height=180)
-        self.scroll_frame.grid(row=1, column=0, sticky="nsew", padx=8, pady=(0, 6))
-        self.scroll_frame.grid_columnconfigure(0, weight=1)
+        # Table container without nested scrollframe (scroll is handled by parent page)
+        self.matrix_container = ctk.CTkFrame(self, fg_color="transparent")
+        self.matrix_container.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 8))
+        self.matrix_container.grid_columnconfigure(0, weight=1)
+
+    def _configure_matrix_cols(self, container: ctk.CTkFrame, num_months: int):
+        container.grid_columnconfigure(0, minsize=140, weight=2)
+        for c in range(num_months):
+            container.grid_columnconfigure(c + 1, minsize=80, weight=1)
+        container.grid_columnconfigure(num_months + 1, minsize=90, weight=1)
 
     def update_data(self, heatmap_data: Dict[str, Any]):
         """Render heatmap matrix rows and columns."""
         self._heatmap_data = heatmap_data or {}
-        for child in self.scroll_frame.winfo_children():
+        for child in self.matrix_container.winfo_children():
             child.destroy()
 
         months = self._heatmap_data.get("months", [])
@@ -2382,7 +2393,7 @@ class BusinessUnitHeatmapWidget(ctk.CTkFrame):
 
         if not rows or not months:
             ctk.CTkLabel(
-                self.scroll_frame,
+                self.matrix_container,
                 text="No Business Unit heatmap data available",
                 font=ctk.CTkFont(family=ui.FONT_FAMILY, size=10),
                 text_color=ui.COLOR_TEXT_DIM,
@@ -2390,12 +2401,9 @@ class BusinessUnitHeatmapWidget(ctk.CTkFrame):
             return
 
         # Header Row
-        hdr_frame = ctk.CTkFrame(self.scroll_frame, fg_color="#1E293B", corner_radius=4, height=26)
+        hdr_frame = ctk.CTkFrame(self.matrix_container, fg_color="#1E293B", corner_radius=4, height=28)
         hdr_frame.pack(fill="x", pady=(0, 3))
-        hdr_frame.grid_columnconfigure(0, weight=3)
-        for c_idx in range(len(months)):
-            hdr_frame.grid_columnconfigure(c_idx + 1, weight=1)
-        hdr_frame.grid_columnconfigure(len(months) + 1, weight=1)
+        self._configure_matrix_cols(hdr_frame, len(months))
 
         # BU Header (Left-aligned)
         ctk.CTkLabel(
@@ -2404,27 +2412,26 @@ class BusinessUnitHeatmapWidget(ctk.CTkFrame):
             font=ctk.CTkFont(family=ui.FONT_FAMILY, size=9, weight="bold"),
             text_color=ui.COLOR_TEXT_DIM,
             anchor="w",
-        ).grid(row=0, column=0, sticky="w", padx=(10, 4), pady=3)
+        ).grid(row=0, column=0, sticky="w", padx=(10, 4), pady=4)
 
         # Month Headers (Centered)
         for m_idx, m_name in enumerate(months):
-            short_m = m_name.split()[0][:3] if " " in m_name else m_name[:3]
             ctk.CTkLabel(
                 hdr_frame,
-                text=short_m,
+                text=m_name,
                 font=ctk.CTkFont(family=ui.FONT_FAMILY, size=9, weight="bold"),
                 text_color=ui.COLOR_TEXT_DIM,
                 anchor="center",
-            ).grid(row=0, column=m_idx + 1, sticky="ew", padx=2, pady=3)
+            ).grid(row=0, column=m_idx + 1, sticky="ew", padx=2, pady=4)
 
         # Trend Header (Centered)
         ctk.CTkLabel(
             hdr_frame,
-            text="Trend",
+            text="Trajectory",
             font=ctk.CTkFont(family=ui.FONT_FAMILY, size=9, weight="bold"),
             text_color=ui.COLOR_TEXT_DIM,
             anchor="center",
-        ).grid(row=0, column=len(months) + 1, sticky="ew", padx=4, pady=3)
+        ).grid(row=0, column=len(months) + 1, sticky="ew", padx=4, pady=4)
 
         # Data Rows
         for r_idx, row in enumerate(rows):
@@ -2433,16 +2440,13 @@ class BusinessUnitHeatmapWidget(ctk.CTkFrame):
             trend_dir = row.get("trend_direction", "STABLE")
 
             row_frame = ctk.CTkFrame(
-                self.scroll_frame,
+                self.matrix_container,
                 fg_color="#131B2E" if r_idx % 2 == 0 else "#0F172A",
                 corner_radius=4,
                 cursor="hand2",
             )
             row_frame.pack(fill="x", pady=1)
-            row_frame.grid_columnconfigure(0, weight=3)
-            for c_idx in range(len(months)):
-                row_frame.grid_columnconfigure(c_idx + 1, weight=1)
-            row_frame.grid_columnconfigure(len(months) + 1, weight=1)
+            self._configure_matrix_cols(row_frame, len(months))
 
             # BU Name label (Clickable, Left-aligned)
             lbl_bu = ctk.CTkLabel(
@@ -2566,17 +2570,17 @@ class WhatChangedWidget(ctk.CTkFrame):
             anchor="w",
         )
         lbl_title.pack(anchor="w")
-        self.lbl_headline = ctk.CTkLabel(
+        lbl_sub = ctk.CTkLabel(
             t_box,
-            text="Deterministic driver attribution for latest movement",
+            text="Key drivers contributing to month-over-month movement",
             font=ctk.CTkFont(family=ui.FONT_FAMILY, size=9),
             text_color=ui.COLOR_TEXT_SEC,
             anchor="w",
         )
-        self.lbl_headline.pack(anchor="w")
+        lbl_sub.pack(anchor="w")
 
         # Movement Summary Strip
-        self.summary_frame = ctk.CTkFrame(self, fg_color="#1E293B", corner_radius=6)
+        self.summary_frame = ctk.CTkFrame(self, fg_color="#1E293B", corner_radius=6, border_width=1, border_color="#334155")
         self.summary_frame.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 6))
         self.summary_frame.grid_columnconfigure(0, weight=1)
 
@@ -2586,12 +2590,14 @@ class WhatChangedWidget(ctk.CTkFrame):
             font=ctk.CTkFont(family=ui.FONT_FAMILY, size=10, weight="bold"),
             text_color=ui.COLOR_TEXT,
             anchor="w",
+            justify="left",
+            wraplength=380,
         )
-        self.lbl_movement.grid(row=0, column=0, sticky="w", padx=8, pady=5)
+        self.lbl_movement.grid(row=0, column=0, sticky="ew", padx=8, pady=6)
 
         # Drivers List Container
         self.drivers_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self.drivers_frame.grid(row=2, column=0, sticky="nsew", padx=10, pady=(0, 6))
+        self.drivers_frame.grid(row=2, column=0, sticky="nsew", padx=10, pady=(0, 8))
         self.drivers_frame.grid_columnconfigure(0, weight=1)
 
     def update_data(self, what_changed: Dict[str, Any]):
@@ -2602,22 +2608,21 @@ class WhatChangedWidget(ctk.CTkFrame):
         if not what_changed:
             return
 
-        headline = what_changed.get("headline", "Deterministic driver attribution for latest movement")
-        self.lbl_headline.configure(text=headline)
-
         has_mov = what_changed.get("has_movement", False)
         drivers = what_changed.get("drivers", [])
+        headline = what_changed.get("headline", "Baseline period established")
 
         if not has_mov or not drivers:
             self.lbl_movement.configure(
-                text="Baseline period or stable trajectory • No significant drivers flagged",
+                text="✓ Baseline period established • Stable trajectory across active scope",
                 text_color=ui.COLOR_SUCCESS,
             )
             return
 
+        is_inc = "+" in headline or "increased" in headline.lower()
         self.lbl_movement.configure(
-            text=headline,
-            text_color="#F43F5E" if "+" in headline else "#10B981",
+            text=f"📈 {headline}" if is_inc else f"📉 {headline}",
+            text_color="#F43F5E" if is_inc else "#10B981",
         )
 
         # Render top drivers
@@ -2734,9 +2739,9 @@ class EmergingPatternsWidget(ctk.CTkFrame):
         for idx, pat in enumerate(patterns_list[:num_patterns]):
             name = pat.get("pattern_name", "Governance Pattern")
             desc = pat.get("why_detected", pat.get("description", ""))
-            scope = pat.get("scope_desc", "Organisation-wide")
-            persist = pat.get("persistence", "Emerging")
-            vol = pat.get("volume", 0)
+            scope = str(pat.get("scope", pat.get("scope_desc", "Organisation-wide"))).replace("Scope: ", "").strip()
+            persist = str(pat.get("persistence", "Emerging")).strip()
+            vol = str(pat.get("volume", "0")).replace(" occurrences", "").replace(" events", "").strip()
             sev = str(pat.get("severity", "MODERATE")).upper()
 
             if sev in ("CRITICAL", "HIGH"):
@@ -2797,10 +2802,9 @@ class EmergingPatternsWidget(ctk.CTkFrame):
             meta_box.grid(row=2, column=0, sticky="ew", padx=6, pady=(0, 8))
             meta_box.grid_columnconfigure(0, weight=1)
 
-            vol_str = f"{vol} occurrences" if vol != 1 else "1 occurrence"
             ctk.CTkLabel(
                 meta_box,
-                text=f"Scope: {scope}\n{persist} • {vol_str}",
+                text=f"📍 {scope}\n⏱ {persist} • {vol} events",
                 font=ctk.CTkFont(family=ui.FONT_FAMILY, size=8),
                 text_color=ui.COLOR_TEXT_DIM,
                 anchor="w",
@@ -2812,22 +2816,22 @@ class EmergingPatternsWidget(ctk.CTkFrame):
 # 6. Multi-Dimension Business Unit Benchmark Comparison Table Widget
 # ─────────────────────────────────────────────────────────────────────────────
 
-TREND_BENCHMARK_COLUMNS: List[Tuple[str, str, int]] = [
-    ("Business Unit", "w", 180),
-    ("Current", "e", 90),
-    ("3M Average", "e", 90),
-    ("Organisation", "e", 95),
-    ("Historical", "e", 90),
-    ("Gap vs Org", "e", 90),
-    ("Trajectory", "center", 100),
-    ("Confidence / Volume", "center", 130),
+TREND_BENCHMARK_COLUMNS: List[Tuple[str, str, int, str]] = [
+    ("bu", "Business Unit", 150, "w"),
+    ("curr", "Current", 85, "e"),
+    ("avg3m", "3M Average", 85, "e"),
+    ("org", "Organisation", 90, "e"),
+    ("hist", "Historical", 85, "e"),
+    ("gap", "Gap vs Org", 85, "e"),
+    ("trend", "Trajectory", 115, "center"),
+    ("vol", "Confidence / Volume", 130, "center"),
 ]
 
 class TrendBenchmarkTableWidget(ctk.CTkFrame):
     """
     Multi-Dimension Benchmark Comparison Table:
     Columns: Business Unit | Current | 3M Average | Organisation | Historical | Gap vs Org | Trajectory | Confidence / Volume
-    Scrollable row container with sticky/pinned total summary row.
+    Renders directly in page flow with pixel-perfect column alignment across header, rows, and pinned total row.
     """
     def __init__(self, parent, on_bu_click: Optional[Callable[[str], None]] = None, **kwargs):
         kwargs.setdefault("corner_radius", 10)
@@ -2836,7 +2840,6 @@ class TrendBenchmarkTableWidget(ctk.CTkFrame):
         kwargs.setdefault("border_color", ui.COLOR_BORDER)
         super().__init__(parent, **kwargs)
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(2, weight=1)
         self._on_bu_click = on_bu_click
         self._table_data: Dict[str, Any] = {}
 
@@ -2865,10 +2868,11 @@ class TrendBenchmarkTableWidget(ctk.CTkFrame):
         lbl_sub.pack(anchor="w")
 
         # Table Header Row (Row 1)
-        self.hdr_frame = ctk.CTkFrame(self, fg_color="#1E293B", corner_radius=4, height=26)
+        self.hdr_frame = ctk.CTkFrame(self, fg_color="#1E293B", corner_radius=4, height=28)
         self.hdr_frame.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 2))
-        for c_idx, (col_name, anch, col_w) in enumerate(TREND_BENCHMARK_COLUMNS):
-            self.hdr_frame.grid_columnconfigure(c_idx, weight=3 if c_idx == 0 else 1)
+        self._configure_table_columns(self.hdr_frame)
+
+        for c_idx, (col_id, col_name, col_w, anch) in enumerate(TREND_BENCHMARK_COLUMNS):
             p_x = (10, 4) if anch == "w" else ((4, 10) if anch == "e" else 4)
             ctk.CTkLabel(
                 self.hdr_frame,
@@ -2876,19 +2880,31 @@ class TrendBenchmarkTableWidget(ctk.CTkFrame):
                 font=ctk.CTkFont(family=ui.FONT_FAMILY, size=9, weight="bold"),
                 text_color=ui.COLOR_TEXT_DIM,
                 anchor=anch,
-            ).grid(row=0, column=c_idx, sticky="nsew", padx=p_x, pady=3)
+                width=col_w,
+            ).grid(row=0, column=c_idx, sticky="nsew", padx=p_x, pady=4)
 
-        # Scrollable Rows (Row 2)
-        self.rows_frame = ctk.CTkScrollableFrame(self, fg_color="transparent", height=160)
+        # Rows Container (Row 2 - without nested scrollbar for clean alignment)
+        self.rows_frame = ctk.CTkFrame(self, fg_color="transparent")
         self.rows_frame.grid(row=2, column=0, sticky="nsew", padx=10, pady=(0, 2))
         self.rows_frame.grid_columnconfigure(0, weight=1)
 
         # Pinned Total Row (Row 3)
-        self.total_frame = ctk.CTkFrame(self, fg_color="#1E293B", corner_radius=4, height=26, border_width=1, border_color="#334155")
+        self.total_frame = ctk.CTkFrame(self, fg_color="#1E293B", corner_radius=4, height=28, border_width=1, border_color="#334155")
         self.total_frame.grid(row=3, column=0, sticky="ew", padx=10, pady=(2, 8))
+        self._configure_table_columns(self.total_frame)
+
+    def _configure_table_columns(self, container: ctk.CTkFrame):
+        container.grid_columnconfigure(0, minsize=150, weight=3)
+        container.grid_columnconfigure(1, minsize=85, weight=1)
+        container.grid_columnconfigure(2, minsize=85, weight=1)
+        container.grid_columnconfigure(3, minsize=90, weight=1)
+        container.grid_columnconfigure(4, minsize=85, weight=1)
+        container.grid_columnconfigure(5, minsize=85, weight=1)
+        container.grid_columnconfigure(6, minsize=115, weight=1)
+        container.grid_columnconfigure(7, minsize=130, weight=1)
 
     def update_data(self, benchmark_table: Dict[str, Any]):
-        """Render rows and total from bundle."""
+        """Render rows and total from bundle with exact column alignments."""
         self._table_data = benchmark_table or {}
         for child in self.rows_frame.winfo_children():
             child.destroy()
@@ -2926,9 +2942,7 @@ class TrendBenchmarkTableWidget(ctk.CTkFrame):
                 cursor="hand2",
             )
             row_frame.pack(fill="x", pady=1)
-
-            for c_idx in range(len(TREND_BENCHMARK_COLUMNS)):
-                row_frame.grid_columnconfigure(c_idx, weight=3 if c_idx == 0 else 1)
+            self._configure_table_columns(row_frame)
 
             def _make_click(bname=bu_name):
                 return lambda e: self._on_bu_click(bname) if self._on_bu_click else None
@@ -2942,36 +2956,78 @@ class TrendBenchmarkTableWidget(ctk.CTkFrame):
                 elif gap_val < 0:
                     gap_col = "#10B981"
 
-            trend_col = "#10B981" if "impr" in trend.lower() else ("#F43F5E" if "detr" in trend.lower() or "regress" in trend.lower() else ui.COLOR_TEXT_SEC)
+            # Trajectory Pill Style
+            t_lower = trend.lower()
+            if "impr" in t_lower:
+                tr_bg = "#064E3B"
+                tr_col = "#10B981"
+            elif "detr" in t_lower or "regress" in t_lower:
+                tr_bg = "#4C0519"
+                tr_col = "#F43F5E"
+            else:
+                tr_bg = "#1E293B"
+                tr_col = "#94A3B8"
 
-            vals = [
-                (bu_name, "w", ui.COLOR_TEXT, True),
-                (curr, "e", ui.COLOR_TEXT, False),
-                (avg3m, "e", ui.COLOR_TEXT_SEC, False),
-                (org_b, "e", "#F59E0B", False),
-                (hist, "e", "#8B5CF6", False),
-                (gap, "e", gap_col, False),
-                (trend, "center", trend_col, False),
-                (vol, "center", ui.COLOR_TEXT_DIM, False),
+            # Column 0: BU Name
+            lbl_bu = ctk.CTkLabel(
+                row_frame,
+                text=bu_name,
+                font=ctk.CTkFont(family=ui.FONT_FAMILY, size=9, weight="bold"),
+                text_color=ui.COLOR_TEXT,
+                anchor="w",
+                width=150,
+            )
+            lbl_bu.grid(row=0, column=0, sticky="nsew", padx=(10, 4), pady=3)
+            lbl_bu.bind("<Button-1>", _make_click())
+
+            # Numerical Columns (1 to 5)
+            num_cols = [
+                (1, curr, "e", ui.COLOR_TEXT, False, 85),
+                (2, avg3m, "e", ui.COLOR_TEXT_SEC, False, 85),
+                (3, org_b, "e", "#F59E0B", False, 90),
+                (4, hist, "e", "#8B5CF6", False, 85),
+                (5, gap, "e", gap_col, False, 85),
             ]
-
-            for c_idx, (txt, anch, col, is_bld) in enumerate(vals):
-                p_x = (10, 4) if anch == "w" else ((4, 10) if anch == "e" else 4)
-                lbl = ctk.CTkLabel(
+            for c_idx, val_txt, anch, col, is_b, w_val in num_cols:
+                lbl_num = ctk.CTkLabel(
                     row_frame,
-                    text=txt,
-                    font=ctk.CTkFont(family=ui.FONT_FAMILY, size=9, weight="bold" if is_bld else "normal"),
+                    text=val_txt,
+                    font=ctk.CTkFont(family=ui.FONT_FAMILY, size=9, weight="bold" if is_b else "normal"),
                     text_color=col,
                     anchor=anch,
+                    width=w_val,
                 )
-                lbl.grid(row=0, column=c_idx, sticky="nsew", padx=p_x, pady=3)
-                lbl.bind("<Button-1>", _make_click())
+                lbl_num.grid(row=0, column=c_idx, sticky="nsew", padx=(4, 10), pady=3)
+                lbl_num.bind("<Button-1>", _make_click())
+
+            # Column 6: Trajectory Badge
+            tr_box = ctk.CTkFrame(row_frame, fg_color=tr_bg, corner_radius=3)
+            tr_box.grid(row=0, column=6, sticky="nsew", padx=4, pady=2)
+            tr_box.bind("<Button-1>", _make_click())
+            lbl_tr = ctk.CTkLabel(
+                tr_box,
+                text=trend,
+                font=ctk.CTkFont(family=ui.FONT_FAMILY, size=8, weight="bold"),
+                text_color=tr_col,
+                anchor="center",
+            )
+            lbl_tr.pack(fill="both", expand=True, padx=2, pady=1)
+            lbl_tr.bind("<Button-1>", _make_click())
+
+            # Column 7: Confidence / Volume
+            lbl_vol = ctk.CTkLabel(
+                row_frame,
+                text=vol,
+                font=ctk.CTkFont(family=ui.FONT_FAMILY, size=8),
+                text_color=ui.COLOR_TEXT_DIM,
+                anchor="center",
+                width=130,
+            )
+            lbl_vol.grid(row=0, column=7, sticky="nsew", padx=4, pady=3)
+            lbl_vol.bind("<Button-1>", _make_click())
 
         # Render Total Pinned Row
-        for c_idx in range(len(TREND_BENCHMARK_COLUMNS)):
-            self.total_frame.grid_columnconfigure(c_idx, weight=3 if c_idx == 0 else 1)
-
-        tot_bu = total.get("business_unit", "Total (Organization-Wide)")
+        tot_bu = total.get("business_unit", "Total (Organisation-Wide)")
         tot_curr = total.get("current", "—")
         tot_avg3m = total.get("three_month_avg", "—")
         tot_org_b = total.get("org_benchmark", "—")
@@ -2981,25 +3037,25 @@ class TrendBenchmarkTableWidget(ctk.CTkFrame):
         tot_vol = total.get("volume", "—")
 
         tot_vals = [
-            (tot_bu, "w", ui.COLOR_TEXT, True),
-            (tot_curr, "e", ui.COLOR_TEXT, True),
-            (tot_avg3m, "e", ui.COLOR_TEXT_SEC, False),
-            (tot_org_b, "e", "#F59E0B", False),
-            (tot_hist, "e", "#8B5CF6", False),
-            (tot_gap, "e", ui.COLOR_TEXT, False),
-            (tot_trend, "center", ui.COLOR_TEXT, False),
-            (tot_vol, "center", ui.COLOR_TEXT_DIM, False),
+            (0, tot_bu, "w", ui.COLOR_TEXT, True, 150, (10, 4)),
+            (1, tot_curr, "e", ui.COLOR_TEXT, True, 85, (4, 10)),
+            (2, tot_avg3m, "e", ui.COLOR_TEXT_SEC, False, 85, (4, 10)),
+            (3, tot_org_b, "e", "#F59E0B", False, 90, (4, 10)),
+            (4, tot_hist, "e", "#8B5CF6", False, 85, (4, 10)),
+            (5, tot_gap, "e", ui.COLOR_TEXT, False, 85, (4, 10)),
+            (6, tot_trend, "center", ui.COLOR_TEXT, False, 115, 4),
+            (7, tot_vol, "center", ui.COLOR_TEXT_DIM, False, 130, 4),
         ]
 
-        for c_idx, (txt, anch, col, is_bld) in enumerate(tot_vals):
-            p_x = (10, 4) if anch == "w" else ((4, 10) if anch == "e" else 4)
+        for c_idx, txt, anch, col, is_bld, w_val, p_x in tot_vals:
             ctk.CTkLabel(
                 self.total_frame,
                 text=txt,
                 font=ctk.CTkFont(family=ui.FONT_FAMILY, size=9, weight="bold" if is_bld else "normal"),
                 text_color=col,
                 anchor=anch,
-            ).grid(row=0, column=c_idx, sticky="nsew", padx=p_x, pady=3)
+                width=w_val,
+            ).grid(row=0, column=c_idx, sticky="nsew", padx=p_x, pady=4)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
