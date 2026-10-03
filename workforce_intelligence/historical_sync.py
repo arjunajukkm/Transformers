@@ -105,14 +105,32 @@ class HistoricalSyncManager:
         except Exception:
             return month_key
 
+    @staticmethod
+    def get_keka_api_window_start(ref_date: Optional[date] = None) -> date:
+        """
+        Keka Attendance API enforces a strict rolling 3-month window.
+        Returns the earliest 1st of month accessible via Keka API.
+        e.g., in Oct 2026 -> 2026-07-01.
+        """
+        if not ref_date:
+            ref_date = datetime.now().date()
+        m = ref_date.month - 3
+        y = ref_date.year
+        if m < 1:
+            m += 12
+            y -= 1
+        return date(y, m, 1)
+
     def get_available_months_grid(self, past_n_months: int = 12) -> List[Dict[str, Any]]:
         """
-        Generate list of past N months including current month with their sync status.
+        Generate list of past N months including current month with their sync status
+        and Keka API eligibility (3-month rolling window check).
         """
         registry = self.load_registry()
         synced_months = registry.get("months", {})
 
         now = datetime.now().date()
+        min_api_date = self.get_keka_api_window_start(now)
         result = []
         cur_year = now.year
         cur_month = now.month
@@ -130,16 +148,20 @@ class HistoricalSyncManager:
                 if not file_exists:
                     is_synced = False
 
+            is_api_eligible = (l_day >= min_api_date)
+
             result.append({
                 "month_key": m_key,
                 "display_name": display_name,
                 "from_date": f_day.strftime("%Y-%m-%d"),
                 "to_date": l_day.strftime("%Y-%m-%d"),
                 "is_synced": is_synced,
+                "is_api_eligible": is_api_eligible,
+                "source": info.get("source", "API" if is_api_eligible else "FILE_IMPORT"),
                 "record_count": info.get("record_count", 0) if is_synced else 0,
                 "headcount": info.get("headcount", 0) if is_synced else 0,
                 "last_synced": info.get("last_synced", "Never") if is_synced else "Not Synced",
-                "status_label": "Synced" if is_synced else "Missing",
+                "status_label": "Synced" if is_synced else ("API Ready (Last 3M)" if is_api_eligible else "File Import Needed (>3M)"),
                 "file_name": info.get("file_name", f"attendance_{m_key.replace('-', '_')}.parquet"),
             })
 
@@ -150,6 +172,141 @@ class HistoricalSyncManager:
                 cur_year -= 1
 
         return result
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # File Import into Archive
+    # ──────────────────────────────────────────────────────────────────────────
+    def import_attendance_file(
+        self,
+        file_path: Any,
+        target_month_key: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Import an exported Keka Daily Performance Report or Attendance Excel/CSV file
+        directly into the local historical archive.
+        Supports single-month or multi-month files.
+        """
+        fp = Path(file_path)
+        if not fp.exists():
+            return {"success": False, "error": f"File does not exist: {file_path}", "imported_months": [], "total_records": 0}
+
+        try:
+            if fp.suffix.lower() in [".xlsx", ".xls"]:
+                df = pd.read_excel(fp)
+            elif fp.suffix.lower() == ".csv":
+                df = pd.read_csv(fp)
+            elif fp.suffix.lower() == ".parquet":
+                df = pd.read_parquet(fp)
+            else:
+                return {"success": False, "error": f"Unsupported file type: {fp.suffix}", "imported_months": [], "total_records": 0}
+        except Exception as e:
+            return {"success": False, "error": f"Could not read file: {e}", "imported_months": [], "total_records": 0}
+
+        if df.empty:
+            return {"success": False, "error": "Imported file is empty.", "imported_months": [], "total_records": 0}
+
+        # Locate Date column
+        date_col = None
+        for col in df.columns:
+            c_clean = str(col).strip().lower()
+            if c_clean in ["date", "attendancedate", "log date", "attendance date", "event date"]:
+                date_col = col
+                break
+        if not date_col:
+            for col in df.columns:
+                if "date" in str(col).lower():
+                    date_col = col
+                    break
+
+        if not date_col:
+            return {"success": False, "error": "Could not find a 'Date' column in the imported file.", "imported_months": [], "total_records": 0}
+
+        # Parse dates to month keys (handle ISO YYYY-MM-DD vs DD-MM-YYYY)
+        sample_str = df[date_col].dropna().astype(str).str.strip().tolist()
+        use_dayfirst = True
+        if sample_str and len(sample_str[0]) >= 4 and sample_str[0][:4].isdigit():
+            use_dayfirst = False
+
+        df["_parsed_dt"] = pd.to_datetime(df[date_col], errors="coerce", dayfirst=use_dayfirst)
+        valid_mask = df["_parsed_dt"].notna()
+        df_valid = df[valid_mask].copy()
+
+        if df_valid.empty:
+            return {"success": False, "error": "No valid dates found in the file's Date column.", "imported_months": [], "total_records": 0}
+
+        df_valid["_month_key"] = df_valid["_parsed_dt"].dt.strftime("%Y-%m")
+        unique_months = sorted(df_valid["_month_key"].unique())
+
+        if target_month_key and target_month_key not in unique_months:
+            return {
+                "success": False,
+                "error": f"Selected file does not contain records for {self.get_month_display_name(target_month_key)}. Found months: {', '.join(unique_months)}",
+                "imported_months": [],
+                "total_records": 0
+            }
+
+        months_to_save = [target_month_key] if target_month_key else unique_months
+        imported_keys = []
+        total_recs = 0
+
+        registry = self.load_registry()
+
+        for m_key in months_to_save:
+            m_df = df_valid[df_valid["_month_key"] == m_key].copy()
+            if m_df.empty:
+                continue
+
+            # Cleanup helper columns
+            m_df = m_df.drop(columns=["_parsed_dt", "_month_key"], errors="ignore")
+
+            file_base = f"attendance_{m_key.replace('-', '_')}"
+            parquet_file = self.archive_dir / f"{file_base}.parquet"
+            excel_file = self.archive_dir / f"{file_base}.xlsx"
+
+            try:
+                m_df.to_parquet(parquet_file, index=False)
+            except Exception:
+                pass
+
+            try:
+                with pd.ExcelWriter(excel_file, engine="openpyxl") as writer:
+                    m_df.to_excel(writer, sheet_name="Daily Performance Report", index=False)
+            except Exception as e:
+                logger.warning(f"Could not write Excel backup during file import for {m_key}: {e}")
+
+            # Calculate metrics
+            emp_c = None
+            for c in ["Employee Number", "Employee No", "Emp No", "employeeNumber", "EmployeeCode"]:
+                if c in m_df.columns:
+                    emp_c = c
+                    break
+            hc = int(m_df[emp_c].nunique()) if emp_c else len(m_df)
+            y, m = self.parse_month_key(m_key)
+            f_day, l_day = self.get_month_boundaries(y, m)
+
+            registry.setdefault("months", {})[m_key] = {
+                "month_key": m_key,
+                "display_name": self.get_month_display_name(m_key),
+                "from_date": f_day.strftime("%Y-%m-%d"),
+                "to_date": l_day.strftime("%Y-%m-%d"),
+                "record_count": len(m_df),
+                "headcount": hc,
+                "last_synced": f"{datetime.now().strftime('%d-%b-%Y %H:%M')} (File Import)",
+                "status": "SYNCED",
+                "source": "FILE_IMPORT",
+                "file_name": f"{file_base}.parquet" if parquet_file.exists() else f"{file_base}.xlsx",
+            }
+
+            imported_keys.append(m_key)
+            total_recs += len(m_df)
+
+        self.save_registry(registry)
+        return {
+            "success": True,
+            "error": None,
+            "imported_months": imported_keys,
+            "total_records": total_recs,
+        }
 
     # ──────────────────────────────────────────────────────────────────────────
     # Single & Multi-Month Syncing
@@ -163,7 +320,7 @@ class HistoricalSyncManager:
     ) -> Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame], Optional[str]]:
         """
         Fetch a single calendar month from Keka REST API.
-        Respects Keka's 1-month API limit.
+        Respects Keka's 1-month API limit and 3-month rolling window policy.
         Returns: (monthly_attendance_df, emp_df, error_message)
         """
         def _notify(pct: float, step: str, detail: str = ""):
@@ -175,6 +332,15 @@ class HistoricalSyncManager:
         from_iso = f_day.strftime("%Y-%m-%d")
         to_iso = l_day.strftime("%Y-%m-%d")
         disp_name = self.get_month_display_name(month_key)
+
+        # Check Keka 3-month rolling window policy
+        min_api_date = self.get_keka_api_window_start()
+        if l_day < min_api_date:
+            min_fmt = min_api_date.strftime("%b %d, %Y")
+            return None, cached_emp_df, (
+                f"Keka API only allows attendance queries for the last 3 months (Earliest allowed: {min_fmt}). "
+                f"For {disp_name}, please click '📂 Import File' to add your exported Keka report."
+            )
 
         _notify(0.10, f"Syncing {disp_name}...", "Fetching Employee Master...")
         emp_df = cached_emp_df
@@ -196,6 +362,11 @@ class HistoricalSyncManager:
         )
 
         if att_err and (att_df is None or att_df.empty):
+            if "last three months only" in str(att_err).lower() or "allowed to access attendance summary" in str(att_err).lower():
+                return None, emp_df, (
+                    f"Keka API 3-Month Limit: Keka only permits attendance API queries for the last 3 months. "
+                    f"Please click '📂 Import File' to load an exported Keka report for {disp_name}."
+                )
             return None, emp_df, f"Keka attendance sync failed for {disp_name}: {att_err}"
 
         if att_df is None or att_df.empty:

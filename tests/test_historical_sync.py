@@ -205,3 +205,50 @@ def test_activate_archive_into_analytical_snapshot(sync_manager, mock_keka_fetch
     assert snap.row_count == len(unified_df)
     assert snap.metadata["employee_count"] == 2
     assert snapshot_service.has_active_snapshot()
+
+
+def test_keka_api_window_and_eligibility(sync_manager):
+    """Verify 3-month rolling window calculation and API eligibility flag."""
+    ref = date(2026, 10, 15)
+    win_start = sync_manager.get_keka_api_window_start(ref)
+    assert win_start == date(2026, 7, 1)
+
+    grid = sync_manager.get_available_months_grid(past_n_months=6)
+    # Most recent months should be API eligible
+    assert grid[0]["is_api_eligible"] is True
+    # Months older than 3 months should have is_api_eligible = False
+    old_months = [m for m in grid if not m["is_api_eligible"]]
+    assert len(old_months) >= 2
+
+
+def test_import_attendance_file(sync_manager, temp_archive_dir):
+    """Verify importing exported Excel/CSV directly into historical archive."""
+    # Create sample exported attendance DataFrame for 2 months (May 2026 and June 2026)
+    rows = [
+        {"Employee Number": "201", "Employee Name": "Bob", "Date": "2026-05-10", "Status": "P", "Business Unit": "Engineering"},
+        {"Employee Number": "201", "Employee Name": "Bob", "Date": "2026-05-11", "Status": "P", "Business Unit": "Engineering"},
+        {"Employee Number": "202", "Employee Name": "Alice", "Date": "2026-06-15", "Status": "P", "Business Unit": "Core"},
+    ]
+    df = pd.DataFrame(rows)
+    export_path = temp_archive_dir / "keka_export_sample.xlsx"
+    df.to_excel(export_path, index=False)
+
+    # Import multi-month file
+    res = sync_manager.import_attendance_file(export_path)
+    assert res["success"] is True
+    assert "2026-05" in res["imported_months"]
+    assert "2026-06" in res["imported_months"]
+    assert res["total_records"] == 3
+
+    # Verify registry
+    reg = sync_manager.load_registry()
+    assert "2026-05" in reg["months"]
+    assert "2026-06" in reg["months"]
+    assert reg["months"]["2026-05"]["status"] == "SYNCED"
+    assert reg["months"]["2026-05"]["source"] == "FILE_IMPORT"
+
+    # Verify unified loading includes imported months
+    unified_df, summary = sync_manager.load_unified_history()
+    assert summary["months_count"] == 2
+    assert len(unified_df) == 3
+

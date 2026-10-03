@@ -1610,6 +1610,11 @@ class KekaDataFetcher:
         att_records = unique_att
 
         if att_err and not att_records:
+            if "last three months only" in str(att_err).lower() or "allowed to access attendance summary" in str(att_err).lower():
+                return pd.DataFrame(), (
+                    f"Keka API 3-Month Window Limit: Keka only permits live attendance queries for the last 3 months ({att_err}). "
+                    f"To analyze older months, please export the report from Keka and use 'Import Historical File'."
+                )
             return pd.DataFrame(), f"Attendance API error: {att_err}"
 
         if progress_callback:

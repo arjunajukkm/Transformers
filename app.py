@@ -3056,17 +3056,58 @@ class App(ctk.CTk):
         hdr = ctk.CTkFrame(card, fg_color="transparent")
         hdr.pack(fill="x", padx=14, pady=(10, 6))
 
+        hdr_left = ctk.CTkFrame(hdr, fg_color="transparent")
+        hdr_left.pack(side="left", fill="both", expand=True)
+
         ctk.CTkLabel(
-            hdr, text="⚡ Workforce Data Sync Center & Historical Archive",
+            hdr_left, text="⚡ Workforce Data Sync Center & Historical Archive",
             font=ctk.CTkFont(family=ui.FONT_FAMILY, size=15, weight="bold"),
             text_color=ui.COLOR_TEXT
         ).pack(anchor="w")
 
         ctk.CTkLabel(
-            hdr, text="Sync multiple historical months from Keka (bypassing 1-month API limits), re-sync any month, and manage local time-series archive.",
+            hdr_left, text="Sync historical months from Keka (last 3M), import older exported reports, and manage local time-series archive.",
             font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11),
             text_color=ui.COLOR_TEXT_SEC
         ).pack(anchor="w", pady=(2, 0))
+
+        def _do_import_file(target_m_key=None):
+            from tkinter import filedialog
+            target_disp = historical_sync_manager.get_month_display_name(target_m_key) if target_m_key else ""
+            fn = filedialog.askopenfilename(
+                title=f"Select Keka Performance / Attendance File{' for ' + target_disp if target_disp else ''}",
+                filetypes=[
+                    ("Excel & CSV Files", "*.xlsx;*.xls;*.csv;*.parquet"),
+                    ("Excel Workbook (*.xlsx)", "*.xlsx"),
+                    ("CSV File (*.csv)", "*.csv"),
+                    ("All Files", "*.*"),
+                ]
+            )
+            if not fn:
+                return
+
+            res = historical_sync_manager.import_attendance_file(fn, target_month_key=target_m_key)
+            if res["success"]:
+                _refresh_list()
+                m_names = [historical_sync_manager.get_month_display_name(k) for k in res["imported_months"]]
+                dlg_status_lbl.configure(
+                    text=f"✓ Imported {len(res['imported_months'])} month(s): {', '.join(m_names)} ({res['total_records']:,} rows) into archive!",
+                    text_color="#10B981"
+                )
+                messagebox.showinfo(
+                    "Import Successful",
+                    f"Successfully imported {len(res['imported_months'])} month(s) into your local archive:\n\n"
+                    f"• Month(s): {', '.join(m_names)}\n"
+                    f"• Total Records: {res['total_records']:,}\n\n"
+                    "These months are now saved in your archive and ready for workforce analysis."
+                )
+            else:
+                messagebox.showerror("Import Failed", f"Could not import file:\n\n{res.get('error')}")
+
+        ui.create_secondary_button(
+            hdr, "📂 Import Historical File...", lambda: _do_import_file(),
+            width=175, height=28, icon="folder"
+        ).pack(side="right", padx=(6, 0), pady=4)
 
         # Presets Bar
         presets_bar = ctk.CTkFrame(card, fg_color=ui.COLOR_INPUT_BG, corner_radius=6)
@@ -3087,16 +3128,28 @@ class App(ctk.CTk):
                 if m_key in month_vars:
                     month_vars[m_key].set(i < n_months)
 
+        def _select_api_eligible():
+            for m_info in months_data:
+                m_key = m_info["month_key"]
+                if m_key in month_vars:
+                    month_vars[m_key].set(m_info.get("is_api_eligible", False))
+
         def _select_all_synced():
             for m_info in months_data:
                 m_key = m_info["month_key"]
                 if m_key in month_vars:
                     month_vars[m_key].set(m_info["is_synced"])
 
+        def _select_all():
+            for m_info in months_data:
+                m_key = m_info["month_key"]
+                if m_key in month_vars:
+                    month_vars[m_key].set(True)
+
         ui.create_secondary_button(presets_bar, "Current Month", lambda: _select_preset(1), width=90, height=24).pack(side="left", padx=2, pady=6)
-        ui.create_secondary_button(presets_bar, "Trailing 3 Months", lambda: _select_preset(3), width=105, height=24).pack(side="left", padx=2, pady=6)
-        ui.create_secondary_button(presets_bar, "Trailing 6 Months", lambda: _select_preset(6), width=105, height=24).pack(side="left", padx=2, pady=6)
+        ui.create_secondary_button(presets_bar, "Trailing 3M (API)", _select_api_eligible, width=110, height=24).pack(side="left", padx=2, pady=6)
         ui.create_secondary_button(presets_bar, "All Synced", _select_all_synced, width=80, height=24).pack(side="left", padx=2, pady=6)
+        ui.create_secondary_button(presets_bar, "Select All", _select_all, width=75, height=24).pack(side="left", padx=2, pady=6)
 
         # Historical Months Archive List (Scrollable)
         list_container = ctk.CTkFrame(card, fg_color="transparent")
@@ -3150,11 +3203,15 @@ class App(ctk.CTk):
 
                 # Col 1: Status & Records
                 if m_info["is_synced"]:
-                    st_text = f"✓ {m_info['record_count']:,} rows ({m_info['headcount']} emps)"
+                    src_tag = " (File)" if m_info.get("source") == "FILE_IMPORT" else ""
+                    st_text = f"✓ {m_info['record_count']:,} rows ({m_info['headcount']} emps){src_tag}"
                     st_col = "#10B981"
+                elif m_info.get("is_api_eligible"):
+                    st_text = "○ API Ready (Last 3M)"
+                    st_col = ui.COLOR_TEXT_SEC
                 else:
-                    st_text = "○ Not Synced"
-                    st_col = ui.COLOR_TEXT_DIM
+                    st_text = "○ Import Needed (>3M)"
+                    st_col = "#F59E0B"
 
                 ctk.CTkLabel(
                     row_box, text=st_text,
@@ -3169,12 +3226,15 @@ class App(ctk.CTk):
                     text_color=ui.COLOR_TEXT_SEC, anchor="w"
                 ).grid(row=0, column=2, sticky="nsew", padx=4, pady=2)
 
-                # Col 3: Action Buttons (Re-sync & Delete)
+                # Col 3: Action Buttons (Re-sync / Import & Delete)
                 act_box = ctk.CTkFrame(row_box, fg_color="transparent")
                 act_box.grid(row=0, column=3, sticky="nsew", padx=4, pady=2)
 
                 def _make_resync(mk=m_key):
                     return lambda: _do_sync_months([mk])
+
+                def _make_import(mk=m_key):
+                    return lambda: _do_import_file(target_m_key=mk)
 
                 def _make_delete(mk=m_key):
                     def _del():
@@ -3182,7 +3242,11 @@ class App(ctk.CTk):
                         _refresh_list()
                     return _del
 
-                ui.create_secondary_button(act_box, "🔄 Re-sync", _make_resync(), width=68, height=22).pack(side="left", padx=2)
+                if m_info.get("is_api_eligible"):
+                    ui.create_secondary_button(act_box, "🔄 Re-sync" if m_info["is_synced"] else "⚡ Sync", _make_resync(), width=68, height=22).pack(side="left", padx=2)
+                else:
+                    ui.create_secondary_button(act_box, "📂 Re-import" if m_info["is_synced"] else "📂 Import", _make_import(), width=68, height=22).pack(side="left", padx=2)
+
                 if m_info["is_synced"]:
                     ui.create_secondary_button(act_box, "✕", _make_delete(), width=22, height=22).pack(side="left", padx=2)
 
