@@ -47,11 +47,25 @@ def build_employee_day_facts(df: pd.DataFrame) -> pd.DataFrame:
         ]
         return pd.DataFrame(columns=cols)
 
+    work_df = df.copy()
+    if "Employee Number" not in work_df.columns and "_emp_num" in work_df.columns:
+        work_df["Employee Number"] = work_df["_emp_num"]
+    if "Date" not in work_df.columns and "_date" in work_df.columns:
+        work_df["Date"] = work_df["_date"]
+    if "Business Unit" not in work_df.columns and "_bu" in work_df.columns:
+        work_df["Business Unit"] = work_df["_bu"]
+    if "Department" not in work_df.columns and "_dept" in work_df.columns:
+        work_df["Department"] = work_df["_dept"]
+    if "Reporting Manager" not in work_df.columns and "_rm" in work_df.columns:
+        work_df["Reporting Manager"] = work_df["_rm"]
+    if "Status" not in work_df.columns and "_status" in work_df.columns:
+        work_df["Status"] = work_df["_status"]
+
     # Filter rows with valid Employee Number and Date
-    if "Employee Number" not in df.columns or "Date" not in df.columns:
+    if "Employee Number" not in work_df.columns or "Date" not in work_df.columns:
         return pd.DataFrame()
-    valid_mask = df["Employee Number"].notna() & df["Date"].notna()
-    work_df = df[valid_mask].copy()
+    valid_mask = work_df["Employee Number"].notna() & work_df["Date"].notna()
+    work_df = work_df[valid_mask].copy()
 
     if len(work_df) == 0:
         return pd.DataFrame()

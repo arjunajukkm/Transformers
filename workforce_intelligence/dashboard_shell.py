@@ -45,6 +45,11 @@ from storage import AnalyticalSnapshot, snapshot_service
 import time_series_analysis as tsa
 import ui_components as ui
 from workforce_intelligence.snapshot_bridge import workforce_bridge
+from workforce_intelligence.trends import (
+    TREND_METRICS,
+    POLICY_EFFECTIVE_DATE_STR,
+    format_metric_value,
+)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -72,6 +77,7 @@ def _fmt_days(val: Optional[Union[float, int]]) -> str:
 
 VIEW_KEYS = [
     "overview",
+    "trends",
 ]
 
 VIEW_CONFIGS: Dict[str, Dict[str, str]] = {
@@ -86,6 +92,22 @@ VIEW_CONFIGS: Dict[str, Dict[str, str]] = {
             "• Nine Executive Overview KPI Cards (Headcount, Attendance Days, Present, On Duty, Leave, WFH, Holiday, Week Off, Exceptions)\n"
             "• Single 100% Additive Quantity-Weighted Attendance Composition Bar\n"
             "• Business Unit Attendance Distribution Comparison Table"
+        ),
+    },
+    "trends": {
+        "title": "Workforce Trends & Decision Intelligence",
+        "tab_title": "Trends",
+        "icon": "📈",
+        "subtitle": "Time-series trajectory, benchmark comparisons, driver decomposition, and emerging workforce patterns.",
+        "badge": "Live Trends Intelligence",
+        "placeholder_text": "Workforce trends, MoM movement, and emerging patterns will appear here.",
+        "future_scope": (
+            "• Trend Pulse KPI Cards (Current, MoM Change, 3M Trend, Benchmark Gap, Data Confidence)\n"
+            "• Main Trend Time-Series Chart with Benchmark & Policy Markers\n"
+            "• Business Unit Trend Heatmap & Click-to-Drilldown\n"
+            "• Deterministic What Changed? Driver Attribution\n"
+            "• Emerging Pattern Detection & Root Cause Scope\n"
+            "• Multi-Dimension Business Unit Benchmark Comparison Table"
         ),
     },
 }
@@ -1804,6 +1826,1172 @@ class BusinessUnitComparisonTableWidget(ctk.CTkFrame):
             lbl.bind("<Shift-MouseWheel>", self._on_shift_mousewheel)
 
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 1. Trend Pulse Widget
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TrendPulseWidget(ctk.CTkFrame):
+    """
+    Compact 5-KPI card pulse header:
+    1. Current Value
+    2. Previous Month / MoM Change
+    3. 3-Month Trend Direction
+    4. Gap vs Active Benchmark
+    5. Data Confidence & Evaluated Volume
+    """
+    def __init__(self, parent, **kwargs):
+        super().__init__(parent, fg_color="transparent", corner_radius=0, **kwargs)
+        self.grid_columnconfigure((0, 1, 2, 3, 4), weight=1, uniform="pulse_col")
+        self.cards: List[Dict[str, Any]] = []
+
+        # Color mapping for pulse cards
+        accents = [
+            ui.COLOR_ACCENT,
+            "#3B82F6",
+            "#8B5CF6",
+            "#F59E0B",
+            "#10B981",
+        ]
+
+        default_titles = [
+            "Current Value",
+            "MoM Movement",
+            "3-Month Trajectory",
+            "Benchmark Gap",
+            "Data Confidence",
+        ]
+
+        for idx in range(5):
+            card_frame = ctk.CTkFrame(
+                self,
+                corner_radius=8,
+                fg_color=ui.COLOR_CARD,
+                border_width=1,
+                border_color=ui.COLOR_BORDER,
+            )
+            card_frame.grid(row=0, column=idx, sticky="nsew", padx=3, pady=2)
+            card_frame.grid_columnconfigure(0, weight=1)
+
+            # Top header line with dot
+            h_frame = ctk.CTkFrame(card_frame, fg_color="transparent")
+            h_frame.grid(row=0, column=0, sticky="ew", padx=8, pady=(6, 2))
+            h_frame.grid_columnconfigure(1, weight=1)
+
+            dot = ctk.CTkLabel(
+                h_frame,
+                text="●",
+                font=ctk.CTkFont(size=11),
+                text_color=accents[idx],
+                width=10,
+            )
+            dot.grid(row=0, column=0, sticky="nw", padx=(0, 3), pady=(1, 0))
+
+            lbl_title = ctk.CTkLabel(
+                h_frame,
+                text=default_titles[idx],
+                font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11, weight="bold"),
+                text_color=ui.COLOR_TEXT_DIM,
+                anchor="w",
+                justify="left",
+            )
+            lbl_title.grid(row=0, column=1, sticky="ew")
+
+            # Primary value label
+            lbl_val = ctk.CTkLabel(
+                card_frame,
+                text="—",
+                font=ctk.CTkFont(family=ui.FONT_FAMILY, size=20, weight="bold"),
+                text_color=ui.COLOR_TEXT,
+                anchor="w",
+                justify="left",
+            )
+            lbl_val.grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 1))
+
+            # Sub-label
+            lbl_sub = ctk.CTkLabel(
+                card_frame,
+                text="",
+                font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11, weight="bold"),
+                text_color=accents[idx],
+                anchor="w",
+                justify="left",
+            )
+            lbl_sub.grid(row=2, column=0, sticky="ew", padx=8, pady=(0, 1))
+
+            # Footnote label
+            lbl_note = ctk.CTkLabel(
+                card_frame,
+                text="",
+                font=ctk.CTkFont(family=ui.FONT_FAMILY, size=10),
+                text_color=ui.COLOR_TEXT_SEC,
+                anchor="w",
+                justify="left",
+            )
+            lbl_note.grid(row=3, column=0, sticky="ew", padx=8, pady=(0, 6))
+
+            self.cards.append({
+                "frame": card_frame,
+                "lbl_title": lbl_title,
+                "lbl_val": lbl_val,
+                "lbl_sub": lbl_sub,
+                "lbl_note": lbl_note,
+                "accent": accents[idx],
+            })
+
+    def update_data(self, pulse_data: List[Dict[str, Any]]):
+        """Update 5 pulse cards from bundle trend_pulse list."""
+        if not pulse_data:
+            return
+        for idx, item in enumerate(pulse_data[:5]):
+            card = self.cards[idx]
+            title = item.get("title", "")
+            val = item.get("value", "—")
+            sub = item.get("sub", "")
+            note = item.get("note", "")
+            col = item.get("color")
+
+            if title:
+                card["lbl_title"].configure(text=title)
+            card["lbl_val"].configure(text=str(val), text_color=col or ui.COLOR_TEXT)
+            card["lbl_sub"].configure(text=str(sub), text_color=col or card["accent"])
+            card["lbl_note"].configure(text=str(note))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 2. Main Trend Time-Series Chart Widget
+# ─────────────────────────────────────────────────────────────────────────────
+
+class MainTrendChartWidget(ctk.CTkFrame):
+    """
+    Interactive time-series canvas chart showing:
+    - Scoped Actual metric trend (solid cyan line with node markers)
+    - Active Benchmark (Organisation dashed amber line / Historical dotted / Peer line)
+    - Historical Baseline (trailing 3-month median dotted line)
+    - Normal / Reference variation band (shaded corridor)
+    - Policy Effective Date vertical marker (1 Oct 2026)
+    - Highlights for Regression points (rose ring) and Low-Volume points (amber hollow dot)
+    - Interactive hover inspection tooltip card
+    """
+    def __init__(self, parent, **kwargs):
+        kwargs.setdefault("corner_radius", 10)
+        kwargs.setdefault("fg_color", ui.COLOR_CARD)
+        kwargs.setdefault("border_width", 1)
+        kwargs.setdefault("border_color", ui.COLOR_BORDER)
+        super().__init__(parent, **kwargs)
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=1)
+
+        self._chart_data: Dict[str, Any] = {}
+        self._node_coords: List[Dict[str, Any]] = []
+
+        # Top Header & Legend Strip
+        hdr = ctk.CTkFrame(self, fg_color="transparent")
+        hdr.grid(row=0, column=0, sticky="ew", padx=12, pady=(8, 4))
+        hdr.grid_columnconfigure(0, weight=1)
+        hdr.grid_columnconfigure(1, weight=0)
+
+        # Title & Subtitle
+        t_box = ctk.CTkFrame(hdr, fg_color="transparent")
+        t_box.grid(row=0, column=0, sticky="w")
+        self.lbl_title = ctk.CTkLabel(
+            t_box,
+            text="Time-Series Trajectory & Benchmark Evaluation",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12, weight="bold"),
+            text_color=ui.COLOR_TEXT,
+            anchor="w",
+        )
+        self.lbl_title.pack(anchor="w")
+        self.lbl_subtitle = ctk.CTkLabel(
+            t_box,
+            text="Actual vs Organisation Benchmark • Reference corridor • Policy Effective Marker",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=9),
+            text_color=ui.COLOR_TEXT_SEC,
+            anchor="w",
+        )
+        self.lbl_subtitle.pack(anchor="w")
+
+        # Interactive Legend Strip
+        leg_box = ctk.CTkFrame(hdr, fg_color="transparent")
+        leg_box.grid(row=0, column=1, sticky="e")
+
+        # Actual
+        f_act = ctk.CTkFrame(leg_box, fg_color="transparent")
+        f_act.pack(side="left", padx=(0, 10))
+        ctk.CTkLabel(f_act, text="━●", font=ctk.CTkFont(size=10, weight="bold"), text_color="#06B6D4").pack(side="left", padx=(0, 3))
+        ctk.CTkLabel(f_act, text="Actual", font=ctk.CTkFont(family=ui.FONT_FAMILY, size=10), text_color=ui.COLOR_TEXT).pack(side="left")
+
+        # Benchmark
+        f_bn = ctk.CTkFrame(leg_box, fg_color="transparent")
+        f_bn.pack(side="left", padx=(0, 10))
+        self.lbl_leg_bn_icon = ctk.CTkLabel(f_bn, text="╍╍", font=ctk.CTkFont(size=10, weight="bold"), text_color="#F59E0B")
+        self.lbl_leg_bn_icon.pack(side="left", padx=(0, 3))
+        self.lbl_leg_bn_text = ctk.CTkLabel(f_bn, text="Benchmark", font=ctk.CTkFont(family=ui.FONT_FAMILY, size=10), text_color=ui.COLOR_TEXT_SEC)
+        self.lbl_leg_bn_text.pack(side="left")
+
+        # Historical Baseline
+        f_hist = ctk.CTkFrame(leg_box, fg_color="transparent")
+        f_hist.pack(side="left", padx=(0, 10))
+        ctk.CTkLabel(f_hist, text="····", font=ctk.CTkFont(size=11, weight="bold"), text_color="#8B5CF6").pack(side="left", padx=(0, 3))
+        ctk.CTkLabel(f_hist, text="Historical Baseline", font=ctk.CTkFont(family=ui.FONT_FAMILY, size=10), text_color=ui.COLOR_TEXT_SEC).pack(side="left")
+
+        # Reference Corridor
+        f_ref = ctk.CTkFrame(leg_box, fg_color="transparent")
+        f_ref.pack(side="left", padx=(0, 6))
+        ctk.CTkLabel(f_ref, text="■", font=ctk.CTkFont(size=11), text_color="#1E293B").pack(side="left", padx=(0, 3))
+        ctk.CTkLabel(f_ref, text="Normal Range", font=ctk.CTkFont(family=ui.FONT_FAMILY, size=10), text_color=ui.COLOR_TEXT_SEC).pack(side="left")
+
+        # Canvas container
+        self.canvas_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self.canvas_frame.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 8))
+        self.canvas_frame.grid_columnconfigure(0, weight=1)
+        self.canvas_frame.grid_rowconfigure(0, weight=1)
+
+        self.chart_canvas = tk.Canvas(
+            self.canvas_frame,
+            bg=ui.COLOR_CARD,
+            bd=0,
+            highlightthickness=0,
+            relief="flat",
+            height=200,
+        )
+        self.chart_canvas.grid(row=0, column=0, sticky="nsew")
+        self.chart_canvas.bind("<Configure>", lambda e: self._draw_chart())
+        self.chart_canvas.bind("<Motion>", self._on_canvas_motion)
+        self.chart_canvas.bind("<Leave>", self._on_canvas_leave)
+
+    def update_data(self, chart_data: Dict[str, Any], benchmark_label: str = "Organisation"):
+        """Update chart with points and metadata from get_trend_intelligence."""
+        self._chart_data = chart_data or {}
+        m_name = chart_data.get("metric_name", "Selected Metric")
+        self.lbl_title.configure(text=f"{m_name} — Trajectory & Benchmark Evaluation")
+        self.lbl_subtitle.configure(text=f"Actual vs {benchmark_label} Benchmark • Trailing baseline • Decision markers")
+        self.lbl_leg_bn_text.configure(text=f"{benchmark_label} Benchmark")
+        self._draw_chart()
+
+    def _draw_chart(self):
+        canvas = self.chart_canvas
+        canvas.delete("all")
+        self._node_coords.clear()
+
+        w = canvas.winfo_width()
+        h = canvas.winfo_height()
+        if w <= 40 or h <= 40:
+            return
+
+        pts = self._chart_data.get("points", [])
+        if not pts:
+            canvas.create_text(
+                w / 2, h / 2,
+                text="No trend observation data available for active scope",
+                fill=ui.COLOR_TEXT_DIM,
+                font=(ui.FONT_FAMILY, 11),
+            )
+            return
+
+        pad_left = 52.0
+        pad_right = 24.0
+        pad_top = 22.0
+        pad_bottom = 32.0
+
+        plot_w = max(10.0, w - pad_left - pad_right)
+        plot_h = max(10.0, h - pad_top - pad_bottom)
+
+        # Collect all values to find Y range
+        all_vals = []
+        for p in pts:
+            for k in ("actual", "benchmark", "historical"):
+                v = p.get(k)
+                if v is not None and not pd.isna(v):
+                    all_vals.append(float(v))
+
+        ref_range = self._chart_data.get("reference_range")
+        if ref_range:
+            all_vals.extend([float(ref_range[0]), float(ref_range[1])])
+
+        if not all_vals:
+            all_vals = [0.0, 10.0]
+
+        min_val = max(0.0, min(all_vals) * 0.9 if min(all_vals) > 0 else 0.0)
+        max_val = max(all_vals) * 1.15 if max(all_vals) > 0 else 1.0
+        if max_val <= min_val:
+            max_val = min_val + 1.0
+
+        val_range = max_val - min_val
+
+        def val_to_y(v: float) -> float:
+            ratio = (v - min_val) / val_range
+            return pad_top + plot_h * (1.0 - ratio)
+
+        # Draw 4 horizontal reference grid lines
+        grid_steps = 4
+        for step in range(grid_steps + 1):
+            g_val = min_val + (val_range * step / grid_steps)
+            gy = val_to_y(g_val)
+            canvas.create_line(pad_left, gy, w - pad_right, gy, fill="#1E293B", width=1)
+            # Label
+            fmt = self._chart_data.get("format", "percentage")
+            unit = self._chart_data.get("unit", "")
+            if fmt == "percentage":
+                lbl_txt = f"{g_val:.1f}%"
+            elif fmt == "days":
+                lbl_txt = f"{g_val:.1f}d"
+            elif fmt in ("duration", "time"):
+                lbl_txt = f"{g_val:.0f}m"
+            else:
+                lbl_txt = f"{g_val:.1f}"
+            canvas.create_text(
+                pad_left - 6, gy,
+                text=lbl_txt,
+                fill=ui.COLOR_TEXT_DIM,
+                font=(ui.FONT_FAMILY, 8),
+                anchor="e",
+            )
+
+        # Draw Reference Band if available
+        if ref_range and len(pts) >= 1:
+            r_top = val_to_y(ref_range[1])
+            r_bot = val_to_y(ref_range[0])
+            canvas.create_rectangle(
+                pad_left, min(r_top, r_bot),
+                w - pad_right, max(r_top, r_bot),
+                fill="#162032", outline="",
+            )
+            canvas.create_line(pad_left, r_top, w - pad_right, r_top, fill="#1E293B", dash=(2, 2))
+            canvas.create_line(pad_left, r_bot, w - pad_right, r_bot, fill="#1E293B", dash=(2, 2))
+
+        # X-Coordinates for each period point
+        n_pts = len(pts)
+        x_coords = []
+        for i in range(n_pts):
+            if n_pts == 1:
+                x = pad_left + plot_w / 2.0
+            else:
+                x = pad_left + (plot_w * i / (n_pts - 1))
+            x_coords.append(x)
+
+        # Draw Policy Effective Date Marker (1 Oct 2026)
+        pol_date_str = str(self._chart_data.get("policy_effective_date") or POLICY_EFFECTIVE_DATE_STR)
+        for i, p in enumerate(pts):
+            if p.get("period") == pol_date_str or (i > 0 and pts[i - 1].get("period", "") < pol_date_str <= p.get("period", "")):
+                px = x_coords[i]
+                canvas.create_line(px, pad_top - 4, px, pad_top + plot_h, fill="#06B6D4", dash=(4, 3), width=1)
+                canvas.create_text(
+                    px + 4, pad_top - 10,
+                    text="⚡ Policy Effective",
+                    fill="#06B6D4",
+                    font=(ui.FONT_FAMILY, 8, "bold"),
+                    anchor="w",
+                )
+                break
+
+        # Draw Historical Baseline Line (dotted purple)
+        hist_coords = []
+        for i, p in enumerate(pts):
+            hv = p.get("historical")
+            if hv is not None and not pd.isna(hv):
+                hist_coords.extend([x_coords[i], val_to_y(float(hv))])
+        if len(hist_coords) >= 4:
+            canvas.create_line(*hist_coords, fill="#8B5CF6", dash=(2, 3), width=1)
+
+        # Draw Benchmark Line (dashed amber)
+        bench_coords = []
+        for i, p in enumerate(pts):
+            bv = p.get("benchmark")
+            if bv is not None and not pd.isna(bv):
+                bench_coords.extend([x_coords[i], val_to_y(float(bv))])
+        if len(bench_coords) >= 4:
+            canvas.create_line(*bench_coords, fill="#F59E0B", dash=(4, 3), width=2)
+        elif len(bench_coords) == 2:
+            bx, by = bench_coords[0], bench_coords[1]
+            canvas.create_oval(bx - 3, by - 3, bx + 3, by + 3, fill="#F59E0B", outline="")
+
+        # Draw Actual Trend Line (solid cyan)
+        actual_coords = []
+        valid_act_indices = []
+        for i, p in enumerate(pts):
+            av = p.get("actual")
+            if av is not None and not pd.isna(av):
+                actual_coords.extend([x_coords[i], val_to_y(float(av))])
+                valid_act_indices.append(i)
+
+        if len(actual_coords) >= 4:
+            canvas.create_line(*actual_coords, fill="#06B6D4", width=2)
+
+        # Draw Actual Nodes & Highlights
+        for idx in valid_act_indices:
+            p = pts[idx]
+            x = x_coords[idx]
+            y = val_to_y(float(p["actual"]))
+            is_reg = p.get("is_regression", False)
+            is_low = p.get("is_low_volume", False)
+
+            if is_reg:
+                # Regression highlight (red ring around node)
+                canvas.create_oval(x - 8, y - 8, x + 8, y + 8, outline="#F43F5E", width=2)
+                canvas.create_oval(x - 4, y - 4, x + 4, y + 4, fill="#F43F5E", outline="")
+            elif is_low:
+                # Low volume (amber hollow ring)
+                canvas.create_oval(x - 5, y - 5, x + 5, y + 5, outline="#F59E0B", width=2, fill=ui.COLOR_CARD)
+            else:
+                # Regular node
+                canvas.create_oval(x - 4, y - 4, x + 4, y + 4, fill="#06B6D4", outline="#FFFFFF", width=1)
+
+            # Store node coordinates for hover inspection
+            self._node_coords.append({
+                "x": x,
+                "y": y,
+                "point": p,
+            })
+
+            # X-Axis month label
+            canvas.create_text(
+                x, pad_top + plot_h + 12,
+                text=p.get("period_display", p.get("period", "")),
+                fill=ui.COLOR_TEXT if idx == len(pts) - 1 else ui.COLOR_TEXT_DIM,
+                font=(ui.FONT_FAMILY, 9, "bold" if idx == len(pts) - 1 else "normal"),
+                anchor="center",
+            )
+
+    def _on_canvas_motion(self, event):
+        """Show interactive tooltip on closest data node."""
+        if not self._node_coords:
+            return
+        mx, my = event.x, event.y
+        closest = None
+        min_dist = 25.0  # 25px hit radius
+
+        for node in self._node_coords:
+            dist = math.hypot(mx - node["x"], my - node["y"])
+            if dist < min_dist:
+                min_dist = dist
+                closest = node
+
+        canvas = self.chart_canvas
+        canvas.delete("tooltip")
+
+        if closest:
+            p = closest["point"]
+            nx, ny = closest["x"], closest["y"]
+
+            # Draw crosshair circle
+            canvas.create_oval(nx - 7, ny - 7, nx + 7, ny + 7, outline="#FFFFFF", width=1, tags="tooltip")
+
+            # Build tooltip content
+            p_name = p.get("period_display", p.get("period", ""))
+            act_f = p.get("actual_formatted", "—")
+            bn_f = p.get("benchmark_formatted", "—")
+            hs_f = p.get("historical_formatted", "—")
+            obs = p.get("evaluable", 0)
+
+            lines = [
+                f"{p_name}",
+                f"Actual: {act_f}",
+                f"Benchmark: {bn_f}",
+                f"Historical: {hs_f}",
+                f"Volume: {obs:,} obs",
+            ]
+            if p.get("is_regression"):
+                lines.append("⚠️ Regression Flagged")
+            if p.get("is_low_volume"):
+                lines.append("⚡ Low-Volume Period")
+
+            tip_text = "\n".join(lines)
+
+            # Position tooltip box avoiding edge overflow
+            tw = 135
+            th = 20 + len(lines) * 14
+            tx = nx + 12 if nx + tw + 20 < canvas.winfo_width() else nx - tw - 12
+            ty = max(10, min(ny - 20, canvas.winfo_height() - th - 10))
+
+            canvas.create_rectangle(
+                tx, ty, tx + tw, ty + th,
+                fill="#0F172A", outline="#334155", width=1, tags="tooltip"
+            )
+            canvas.create_text(
+                tx + 8, ty + 8,
+                text=tip_text,
+                fill=ui.COLOR_TEXT,
+                font=(ui.FONT_FAMILY, 9),
+                anchor="nw",
+                tags="tooltip",
+            )
+
+    def _on_canvas_leave(self, event):
+        self.chart_canvas.delete("tooltip")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 3. Business Unit Trend Heatmap Widget
+# ─────────────────────────────────────────────────────────────────────────────
+
+class BusinessUnitHeatmapWidget(ctk.CTkFrame):
+    """
+    Compact heatmap showing monthly deviation from the Organisation Benchmark across Business Units.
+    Rows = Business Units, Columns = Months, Cell = Deviation (+/- pp).
+    Clicking a BU row triggers the callback to filter that Business Unit in the dashboard.
+    """
+    def __init__(self, parent, on_bu_click: Optional[Callable[[str], None]] = None, **kwargs):
+        kwargs.setdefault("corner_radius", 10)
+        kwargs.setdefault("fg_color", ui.COLOR_CARD)
+        kwargs.setdefault("border_width", 1)
+        kwargs.setdefault("border_color", ui.COLOR_BORDER)
+        super().__init__(parent, **kwargs)
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=1)
+        self._on_bu_click = on_bu_click
+        self._heatmap_data: Dict[str, Any] = {}
+
+        # Header
+        hdr = ctk.CTkFrame(self, fg_color="transparent")
+        hdr.grid(row=0, column=0, sticky="ew", padx=12, pady=(8, 4))
+        hdr.grid_columnconfigure(0, weight=1)
+
+        t_box = ctk.CTkFrame(hdr, fg_color="transparent")
+        t_box.grid(row=0, column=0, sticky="w")
+        lbl_title = ctk.CTkLabel(
+            t_box,
+            text="Business Unit Trend Heatmap",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12, weight="bold"),
+            text_color=ui.COLOR_TEXT,
+            anchor="w",
+        )
+        lbl_title.pack(anchor="w")
+        lbl_sub = ctk.CTkLabel(
+            t_box,
+            text="Monthly deviation vs organisation benchmark (+/- pp) • Click BU to drilldown",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=9),
+            text_color=ui.COLOR_TEXT_SEC,
+            anchor="w",
+        )
+        lbl_sub.pack(anchor="w")
+
+        # Scrollable table container
+        self.scroll_frame = ctk.CTkScrollableFrame(self, fg_color="transparent", height=180)
+        self.scroll_frame.grid(row=1, column=0, sticky="nsew", padx=8, pady=(0, 6))
+        self.scroll_frame.grid_columnconfigure(0, weight=1)
+
+    def update_data(self, heatmap_data: Dict[str, Any]):
+        """Render heatmap matrix rows and columns."""
+        self._heatmap_data = heatmap_data or {}
+        for child in self.scroll_frame.winfo_children():
+            child.destroy()
+
+        months = self._heatmap_data.get("months", [])
+        rows = self._heatmap_data.get("rows", [])
+        lower_is_better = self._heatmap_data.get("lower_is_better", True)
+
+        if not rows or not months:
+            ctk.CTkLabel(
+                self.scroll_frame,
+                text="No Business Unit heatmap data available",
+                font=ctk.CTkFont(family=ui.FONT_FAMILY, size=10),
+                text_color=ui.COLOR_TEXT_DIM,
+            ).pack(pady=20)
+            return
+
+        # Header Row
+        hdr_frame = ctk.CTkFrame(self.scroll_frame, fg_color="#1E293B", corner_radius=4, height=24)
+        hdr_frame.pack(fill="x", pady=(0, 3))
+        hdr_frame.grid_columnconfigure(0, weight=2)
+        for c_idx in range(len(months)):
+            hdr_frame.grid_columnconfigure(c_idx + 1, weight=1)
+        hdr_frame.grid_columnconfigure(len(months) + 1, weight=1)
+
+        # BU Header
+        ctk.CTkLabel(
+            hdr_frame,
+            text="Business Unit",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=9, weight="bold"),
+            text_color=ui.COLOR_TEXT_DIM,
+            anchor="w",
+        ).grid(row=0, column=0, sticky="w", padx=6, pady=2)
+
+        # Month Headers
+        for m_idx, m_name in enumerate(months):
+            short_m = m_name.split()[0][:3] if " " in m_name else m_name[:3]
+            ctk.CTkLabel(
+                hdr_frame,
+                text=short_m,
+                font=ctk.CTkFont(family=ui.FONT_FAMILY, size=9, weight="bold"),
+                text_color=ui.COLOR_TEXT_DIM,
+                anchor="center",
+            ).grid(row=0, column=m_idx + 1, sticky="ew", padx=2, pady=2)
+
+        # Trend Header
+        ctk.CTkLabel(
+            hdr_frame,
+            text="Trend",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=9, weight="bold"),
+            text_color=ui.COLOR_TEXT_DIM,
+            anchor="center",
+        ).grid(row=0, column=len(months) + 1, sticky="ew", padx=4, pady=2)
+
+        # Data Rows
+        for r_idx, row in enumerate(rows):
+            bu_name = row.get("business_unit", "Unknown")
+            deltas = row.get("monthly_deltas", [])
+            trend_dir = row.get("trend_direction", "STABLE")
+
+            row_frame = ctk.CTkFrame(
+                self.scroll_frame,
+                fg_color="#131B2E" if r_idx % 2 == 0 else "#0F172A",
+                corner_radius=4,
+                cursor="hand2",
+            )
+            row_frame.pack(fill="x", pady=1)
+            row_frame.grid_columnconfigure(0, weight=2)
+            for c_idx in range(len(months)):
+                row_frame.grid_columnconfigure(c_idx + 1, weight=1)
+            row_frame.grid_columnconfigure(len(months) + 1, weight=1)
+
+            # BU Name label (Clickable)
+            lbl_bu = ctk.CTkLabel(
+                row_frame,
+                text=bu_name,
+                font=ctk.CTkFont(family=ui.FONT_FAMILY, size=10, weight="bold"),
+                text_color=ui.COLOR_TEXT,
+                anchor="w",
+                cursor="hand2",
+            )
+            lbl_bu.grid(row=0, column=0, sticky="w", padx=6, pady=3)
+
+            def _make_click_handler(bname=bu_name):
+                return lambda e: self._on_bu_click(bname) if self._on_bu_click else None
+
+            row_frame.bind("<Button-1>", _make_click_handler())
+            lbl_bu.bind("<Button-1>", _make_click_handler())
+
+            # Month deviation cells
+            for m_idx, m_delta in enumerate(deltas):
+                d_val = m_delta.get("delta")
+                d_fmt = m_delta.get("formatted_delta", "—")
+
+                if d_val is None:
+                    cell_bg = "transparent"
+                    cell_fg = ui.COLOR_TEXT_DIM
+                elif lower_is_better:
+                    if d_val > 0.5:
+                        cell_bg = "#3A141D"  # Unfavorable red
+                        cell_fg = "#F43F5E"
+                    elif d_val < -0.5:
+                        cell_bg = "#0D3325"  # Favorable green
+                        cell_fg = "#10B981"
+                    else:
+                        cell_bg = "#1E293B"
+                        cell_fg = ui.COLOR_TEXT_SEC
+                else:
+                    if d_val < -0.5:
+                        cell_bg = "#3A141D"  # Unfavorable red
+                        cell_fg = "#F43F5E"
+                    elif d_val > 0.5:
+                        cell_bg = "#0D3325"  # Favorable green
+                        cell_fg = "#10B981"
+                    else:
+                        cell_bg = "#1E293B"
+                        cell_fg = ui.COLOR_TEXT_SEC
+
+                cell_box = ctk.CTkFrame(row_frame, fg_color=cell_bg, corner_radius=3)
+                cell_box.grid(row=0, column=m_idx + 1, sticky="nsew", padx=1, pady=2)
+                cell_box.bind("<Button-1>", _make_click_handler())
+
+                c_lbl = ctk.CTkLabel(
+                    cell_box,
+                    text=d_fmt,
+                    font=ctk.CTkFont(family=ui.FONT_FAMILY, size=9),
+                    text_color=cell_fg,
+                    anchor="center",
+                )
+                c_lbl.pack(fill="both", expand=True, padx=2, pady=1)
+                c_lbl.bind("<Button-1>", _make_click_handler())
+
+            # Trend Direction badge
+            if trend_dir in ("IMPROVING", "SUSTAINED_IMPROVEMENT"):
+                tr_col = "#10B981"
+                tr_txt = "▲ Impr"
+            elif trend_dir in ("DETERIORATING", "SUSTAINED_DETERIORATION", "REGRESSION"):
+                tr_col = "#F43F5E"
+                tr_txt = "▼ Detr"
+            else:
+                tr_col = ui.COLOR_TEXT_DIM
+                tr_txt = "— Stbl"
+
+            lbl_tr = ctk.CTkLabel(
+                row_frame,
+                text=tr_txt,
+                font=ctk.CTkFont(family=ui.FONT_FAMILY, size=9, weight="bold"),
+                text_color=tr_col,
+                anchor="center",
+            )
+            lbl_tr.grid(row=0, column=len(months) + 1, sticky="ew", padx=4, pady=3)
+            lbl_tr.bind("<Button-1>", _make_click_handler())
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 4. What Changed? Driver Attribution Widget
+# ─────────────────────────────────────────────────────────────────────────────
+
+class WhatChangedWidget(ctk.CTkFrame):
+    """
+    Deterministic driver attribution card explaining the biggest contributors
+    to the latest month-over-month movement (Business Units and exception categories).
+    """
+    def __init__(self, parent, **kwargs):
+        kwargs.setdefault("corner_radius", 10)
+        kwargs.setdefault("fg_color", ui.COLOR_CARD)
+        kwargs.setdefault("border_width", 1)
+        kwargs.setdefault("border_color", ui.COLOR_BORDER)
+        super().__init__(parent, **kwargs)
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(2, weight=1)
+
+        # Header
+        hdr = ctk.CTkFrame(self, fg_color="transparent")
+        hdr.grid(row=0, column=0, sticky="ew", padx=12, pady=(8, 4))
+        hdr.grid_columnconfigure(0, weight=1)
+
+        t_box = ctk.CTkFrame(hdr, fg_color="transparent")
+        t_box.grid(row=0, column=0, sticky="w")
+        lbl_title = ctk.CTkLabel(
+            t_box,
+            text="What Changed?",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12, weight="bold"),
+            text_color=ui.COLOR_TEXT,
+            anchor="w",
+        )
+        lbl_title.pack(anchor="w")
+        self.lbl_headline = ctk.CTkLabel(
+            t_box,
+            text="Deterministic driver attribution for latest movement",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=9),
+            text_color=ui.COLOR_TEXT_SEC,
+            anchor="w",
+        )
+        self.lbl_headline.pack(anchor="w")
+
+        # Movement Summary Strip
+        self.summary_frame = ctk.CTkFrame(self, fg_color="#1E293B", corner_radius=6)
+        self.summary_frame.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 6))
+        self.summary_frame.grid_columnconfigure(0, weight=1)
+
+        self.lbl_movement = ctk.CTkLabel(
+            self.summary_frame,
+            text="Evaluating latest period movement...",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11, weight="bold"),
+            text_color=ui.COLOR_TEXT,
+            anchor="w",
+        )
+        self.lbl_movement.grid(row=0, column=0, sticky="w", padx=8, pady=5)
+
+        # Drivers List Container
+        self.drivers_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self.drivers_frame.grid(row=2, column=0, sticky="nsew", padx=10, pady=(0, 6))
+        self.drivers_frame.grid_columnconfigure(0, weight=1)
+
+    def update_data(self, what_changed: Dict[str, Any]):
+        """Render driver breakdown list from bundle."""
+        for child in self.drivers_frame.winfo_children():
+            child.destroy()
+
+        if not what_changed:
+            return
+
+        headline = what_changed.get("headline", "Deterministic driver attribution for latest movement")
+        self.lbl_headline.configure(text=headline)
+
+        has_mov = what_changed.get("has_movement", False)
+        m_name = what_changed.get("metric_name", "Metric")
+        drivers = what_changed.get("drivers", [])
+
+        if not has_mov or not drivers:
+            self.lbl_movement.configure(
+                text="Baseline period or stable trajectory • No significant drivers flagged",
+                text_color=ui.COLOR_SUCCESS,
+            )
+            return
+
+        self.lbl_movement.configure(
+            text=headline,
+            text_color="#F43F5E" if "+" in headline else "#10B981",
+        )
+
+        # Render top drivers
+        for idx, drv in enumerate(drivers[:5]):
+            d_name = drv.get("driver", "Driver")
+            d_delta = drv.get("formatted_delta", "—")
+            d_val = drv.get("delta", 0.0)
+            d_type = drv.get("type", "BU")
+
+            d_row = ctk.CTkFrame(self.drivers_frame, fg_color="#141D2E", corner_radius=4)
+            d_row.pack(fill="x", pady=2)
+            d_row.grid_columnconfigure(1, weight=1)
+
+            # Icon tag
+            icon_tag = "🏢" if d_type == "BU" else "⚡"
+            ctk.CTkLabel(
+                d_row,
+                text=icon_tag,
+                font=ctk.CTkFont(size=10),
+                width=18,
+            ).grid(row=0, column=0, padx=(6, 2), pady=3, sticky="w")
+
+            # Driver Name
+            ctk.CTkLabel(
+                d_row,
+                text=d_name,
+                font=ctk.CTkFont(family=ui.FONT_FAMILY, size=10, weight="bold"),
+                text_color=ui.COLOR_TEXT,
+                anchor="w",
+            ).grid(row=0, column=1, sticky="w", padx=2, pady=3)
+
+            # Delta Badge
+            is_pos = d_val > 0
+            d_col = "#F43F5E" if is_pos else "#10B981"
+            ctk.CTkLabel(
+                d_row,
+                text=d_delta,
+                font=ctk.CTkFont(family=ui.FONT_FAMILY, size=10, weight="bold"),
+                text_color=d_col,
+                anchor="e",
+            ).grid(row=0, column=2, sticky="e", padx=(4, 8), pady=3)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 5. Emerging Patterns Widget
+# ─────────────────────────────────────────────────────────────────────────────
+
+class EmergingPatternsWidget(ctk.CTkFrame):
+    """
+    Top 3-5 emerging workforce governance patterns detected by workforce_intelligence/patterns.py.
+    Displays Pattern Name, Severity badge, Why detected, Scope, Persistence, and Evidence count.
+    """
+    def __init__(self, parent, **kwargs):
+        kwargs.setdefault("corner_radius", 10)
+        kwargs.setdefault("fg_color", ui.COLOR_CARD)
+        kwargs.setdefault("border_width", 1)
+        kwargs.setdefault("border_color", ui.COLOR_BORDER)
+        super().__init__(parent, **kwargs)
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=1)
+
+        # Header
+        hdr = ctk.CTkFrame(self, fg_color="transparent")
+        hdr.grid(row=0, column=0, sticky="ew", padx=12, pady=(8, 4))
+        hdr.grid_columnconfigure(0, weight=1)
+
+        t_box = ctk.CTkFrame(hdr, fg_color="transparent")
+        t_box.grid(row=0, column=0, sticky="w")
+        lbl_title = ctk.CTkLabel(
+            t_box,
+            text="Emerging Workforce Governance Patterns",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12, weight="bold"),
+            text_color=ui.COLOR_TEXT,
+            anchor="w",
+        )
+        lbl_title.pack(anchor="w")
+        lbl_sub = ctk.CTkLabel(
+            t_box,
+            text="Persistent anomalies and operational concentrations requiring HR investigation",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=9),
+            text_color=ui.COLOR_TEXT_SEC,
+            anchor="w",
+        )
+        lbl_sub.pack(anchor="w")
+
+        # Patterns Container (Horizontal uniform grid or stacked cards)
+        self.cards_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self.cards_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 8))
+
+    def update_data(self, patterns_list: List[Dict[str, Any]]):
+        """Render 3-5 pattern cards."""
+        for child in self.cards_frame.winfo_children():
+            child.destroy()
+
+        if not patterns_list:
+            clean_box = ctk.CTkFrame(self.cards_frame, fg_color="#0D281E", corner_radius=6)
+            clean_box.pack(fill="x", padx=4, pady=8)
+            ctk.CTkLabel(
+                clean_box,
+                text="✓ No critical governance anomalies or cluster patterns detected in the active scope.",
+                font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11, weight="bold"),
+                text_color="#10B981",
+                anchor="w",
+            ).pack(padx=12, pady=10)
+            return
+
+        # Display up to 4 patterns in a responsive grid (2 columns x 2 rows or 4 columns)
+        num_patterns = min(4, len(patterns_list))
+        for c in range(num_patterns):
+            self.cards_frame.grid_columnconfigure(c, weight=1, uniform="pat_col")
+
+        for idx, pat in enumerate(patterns_list[:num_patterns]):
+            name = pat.get("pattern_name", "Governance Pattern")
+            desc = pat.get("why_detected", pat.get("description", ""))
+            scope = pat.get("scope_desc", "Organisation-wide")
+            persist = pat.get("persistence", "Emerging")
+            vol = pat.get("volume", 0)
+            sev = str(pat.get("severity", "MODERATE")).upper()
+
+            if sev == "CRITICAL" or sev == "HIGH":
+                sev_col = "#F43F5E"
+                sev_bg = "#3A141D"
+            elif sev == "MEDIUM" or sev == "MODERATE":
+                sev_col = "#F59E0B"
+                sev_bg = "#38230D"
+            else:
+                sev_col = "#06B6D4"
+                sev_bg = "#0E2A38"
+
+            p_card = ctk.CTkFrame(
+                self.cards_frame,
+                fg_color="#131B2E",
+                corner_radius=6,
+                border_width=1,
+                border_color="#1E293B",
+            )
+            p_card.grid(row=0, column=idx, sticky="nsew", padx=3, pady=2)
+            p_card.grid_columnconfigure(0, weight=1)
+
+            # Card Header: Name + Badge
+            h_row = ctk.CTkFrame(p_card, fg_color="transparent")
+            h_row.grid(row=0, column=0, sticky="ew", padx=8, pady=(6, 2))
+            h_row.grid_columnconfigure(0, weight=1)
+
+            ctk.CTkLabel(
+                h_row,
+                text=name,
+                font=ctk.CTkFont(family=ui.FONT_FAMILY, size=10, weight="bold"),
+                text_color=ui.COLOR_TEXT,
+                anchor="w",
+            ).grid(row=0, column=0, sticky="w")
+
+            badge = ctk.CTkFrame(h_row, fg_color=sev_bg, corner_radius=3)
+            badge.grid(row=0, column=1, sticky="e", padx=(4, 0))
+            ctk.CTkLabel(
+                badge,
+                text=sev,
+                font=ctk.CTkFont(family=ui.FONT_FAMILY, size=8, weight="bold"),
+                text_color=sev_col,
+            ).pack(padx=4, pady=1)
+
+            # Explanation / Why detected
+            ctk.CTkLabel(
+                p_card,
+                text=desc,
+                font=ctk.CTkFont(family=ui.FONT_FAMILY, size=9),
+                text_color=ui.COLOR_TEXT_SEC,
+                anchor="w",
+                justify="left",
+                wraplength=170,
+            ).grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 4))
+
+            # Scope & Persistence metadata strip
+            meta_box = ctk.CTkFrame(p_card, fg_color="#0F172A", corner_radius=4)
+            meta_box.grid(row=2, column=0, sticky="ew", padx=6, pady=(0, 6))
+            meta_box.grid_columnconfigure(0, weight=1)
+
+            vol_str = f"{vol} occurrences" if vol != 1 else "1 occurrence"
+            ctk.CTkLabel(
+                meta_box,
+                text=f"Scope: {scope}\n{persist} • {vol_str}",
+                font=ctk.CTkFont(family=ui.FONT_FAMILY, size=8),
+                text_color=ui.COLOR_TEXT_DIM,
+                anchor="w",
+                justify="left",
+            ).pack(padx=6, pady=4, fill="x")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 6. Multi-Dimension Business Unit Benchmark Comparison Table Widget
+# ─────────────────────────────────────────────────────────────────────────────
+
+TREND_BENCHMARK_COLUMNS: List[Tuple[str, str, int]] = [
+    ("Business Unit", "w", 180),
+    ("Current", "w", 85),
+    ("3M Average", "w", 85),
+    ("Organisation", "w", 85),
+    ("Historical", "w", 85),
+    ("Gap vs Org", "w", 85),
+    ("Trajectory", "w", 95),
+    ("Confidence / Volume", "w", 130),
+]
+
+class TrendBenchmarkTableWidget(ctk.CTkFrame):
+    """
+    Multi-Dimension Benchmark Comparison Table:
+    Columns: Business Unit | Current | 3M Average | Organisation | Historical | Gap vs Org | Trajectory | Confidence / Volume
+    Scrollable row container with sticky/pinned total summary row.
+    """
+    def __init__(self, parent, on_bu_click: Optional[Callable[[str], None]] = None, **kwargs):
+        kwargs.setdefault("corner_radius", 10)
+        kwargs.setdefault("fg_color", ui.COLOR_CARD)
+        kwargs.setdefault("border_width", 1)
+        kwargs.setdefault("border_color", ui.COLOR_BORDER)
+        super().__init__(parent, **kwargs)
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(2, weight=1)
+        self._on_bu_click = on_bu_click
+        self._table_data: Dict[str, Any] = {}
+
+        # Header Block
+        hdr = ctk.CTkFrame(self, fg_color="transparent")
+        hdr.grid(row=0, column=0, sticky="ew", padx=12, pady=(8, 4))
+        hdr.grid_columnconfigure(0, weight=1)
+
+        t_box = ctk.CTkFrame(hdr, fg_color="transparent")
+        t_box.grid(row=0, column=0, sticky="w")
+        lbl_title = ctk.CTkLabel(
+            t_box,
+            text="Business Unit Benchmark Comparison",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12, weight="bold"),
+            text_color=ui.COLOR_TEXT,
+            anchor="w",
+        )
+        lbl_title.pack(anchor="w")
+        lbl_sub = ctk.CTkLabel(
+            t_box,
+            text="Current performance vs 3M Average, Organisation Benchmark & Historical Baseline",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=9),
+            text_color=ui.COLOR_TEXT_SEC,
+            anchor="w",
+        )
+        lbl_sub.pack(anchor="w")
+
+        # Table Header Row (Row 1)
+        self.hdr_frame = ctk.CTkFrame(self, fg_color="#1E293B", corner_radius=4, height=26)
+        self.hdr_frame.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 2))
+        for c_idx, (col_name, anch, col_w) in enumerate(TREND_BENCHMARK_COLUMNS):
+            self.hdr_frame.grid_columnconfigure(c_idx, weight=2 if c_idx == 0 else 1)
+            ctk.CTkLabel(
+                self.hdr_frame,
+                text=col_name,
+                font=ctk.CTkFont(family=ui.FONT_FAMILY, size=9, weight="bold"),
+                text_color=ui.COLOR_TEXT_DIM,
+                anchor=anch,
+            ).grid(row=0, column=c_idx, sticky="nsew", padx=6, pady=3)
+
+        # Scrollable Rows (Row 2)
+        self.rows_frame = ctk.CTkScrollableFrame(self, fg_color="transparent", height=160)
+        self.rows_frame.grid(row=2, column=0, sticky="nsew", padx=10, pady=(0, 2))
+        self.rows_frame.grid_columnconfigure(0, weight=1)
+
+        # Pinned Total Row (Row 3)
+        self.total_frame = ctk.CTkFrame(self, fg_color="#1E293B", corner_radius=4, height=26)
+        self.total_frame.grid(row=3, column=0, sticky="ew", padx=10, pady=(2, 8))
+
+    def update_data(self, benchmark_table: Dict[str, Any]):
+        """Render rows and total from bundle."""
+        self._table_data = benchmark_table or {}
+        for child in self.rows_frame.winfo_children():
+            child.destroy()
+        for child in self.total_frame.winfo_children():
+            child.destroy()
+
+        rows = self._table_data.get("rows", [])
+        total = self._table_data.get("total", {})
+
+        if not rows:
+            ctk.CTkLabel(
+                self.rows_frame,
+                text="No Business Unit comparison data available",
+                font=ctk.CTkFont(family=ui.FONT_FAMILY, size=10),
+                text_color=ui.COLOR_TEXT_DIM,
+            ).pack(pady=15)
+            return
+
+        # Render rows
+        for r_idx, r in enumerate(rows):
+            bu_name = r.get("business_unit", "Unknown")
+            curr = r.get("current", "—")
+            avg3m = r.get("three_month_avg", "—")
+            org_b = r.get("org_benchmark", "—")
+            hist = r.get("historical", "—")
+            gap = r.get("gap", "—")
+            gap_val = r.get("gap_val")
+            trend = r.get("trend", "Stable")
+            vol = r.get("volume", "—")
+
+            row_frame = ctk.CTkFrame(
+                self.rows_frame,
+                fg_color="#131B2E" if r_idx % 2 == 0 else "#0F172A",
+                corner_radius=4,
+                cursor="hand2",
+            )
+            row_frame.pack(fill="x", pady=1)
+
+            for c_idx in range(len(TREND_BENCHMARK_COLUMNS)):
+                row_frame.grid_columnconfigure(c_idx, weight=2 if c_idx == 0 else 1)
+
+            def _make_click(bname=bu_name):
+                return lambda e: self._on_bu_click(bname) if self._on_bu_click else None
+
+            row_frame.bind("<Button-1>", _make_click())
+
+            gap_col = ui.COLOR_TEXT
+            if gap_val is not None:
+                if gap_val > 0:
+                    gap_col = "#F43F5E"
+                elif gap_val < 0:
+                    gap_col = "#10B981"
+
+            trend_col = "#10B981" if "impr" in trend.lower() else ("#F43F5E" if "detr" in trend.lower() or "regress" in trend.lower() else ui.COLOR_TEXT_SEC)
+
+            vals = [
+                (bu_name, "w", ui.COLOR_TEXT, True),
+                (curr, "w", ui.COLOR_TEXT, False),
+                (avg3m, "w", ui.COLOR_TEXT_SEC, False),
+                (org_b, "w", "#F59E0B", False),
+                (hist, "w", "#8B5CF6", False),
+                (gap, "w", gap_col, False),
+                (trend, "w", trend_col, False),
+                (vol, "w", ui.COLOR_TEXT_DIM, False),
+            ]
+
+            for c_idx, (txt, anch, col, is_bld) in enumerate(vals):
+                lbl = ctk.CTkLabel(
+                    row_frame,
+                    text=txt,
+                    font=ctk.CTkFont(family=ui.FONT_FAMILY, size=9, weight="bold" if is_bld else "normal"),
+                    text_color=col,
+                    anchor=anch,
+                )
+                lbl.grid(row=0, column=c_idx, sticky="nsew", padx=6, pady=3)
+                lbl.bind("<Button-1>", _make_click())
+
+        # Render Total Pinned Row
+        for c_idx in range(len(TREND_BENCHMARK_COLUMNS)):
+            self.total_frame.grid_columnconfigure(c_idx, weight=2 if c_idx == 0 else 1)
+
+        tot_bu = total.get("business_unit", "Total (Organization-Wide)")
+        tot_curr = total.get("current", "—")
+        tot_avg3m = total.get("three_month_avg", "—")
+        tot_org_b = total.get("org_benchmark", "—")
+        tot_hist = total.get("historical", "—")
+        tot_gap = total.get("gap", "—")
+        tot_trend = total.get("trend", "Stable")
+        tot_vol = total.get("volume", "—")
+
+        tot_vals = [
+            (tot_bu, "w", ui.COLOR_TEXT, True),
+            (tot_curr, "w", ui.COLOR_TEXT, True),
+            (tot_avg3m, "w", ui.COLOR_TEXT_SEC, False),
+            (tot_org_b, "w", "#F59E0B", False),
+            (tot_hist, "w", "#8B5CF6", False),
+            (tot_gap, "w", ui.COLOR_TEXT, False),
+            (tot_trend, "w", ui.COLOR_TEXT, False),
+            (tot_vol, "w", ui.COLOR_TEXT_DIM, False),
+        ]
+
+        for c_idx, (txt, anch, col, is_bld) in enumerate(tot_vals):
+            ctk.CTkLabel(
+                self.total_frame,
+                text=txt,
+                font=ctk.CTkFont(family=ui.FONT_FAMILY, size=9, weight="bold" if is_bld else "normal"),
+                text_color=col,
+                anchor=anch,
+            ).grid(row=0, column=c_idx, sticky="nsew", padx=6, pady=3)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # WorkforceDashboardView Component
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1829,6 +3017,20 @@ class WorkforceDashboardView(ctk.CTkFrame):
         self._last_metrics_bundle: Optional[Dict[str, Any]] = None
         self._metrics_queue: queue.Queue = queue.Queue()
         self.kpi_cards: Dict[str, ExecutiveKPICard] = {}
+
+        # Trend Intelligence state & thread-safety tracking
+        self._trend_queue: queue.Queue = queue.Queue()
+        self._latest_trend_job_id: int = 0
+        self._is_loading_trend: bool = False
+        self._last_trend_bundle: Optional[Dict[str, Any]] = None
+        self._selected_trend_metric: str = "attendance_exception_rate"
+        self._selected_benchmark_type: str = "ORGANIZATION"
+        self._trend_metric_name_to_id: Dict[str, str] = {}
+        self._trend_metric_id_to_name: Dict[str, str] = {}
+        for m_id, m_def in TREND_METRICS.items():
+            lbl = getattr(m_def, "label", m_id)
+            self._trend_metric_name_to_id[lbl] = m_id
+            self._trend_metric_id_to_name[m_id] = lbl
 
         # Global Filter state & debounce tracking
         self._filter_state: Dict[str, Any] = {
@@ -2548,13 +3750,20 @@ class WorkforceDashboardView(ctk.CTkFrame):
         self._load_overview_metrics()
 
     def _schedule_metrics_load(self):
-        """Debounce metric loading by 150ms to prevent rapid consecutive recalculations."""
+        """Debounce metric loading by 50ms to prevent rapid consecutive recalculations."""
         if hasattr(self, "_filter_debounce_timer") and self._filter_debounce_timer is not None:
             try:
                 self.after_cancel(self._filter_debounce_timer)
             except Exception:
                 pass
-        self._filter_debounce_timer = self.after(50, self._load_overview_metrics)
+
+        def _trigger_active_load():
+            if self.active_view == "trends":
+                self._load_trend_metrics()
+            else:
+                self._load_overview_metrics()
+
+        self._filter_debounce_timer = self.after(50, _trigger_active_load)
 
     def _update_active_scope_label(self):
         """Update the active scope label beneath the tab navigation."""
@@ -2629,7 +3838,7 @@ class WorkforceDashboardView(ctk.CTkFrame):
     # ─────────────────────────────────────────────────────────────────────────
 
     def _build_content_containers(self):
-        """Create and register the Executive Overview view container."""
+        """Create and register the Executive Overview and Trends view containers."""
         self.content_area = ctk.CTkFrame(self, fg_color="transparent", corner_radius=0)
         self.content_area.grid(row=3, column=0, sticky="nsew")
         self.content_area.grid_rowconfigure(0, weight=1)
@@ -2640,6 +3849,8 @@ class WorkforceDashboardView(ctk.CTkFrame):
             container.grid_columnconfigure(0, weight=1)
             if key == "overview":
                 self._build_overview_content(container)
+            elif key == "trends":
+                self._build_trends_content(container)
             self.view_containers[key] = container
 
 
@@ -3291,6 +4502,373 @@ class WorkforceDashboardView(ctk.CTkFrame):
         if hasattr(self, "bu_table_widget"):
             self.bu_table_widget.update_data(bu_data, bu_total)
 
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # E2. Trends Tab: Controls, Trend Pulse, Chart, Heatmap, What Changed & Benchmarks
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _build_trends_content(self, parent: ctk.CTkScrollableFrame):
+        """Construct the live Trends & Decision Intelligence view structure."""
+        # 1. Top Controls Bar: Metric Dropdown, Benchmark Dropdown, Active Scope
+        self.trend_controls_card = ui.create_card(parent)
+        self.trend_controls_card.grid(row=0, column=0, sticky="ew", pady=(2, 6))
+
+        ctrl_inner = ctk.CTkFrame(self.trend_controls_card, fg_color="transparent")
+        ctrl_inner.grid(row=0, column=0, sticky="ew", padx=10, pady=5)
+        ctrl_inner.grid_columnconfigure(1, weight=2)
+        ctrl_inner.grid_columnconfigure(3, weight=1)
+        ctrl_inner.grid_columnconfigure(4, weight=2)
+
+        # Metric dropdown
+        ctk.CTkLabel(
+            ctrl_inner,
+            text="Metric:",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11, weight="bold"),
+            text_color=ui.COLOR_TEXT_DIM,
+            anchor="w",
+        ).grid(row=0, column=0, padx=(2, 6), sticky="w")
+
+        metric_names = list(self._trend_metric_name_to_id.keys())
+        default_metric_name = self._trend_metric_id_to_name.get(self._selected_trend_metric, metric_names[0] if metric_names else "Attendance Exception Rate (%)")
+
+        self.combo_trend_metric = ui.SearchableDropdown(
+            ctrl_inner,
+            values=metric_names,
+            height=28,
+            placeholder=default_metric_name,
+            command=self._on_trend_metric_selected,
+        )
+        self.combo_trend_metric.set(default_metric_name)
+        self.combo_trend_metric.grid(row=0, column=1, sticky="ew", padx=(0, 10))
+
+        # Benchmark dropdown
+        ctk.CTkLabel(
+            ctrl_inner,
+            text="Benchmark:",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11, weight="bold"),
+            text_color=ui.COLOR_TEXT_DIM,
+            anchor="w",
+        ).grid(row=0, column=2, padx=(4, 6), sticky="w")
+
+        bench_options = ["Organisation", "Historical Baseline", "Peer Business Unit"]
+        self.combo_trend_benchmark = ui.SearchableDropdown(
+            ctrl_inner,
+            values=bench_options,
+            height=28,
+            placeholder="Organisation",
+            command=self._on_trend_benchmark_selected,
+        )
+        self.combo_trend_benchmark.set("Organisation")
+        self.combo_trend_benchmark.grid(row=0, column=3, sticky="ew", padx=(0, 10))
+
+        # Scope indicator
+        self.lbl_trend_active_scope = ctk.CTkLabel(
+            ctrl_inner,
+            text="Trends • Complete Active Population (All Business Units • All Dates)",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11),
+            text_color=ui.COLOR_TEXT_SEC,
+            anchor="e",
+        )
+        self.lbl_trend_active_scope.grid(row=0, column=4, sticky="e", padx=(4, 2))
+
+        # 2. State Containers (Empty, Loading, Error, Live Trends Content)
+        # 2A. Empty State Container
+        self.trends_empty_frame = ui.create_card(parent)
+        self.trends_empty_frame.grid_columnconfigure(0, weight=1)
+        t_empty_inner = ctk.CTkFrame(self.trends_empty_frame, fg_color="transparent")
+        t_empty_inner.grid(row=0, column=0, sticky="ew", padx=16, pady=16)
+        t_empty_inner.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            t_empty_inner, text="📈", font=ctk.CTkFont(size=22), text_color=ui.COLOR_WARNING
+        ).pack(anchor="w", pady=(0, 4))
+        ctk.CTkLabel(
+            t_empty_inner,
+            text="No workforce dataset loaded. Ingest data to view time-series trends and benchmarks.",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=13, weight="bold"),
+            text_color=ui.COLOR_TEXT,
+            anchor="w",
+        ).pack(anchor="w", pady=(0, 2))
+        ctk.CTkLabel(
+            t_empty_inner,
+            text="Trends intelligence requires historical attendance logs, leave records, and snapshot data.",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11),
+            text_color=ui.COLOR_TEXT_SEC,
+            anchor="w",
+        ).pack(anchor="w", pady=(0, 10))
+
+        t_btns = ctk.CTkFrame(t_empty_inner, fg_color="transparent")
+        t_btns.pack(anchor="w")
+        ui.create_primary_button(
+            t_btns,
+            "⚡ Sync Time & Leave Master",
+            command=self._on_sync_from_time_leave,
+            width=200,
+            height=28,
+            icon="refresh"
+        ).pack(side="left", padx=(0, 10))
+        ui.create_secondary_button(
+            t_btns,
+            "📂 Upload File Manually",
+            command=self._on_go_to_upload,
+            width=160,
+            height=28,
+            icon="upload"
+        ).pack(side="left")
+
+        # 2B. Loading State Container
+        self.trends_loading_frame = ui.ModernLoadingOverlay(
+            parent,
+            title="Analyzing Workforce Trajectories & Benchmarks",
+            subtitle="Evaluating MoM movement, peer baselines, driver attribution & emerging patterns",
+            spinner_size=56,
+        )
+
+        # 2C. Error State Container
+        self.trends_error_frame = ui.create_card(parent)
+        self.trends_error_frame.grid_columnconfigure(0, weight=1)
+        t_err_inner = ctk.CTkFrame(self.trends_error_frame, fg_color="transparent")
+        t_err_inner.grid(row=0, column=0, sticky="ew", padx=16, pady=16)
+        t_err_inner.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            t_err_inner,
+            text="❌ Failed to calculate Workforce Trends Intelligence",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=12, weight="bold"),
+            text_color=ui.COLOR_ERROR,
+            anchor="w",
+        ).pack(anchor="w", pady=(0, 2))
+        self.lbl_trends_error_msg = ctk.CTkLabel(
+            t_err_inner,
+            text="",
+            font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11),
+            text_color=ui.COLOR_TEXT_SEC,
+            anchor="w",
+        )
+        self.lbl_trends_error_msg.pack(anchor="w")
+
+        # 2D. Live Trends Content Frame
+        self.trends_content_frame = ctk.CTkFrame(parent, fg_color="transparent")
+        self.trends_content_frame.grid_columnconfigure(0, weight=1)
+
+        # Section 1: Trend Pulse (5 compact KPI cards)
+        self.trend_pulse_widget = TrendPulseWidget(self.trends_content_frame)
+        self.trend_pulse_widget.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+
+        # Section 2: Main Trend Time-Series Chart
+        self.main_trend_chart = MainTrendChartWidget(self.trends_content_frame)
+        self.main_trend_chart.grid(row=1, column=0, sticky="ew", pady=(0, 6))
+
+        # Section 3: Middle Row — BU Trend Heatmap (Left) + What Changed? (Right)
+        mid_frame = ctk.CTkFrame(self.trends_content_frame, fg_color="transparent")
+        mid_frame.grid(row=2, column=0, sticky="ew", pady=(0, 6))
+        mid_frame.grid_columnconfigure(0, weight=3)
+        mid_frame.grid_columnconfigure(1, weight=2)
+
+        self.bu_heatmap_widget = BusinessUnitHeatmapWidget(
+            mid_frame,
+            on_bu_click=self._on_heatmap_bu_click,
+        )
+        self.bu_heatmap_widget.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
+
+        self.what_changed_widget = WhatChangedWidget(mid_frame)
+        self.what_changed_widget.grid(row=0, column=1, sticky="nsew", padx=(4, 0))
+
+        # Section 4: Emerging Patterns
+        self.emerging_patterns_widget = EmergingPatternsWidget(self.trends_content_frame)
+        self.emerging_patterns_widget.grid(row=3, column=0, sticky="ew", pady=(0, 6))
+
+        # Section 5: Multi-Dimension BU Benchmark Comparison Table
+        self.trend_benchmark_table = TrendBenchmarkTableWidget(
+            self.trends_content_frame,
+            on_bu_click=self._on_heatmap_bu_click,
+        )
+        self.trend_benchmark_table.grid(row=4, column=0, sticky="ew", pady=(0, 10))
+
+    def _set_trends_state(self, state: str, error_msg: str = ""):
+        """Manage empty, loading, error, and ready state containers for Trends tab."""
+        self.trends_empty_frame.grid_remove()
+        self.trends_loading_frame.grid_remove()
+        self.trends_error_frame.grid_remove()
+        self.trends_content_frame.grid_remove()
+
+        if state == "empty":
+            self.trends_empty_frame.grid(row=1, column=0, sticky="ew", pady=10)
+        elif state == "loading":
+            self.trends_loading_frame.grid(row=1, column=0, sticky="ew", pady=20)
+            self.trends_loading_frame.start()
+        elif state == "error":
+            self.lbl_trends_error_msg.configure(text=error_msg)
+            self.trends_error_frame.grid(row=1, column=0, sticky="ew", pady=10)
+        elif state == "ready":
+            self.trends_content_frame.grid(row=1, column=0, sticky="nsew")
+
+    def _on_trend_metric_selected(self, val: str):
+        val = val.strip()
+        metric_id = self._trend_metric_name_to_id.get(val, "attendance_exception_rate")
+        if metric_id != self._selected_trend_metric:
+            self._selected_trend_metric = metric_id
+            self._load_trend_metrics()
+
+    def _on_trend_benchmark_selected(self, val: str):
+        val = val.strip()
+        if "Hist" in val:
+            b_type = "HISTORICAL"
+        elif "Peer" in val:
+            b_type = "PEER"
+        else:
+            b_type = "ORGANIZATION"
+        if b_type != self._selected_benchmark_type:
+            self._selected_benchmark_type = b_type
+            self._load_trend_metrics()
+
+    def _on_heatmap_bu_click(self, bu_name: str):
+        """Handle click on BU in heatmap or benchmark table to filter dashboard."""
+        if not bu_name or bu_name in ("Unknown", "Total (Organization-Wide)"):
+            return
+        if hasattr(self, "combo_bu"):
+            self.combo_bu.set(bu_name)
+            self._on_bu_selected(bu_name)
+
+    def _load_trend_metrics(self):
+        """Dispatch asynchronous background trend intelligence calculation."""
+        snap = snapshot_service.get_active_snapshot()
+        if not snap or not snap.is_valid():
+            self._set_trends_state("empty")
+            return
+
+        self._latest_trend_job_id += 1
+        job_id = self._latest_trend_job_id
+        self._is_loading_trend = True
+
+        if self._last_trend_bundle is not None:
+            if hasattr(self, "filter_loading_bar"):
+                self.filter_loading_bar.grid()
+                self.filter_loading_bar.start()
+        else:
+            self._set_trends_state("loading")
+
+        dataset_id = getattr(snap, "dataset_id", snap.key)
+        bu = self._filter_state.get("business_unit")
+        dept = self._filter_state.get("department")
+        mgr = self._filter_state.get("manager")
+        emp = self._filter_state.get("employee")
+        dr = self._filter_state.get("date_range")
+        metric_id = self._selected_trend_metric
+        bench_type = self._selected_benchmark_type
+
+        def _worker(jid: int, d_id: str, q: queue.Queue, m_id=metric_id, b_type=bench_type, b=bu, d=dept, m=mgr, e=emp, r=dr):
+            try:
+                bundle = workforce_bridge.get_trend_intelligence(
+                    metric_id=m_id,
+                    benchmark_type=b_type,
+                    business_unit=b,
+                    department=d,
+                    manager=m,
+                    employee=e,
+                    date_range=r,
+                )
+                q.put(("success", bundle, jid, d_id))
+            except Exception as err:
+                q.put(("error", str(err), jid, d_id))
+
+        threading.Thread(
+            target=_worker,
+            args=(job_id, dataset_id, self._trend_queue),
+            daemon=True,
+        ).start()
+
+        self._poll_trend_queue(job_id)
+
+    def _poll_trend_queue(self, job_id: int):
+        """Poll the trend calculation queue on the main UI thread via after()."""
+        if job_id != self._latest_trend_job_id:
+            return  # Stale job; ignore
+
+        try:
+            while True:
+                msg_type, payload, msg_job_id, msg_dataset_id = self._trend_queue.get_nowait()
+                if msg_job_id == self._latest_trend_job_id:
+                    if msg_type == "success":
+                        self._on_trend_calc_success(payload, msg_job_id, msg_dataset_id)
+                    else:
+                        self._on_trend_calc_error(payload, msg_job_id)
+                    return
+        except queue.Empty:
+            if self._is_loading_trend and job_id == self._latest_trend_job_id:
+                try:
+                    self.after(20, lambda: self._poll_trend_queue(job_id))
+                except Exception:
+                    pass
+
+    def _on_trend_calc_success(self, bundle: Dict[str, Any], job_id: int, dataset_id: str):
+        """Handle successful trend calculation on main UI thread."""
+        if job_id != self._latest_trend_job_id:
+            return
+
+        self._is_loading_trend = False
+        if hasattr(self, "filter_loading_bar"):
+            self.filter_loading_bar.stop()
+            self.filter_loading_bar.grid_remove()
+
+        self._last_trend_bundle = bundle
+        self._render_trend_intelligence(bundle)
+        self._set_trends_state("ready")
+
+    def _on_trend_calc_error(self, error_msg: str, job_id: int):
+        """Handle trend calculation failure on main UI thread."""
+        if job_id != self._latest_trend_job_id:
+            return
+
+        self._is_loading_trend = False
+        if hasattr(self, "filter_loading_bar"):
+            self.filter_loading_bar.stop()
+            self.filter_loading_bar.grid_remove()
+
+        self._set_trends_state("error", error_msg)
+
+    def _render_trend_intelligence(self, bundle: Dict[str, Any]):
+        """Populate all trend widgets with computed data from bundle."""
+        if not bundle:
+            return
+
+        # Update scope label in trends tab
+        scope_desc = bundle.get("scope_description", "Complete Active Population")
+        if hasattr(self, "lbl_trend_active_scope"):
+            self.lbl_trend_active_scope.configure(text=f"Trends • {scope_desc}")
+
+        # 1. Trend Pulse
+        pulse_data = bundle.get("trend_pulse", [])
+        if hasattr(self, "trend_pulse_widget"):
+            self.trend_pulse_widget.update_data(pulse_data)
+
+        # 2. Main Trend Chart
+        chart_data = bundle.get("chart", {})
+        bench_lbl = bundle.get("benchmark_label", "Organisation")
+        if hasattr(self, "main_trend_chart"):
+            self.main_trend_chart.update_data(chart_data, benchmark_label=bench_lbl)
+
+        # 3. BU Trend Heatmap
+        heatmap_data = bundle.get("heatmap", {})
+        if hasattr(self, "bu_heatmap_widget"):
+            self.bu_heatmap_widget.update_data(heatmap_data)
+
+        # 4. What Changed?
+        what_changed_data = bundle.get("what_changed", {})
+        if hasattr(self, "what_changed_widget"):
+            self.what_changed_widget.update_data(what_changed_data)
+
+        # 5. Emerging Patterns
+        patterns_data = bundle.get("patterns", [])
+        if hasattr(self, "emerging_patterns_widget"):
+            self.emerging_patterns_widget.update_data(patterns_data)
+
+        # 6. Benchmark Table
+        table_data = bundle.get("benchmark_table", {})
+        if hasattr(self, "trend_benchmark_table"):
+            self.trend_benchmark_table.update_data(table_data)
+
+
     def _show_dq_details_dialog(self):
         """Open the accessible Data Quality diagnostics and reconciliation dialog."""
         if hasattr(self, "_dq_dialog") and self._dq_dialog is not None and self._dq_dialog.winfo_exists():
@@ -3343,20 +4921,30 @@ class WorkforceDashboardView(ctk.CTkFrame):
             else:
                 container.grid_remove()
 
-        # If switching to overview or attendance and metrics haven't loaded yet for active snapshot, trigger load
-        if view_key in ("overview", "attendance"):
-            snap = snapshot_service.get_active_snapshot()
+        # If switching to overview or trends and metrics haven't loaded yet for active snapshot, trigger load
+        snap = snapshot_service.get_active_snapshot()
+        if view_key == "overview":
             if snap and snap.is_valid():
                 dataset_id = getattr(snap, "dataset_id", snap.key)
                 if dataset_id != self._current_dataset_id or self._last_metrics_bundle is None:
                     if not self._is_loading_metrics:
                         self._load_overview_metrics()
                 elif self._last_metrics_bundle is not None:
-                    if view_key == "attendance":
-                                self._set_attendance_state("ready")
-                    elif view_key == "overview":
-                        self._render_overview_kpis(self._last_metrics_bundle)
-                        self._set_overview_state("ready")
+                    self._render_overview_kpis(self._last_metrics_bundle)
+                    self._set_overview_state("ready")
+            else:
+                self._set_overview_state("empty")
+        elif view_key == "trends":
+            if snap and snap.is_valid():
+                dataset_id = getattr(snap, "dataset_id", snap.key)
+                if dataset_id != self._current_dataset_id or self._last_trend_bundle is None:
+                    if not self._is_loading_trend:
+                        self._load_trend_metrics()
+                elif self._last_trend_bundle is not None:
+                    self._render_trend_intelligence(self._last_trend_bundle)
+                    self._set_trends_state("ready")
+            else:
+                self._set_trends_state("empty")
 
     # ─────────────────────────────────────────────────────────────────────────
     # H. Snapshot Metadata Synchronization & Metric Refresh
@@ -3397,6 +4985,7 @@ class WorkforceDashboardView(ctk.CTkFrame):
             if dataset_id != self._current_dataset_id:
                 self._current_dataset_id = dataset_id
                 self._last_metrics_bundle = None
+                self._last_trend_bundle = None
                 self._filter_state = {
                     "date_range": None,
                     "business_unit": None,

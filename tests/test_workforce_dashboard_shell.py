@@ -34,21 +34,6 @@ from workforce_intelligence.dashboard_shell import (
 )
 
 
-@pytest.fixture(scope="module")
-def desktop_app():
-    """Headless Desktop App instance reused across dashboard shell tests."""
-    snapshot_service.clear()
-    app = App()
-    app.withdraw()  # Headless mode for automated tests
-    app.update()
-
-    yield app
-
-    try:
-        app.destroy()
-    except Exception:
-        pass
-    snapshot_service.clear()
 
 
 # =========================================================================
@@ -110,17 +95,18 @@ def test_workforce_intelligence_accessible_via_navigation(desktop_app):
 
 
 # =========================================================================
-# 4. Executive Overview view can be selected
+# 4. Executive Overview and Trends views can be selected
 # =========================================================================
 def test_all_six_analytical_views_can_be_selected(desktop_app):
-    """Verify the Executive Overview view is activated."""
+    """Verify the Executive Overview and Trends views can be activated."""
     wf_view: WorkforceDashboardView = desktop_app.workforce_dashboard_view
     expected_views = [
         "overview",
+        "trends",
     ]
 
     assert VIEW_KEYS == expected_views
-    assert len(wf_view.view_containers) == 1
+    assert len(wf_view.view_containers) == 2
 
     for key in expected_views:
         wf_view.select_view(key)
