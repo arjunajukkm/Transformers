@@ -582,6 +582,17 @@ class PatternContext:
         else:
             self.df = evaluated_df.copy()
 
+        if "Employee Number" not in self.df.columns:
+            for c in ["_emp_num", "Employee No", "Emp ID", "Emp No", "Employee Code"]:
+                if c in self.df.columns:
+                    self.df["Employee Number"] = self.df[c]
+                    break
+        if "Employee Name" not in self.df.columns:
+            for c in ["_emp_name", "Employee Name", "Name", "Emp Name"]:
+                if c in self.df.columns:
+                    self.df["Employee Name"] = self.df[c]
+                    break
+
         if "approval_turnaround_days" not in self.df.columns or self.df["approval_turnaround_days"].isna().all():
             if "Approved On" in self.df.columns and "Applied On" in self.df.columns:
                 def calc_turnaround(row):
@@ -604,6 +615,11 @@ class PatternContext:
             self.facts = employee_day_facts.copy()
         else:
             self.facts = build_employee_day_facts(self.df)
+
+        if "Employee Number" not in self.facts.columns and "_emp_num" in self.facts.columns:
+            self.facts["Employee Number"] = self.facts["_emp_num"]
+        if "Employee Name" not in self.facts.columns and "_emp_name" in self.facts.columns:
+            self.facts["Employee Name"] = self.facts["_emp_name"]
 
         # 3. Governed Leave Requests
         if evaluated_requests is not None:

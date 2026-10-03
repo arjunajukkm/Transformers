@@ -99,6 +99,20 @@ def build_leave_requests(
     leave_df = df.loc[leave_indices].copy()
 
     # Normalize grouping columns
+    if "Employee Number" not in leave_df.columns:
+        for c in ["_emp_num", "Employee No", "Emp ID", "Emp No", "Employee Code"]:
+            if c in leave_df.columns:
+                leave_df["Employee Number"] = leave_df[c]
+                break
+        else:
+            leave_df["Employee Number"] = pd.Series("UNKNOWN_EMP", index=leave_df.index)
+
+    if "Employee Name" not in leave_df.columns:
+        for c in ["_emp_name", "Employee Name", "Name", "Emp Name"]:
+            if c in leave_df.columns:
+                leave_df["Employee Name"] = leave_df[c]
+                break
+
     emp_series = leave_df["Employee Number"].fillna("UNKNOWN_EMP")
     if "Leave Name" in leave_df.columns:
         leave_name_series = (

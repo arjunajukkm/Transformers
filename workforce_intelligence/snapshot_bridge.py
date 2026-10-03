@@ -18,6 +18,7 @@ from datetime import date, datetime
 import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple, Union
+import numpy as np
 import pandas as pd
 
 from storage.cache_manager import (
@@ -935,19 +936,34 @@ class WorkforceIntelligenceBridge:
 
         pattern_items = []
         for p in pattern_results[:5]:
+            p_title = getattr(p, "pattern_title", getattr(p, "pattern_name", getattr(p, "pattern_type", "Governance Pattern")))
+            p_desc = getattr(p, "description", getattr(p, "why_detected", "Recurring behavioral or process pattern observed."))
+            p_why = getattr(p, "why_detected", p_desc)
+            p_scope = getattr(p, "entity_name", getattr(p, "entity_id", "Organisation"))
+            e_type = getattr(p, "entity_type", "EMPLOYEE")
+            if hasattr(e_type, "replace"):
+                scope_str = f"{e_type.replace('_', ' ').title()}: {p_scope}"
+            else:
+                scope_str = f"Scope: {p_scope}"
+            pers = str(getattr(p, "persistence", "Single Period")).replace("_", " ").title()
+            ev_cnt = getattr(p, "event_count", len(getattr(p, "evidence_items", [])))
+            d_mo = getattr(p, "distinct_months", 1)
+
             pattern_items.append({
-                "id": p.pattern_id,
-                "name": p.pattern_name,
-                "category": p.pattern_category,
-                "badge": p.severity,
-                "severity": p.severity,
-                "strength": p.strength,
-                "explanation": p.description,
-                "scope": f"{p.entity_type.replace('_', ' ').title()}: {p.entity_name or p.entity_id}",
-                "persistence": p.persistence.replace('_', ' ').title(),
-                "volume": f"{p.event_count} events ({p.distinct_months} mo)",
-                "why_detected": p.why_detected,
-                "score": p.pattern_score,
+                "id": getattr(p, "pattern_id", "pat_item"),
+                "name": p_title,
+                "pattern_name": p_title,
+                "pattern_title": p_title,
+                "category": getattr(p, "pattern_category", "Attendance"),
+                "badge": getattr(p, "severity", "ATTENTION"),
+                "severity": getattr(p, "severity", "ATTENTION"),
+                "strength": getattr(p, "strength", "MEDIUM"),
+                "explanation": p_desc,
+                "scope": scope_str,
+                "persistence": pers,
+                "volume": f"{ev_cnt} events ({d_mo} mo)",
+                "why_detected": p_why,
+                "score": getattr(p, "pattern_score", 50.0),
             })
 
         trend_pulse = [
