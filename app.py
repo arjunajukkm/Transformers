@@ -3032,7 +3032,7 @@ class App(ctk.CTk):
 
         top = ctk.CTkToplevel(self)
         top.title("Workforce Data Sync Center & Historical Archive")
-        top.geometry("680x590")
+        top.geometry("740x590")
         top.resizable(False, False)
         top.configure(fg_color=ui.COLOR_BG)
         top.transient(self)
@@ -3041,7 +3041,7 @@ class App(ctk.CTk):
         # Center dialog
         top.update_idletasks()
         try:
-            x = self.winfo_rootx() + (self.winfo_width() - 680) // 2
+            x = self.winfo_rootx() + (self.winfo_width() - 740) // 2
             y = self.winfo_rooty() + (self.winfo_height() - 590) // 2
             top.geometry(f"+{max(30, x)}+{max(30, y)}")
         except Exception:
@@ -3066,7 +3066,7 @@ class App(ctk.CTk):
         ).pack(anchor="w")
 
         ctk.CTkLabel(
-            hdr_left, text="Sync historical months from Keka (last 3M), import older exported reports, and manage local time-series archive.",
+            hdr_left, text="Sync historical months from Keka (last 3M), import older exported reports, and manage local archive.",
             font=ctk.CTkFont(family=ui.FONT_FAMILY, size=11),
             text_color=ui.COLOR_TEXT_SEC
         ).pack(anchor="w", pady=(2, 0))
@@ -3105,8 +3105,8 @@ class App(ctk.CTk):
                 messagebox.showerror("Import Failed", f"Could not import file:\n\n{res.get('error')}")
 
         ui.create_secondary_button(
-            hdr, "📂 Import Historical File...", lambda: _do_import_file(),
-            width=175, height=28, icon="folder"
+            hdr, "📂 Import File...", lambda: _do_import_file(),
+            width=135, height=28, icon="folder"
         ).pack(side="right", padx=(6, 0), pady=4)
 
         # Presets Bar
